@@ -58,10 +58,12 @@ import Caddyfile.snippets
 	# before handle); the public host's block above has no such route, and the
 	# public app does not mount the door at all. The door also checks an HMAC
 	# on every request and refuses everything while its secret is unset
-	# (quant/src/ohcamel_quant/jobs/burst_door.py). 64MB is its upload cap.
+	# (quant/src/ohcamel_quant/jobs/burst_door.py). Its upload cap, in bytes:
+	# 67108864 is 64 MiB, the door's MAX_UPLOAD_BYTES exactly (Caddy reads
+	# "64MB" as 64,000,000; quant/tests/test_burst.py holds the two equal).
 	handle /burst/* {
 		request_body {
-			max_size 64MB
+			max_size 67108864
 		}
 		reverse_proxy ohcamel-burst:8092 {
 			transport http {

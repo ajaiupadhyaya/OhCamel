@@ -147,23 +147,74 @@ def test_the_same_upload_twice_is_refused_the_second_time(door, made):
     _, _, run = made
     jid = _hold(client)
     body = _body(run, jid)
-    assert client_post_raw(client, f"/burst/jobs/{jid}/artifact", body).status_code == 201
-    r = client_post_raw(client, f"/burst/jobs/{jid}/artifact", body)
+    h = B.signed_headers(SECRET, "POST", f"/burst/jobs/{jid}/artifact", body)
+    assert client.post(f"/burst/jobs/{jid}/artifact", content=body, headers=h).status_code == 201
+    r = client.post(f"/burst/jobs/{jid}/artifact", content=body, headers=h)       # the same request, replayed
+    assert r.status_code == 409 and r.json()["error"] == "replayed"
+    r = client_post_raw(client, f"/burst/jobs/{jid}/artifact", body)              # signed again: the job is done
     assert r.status_code == 409 and r.json()["error"] == "already_done"
     assert r.json()["published"] == {"id": jid, "host": "burst", "data_hash": run.result_data_hash}
 
 
-def test_a_job_the_worker_has_claimed_is_refused(door, made):
+def test_a_scheduled_job_is_never_held_or_uploaded_for_queued_or_running(door, made):
+    """Fix round 1, I1 path (a): a burst never takes over a job a schedule queued; the worker runs it."""
     client, d = door
     _, _, run = made
     conn = connect(d.db)
     job, _ = enqueue(conn, kind="risk.mc_atlas", params=ATLAS, priority=2, mem_class="M", heavy=True,
-                     submitted_by="schedule:mc-atlas", now=NOW)
-    assert claim_next(conn, allowed_classes={"S", "M", "L"}, allow_heavy=True, now=NOW).id == job.id
-    assert client_post(client, "/burst/hold", {"kind": "risk.mc_atlas", "params": ATLAS}).status_code == 409
+                     submitted_by="schedule:risk-atlas-nightly", now=NOW)
+    r = client_post(client, "/burst/hold", {"kind": "risk.mc_atlas", "params": ATLAS})
+    assert r.status_code == 409 and r.json()["error"] == "scheduled"
     r = client_post_raw(client, f"/burst/jobs/{job.id}/artifact", _body(run, job.id))
-    assert r.status_code == 409 and r.json()["error"] == "claimed"
+    assert r.status_code == 409 and r.json()["error"] == "scheduled"
+    assert claim_next(conn, allowed_classes={"S", "M", "L"}, allow_heavy=True, now=NOW).id == job.id
+    assert client_post(client, "/burst/hold", {"kind": "risk.mc_atlas", "params": ATLAS}).json()["error"] == "scheduled"
+    r = client_post_raw(client, f"/burst/jobs/{job.id}/artifact", _body(run, job.id))
+    assert r.status_code == 409 and r.json()["error"] in ("claimed", "scheduled")
     assert get_job(conn, job.id).state == "running"
+
+
+def test_a_schedule_firing_during_a_burst_hold_gets_its_own_job_and_the_worker_runs_it(door, made):
+    """Fix round 1, I1 path (b): the 20:00 risk-atlas-nightly fire while a burst job for the same kind and params
+    is held creates its own job (never deduped onto the burst job), the worker claims and publishes it, and the
+    burst hold expiring cancels only the burst job."""
+    from ohcamel_quant.jobs.artifacts import write_tables
+    from ohcamel_quant.jobs.queue import finish
+    from ohcamel_quant.jobs.schedules import Schedules, load_schedules, tick
+
+    client, d = door
+    conn = connect(d.db)
+    entry = next(e for e in load_schedules().entries if e.name == "risk-atlas-nightly")
+    assert entry.kind == "risk.mc_atlas" and entry.params == {}
+    held = client_post(client, "/burst/hold", {"kind": "risk.mc_atlas", "params": {}}).json()   # 19:00 New York
+    assert held["created"] is True
+    fire = datetime(2026, 6, 2, 0, 0, 30, tzinfo=UTC)                                           # 20:00:30 New York
+    (name, jid, created), = tick(conn, Schedules(entries=(entry,)), fire)
+    assert created is True and jid != held["job_id"]
+    assert conn.execute("SELECT job_id FROM schedule_runs WHERE name = ?", (name,)).fetchone()[0] == jid
+    job = claim_next(conn, allowed_classes={"S", "M", "L"}, allow_heavy=True, now=fire)
+    assert job.id == jid and job.submitted_by == "schedule:risk-atlas-nightly"
+    staging = d.root / ".staging" / jid
+    write_tables(staging, {"summary": pd.DataFrame({"x": [1.0]})})
+    final = d.root / "risk.mc_atlas" / jid
+    final.parent.mkdir(parents=True, exist_ok=True)
+    staging.rename(final)
+    assert finish(conn, jid, artifact={"id": jid, "kind": "risk.mc_atlas", "params_hash": job.params_hash,
+                                       "finished_at": iso(fire), "path": str(final), "data_asof": None},
+                  cpu_seconds=1.0, peak_rss_bytes=1, now=fire)
+    end = datetime.fromisoformat(held["hold_until"].replace("Z", "+00:00")) + timedelta(seconds=1)
+    expire_holds(conn, now=end)
+    assert get_job(conn, jid).state == "done" and get_job(conn, held["job_id"]).state == "cancelled"
+
+
+def test_expiry_never_cancels_a_job_a_schedule_points_to(door):
+    client, d = door
+    conn = connect(d.db)
+    held = client_post(client, "/burst/hold", {"kind": "cov.league", "params": {}}).json()
+    conn.execute("INSERT INTO schedule_runs (name, scheduled_for, job_id, enqueued_at) VALUES (?,?,?,?)",
+                 ("cov-league-weekly", iso(NOW), held["job_id"], iso(NOW)))
+    expire_holds(conn, now=datetime.fromisoformat(held["hold_until"].replace("Z", "+00:00")) + timedelta(days=1))
+    assert get_job(conn, held["job_id"]).state == "queued"
 
 
 @pytest.mark.parametrize("state", ["failed", "cancelled"])
@@ -190,17 +241,9 @@ def test_an_artifact_made_with_other_params_or_another_kind_is_refused(door, mad
     assert get_job(connect(d.db), jid).state == "queued"
 
 
-def test_a_held_job_is_not_claimed_until_its_hold_expires_and_a_burst_job_never_is(door):
+def test_a_burst_job_is_never_claimed_and_is_cancelled_when_its_hold_expires(door):
     client, d = door
     conn = connect(d.db)
-    job, _ = enqueue(conn, kind="risk.mc_atlas", params=ATLAS, priority=2, mem_class="M", heavy=True,
-                     submitted_by="schedule:mc-atlas", now=NOW)
-    held = client_post(client, "/burst/hold", {"kind": "risk.mc_atlas", "params": ATLAS}).json()
-    assert held["job_id"] == job.id and held["created"] is False
-    later = datetime.fromisoformat(held["hold_until"].replace("Z", "+00:00"))
-    assert claim_next(conn, allowed_classes={"S", "M", "L"}, allow_heavy=True, now=later - timedelta(seconds=1)) is None
-    assert claim_next(conn, allowed_classes={"S", "M", "L"}, allow_heavy=True, now=later).id == job.id
-    # a job the burst door created runs nowhere but on the burst machine; its hold expiring cancels it
     other = client_post(client, "/burst/hold", {"kind": "cov.league", "params": {}}).json()
     assert other["created"] is True and get_job(conn, other["job_id"]).submitted_by == "burst"
     end = datetime.fromisoformat(other["hold_until"].replace("Z", "+00:00")) + timedelta(days=1)
@@ -395,6 +438,245 @@ def test_the_droplets_artifacts_are_mirrored_for_the_run(door, tmp_path):
     for name in ("../jobs.sqlite", "reads.json", "nope.parquet"):
         path = f"/burst/artifact/farm.sweep/{aid}/{name}"
         assert client.get(path, headers=B.signed_headers(SECRET, "GET", path, b"")).status_code == 404
+
+
+# --- fix round 1: Q01's once-only holdout (I2) -------------------------------------------------------------------
+
+def _q01_fakes(monkeypatch, tmp_path, calls):
+    """EXP-Q01's run with its config, panel and selection stubbed: no earlier artifact, so the holdout decision
+    is "evaluate". ``X.run_holdout`` records the call."""
+    from types import SimpleNamespace
+
+    from ohcamel_quant.products import q01
+
+    raw = {"universe": ["SPY"], "methodology_version": 1, "seed": 7}
+    cfg = SimpleNamespace(seed=7, universe=["SPY"], benchmark="SPY", grid=[{"a": 1}])
+    sel = SimpleNamespace(trials=pd.DataFrame({"t": [1]}), stitched=pd.DataFrame({"v": [1.0]}, index=[0]),
+                          selected=0, pbo=0.1)
+
+    def run_holdout(*a, **k):
+        calls.append("holdout")
+        raise RuntimeError("the holdout ran")
+
+    x = SimpleNamespace(Q01Config=SimpleNamespace(from_dict=lambda r: cfg), build_samples=lambda p, c: None,
+                        run_selection=lambda *a, **k: sel, run_holdout=run_holdout, Selection=None)
+    monkeypatch.setattr(q01, "load_config", lambda name: raw)
+    monkeypatch.setattr(q01, "X", x)
+    monkeypatch.setattr(q01, "load_panel", lambda con, t: (None, []))
+    monkeypatch.setattr(q01, "DB_PATH", tmp_path / "jobs.sqlite")
+    ctx = SimpleNamespace(seed=lambda v, n="seed": v, warehouse=None, threads=1, progress=lambda *a: None)
+    return q01, ctx
+
+
+def test_a_burst_never_evaluates_q01s_holdout(monkeypatch, tmp_path):
+    calls: list[str] = []
+    q01, ctx = _q01_fakes(monkeypatch, tmp_path, calls)
+    with B.burst_context(), pytest.raises(B.HoldoutRefused, match="worker only"):
+        q01.run({}, ctx)
+    assert calls == []                                    # refused before the holdout was touched
+    with pytest.raises(RuntimeError, match="the holdout ran"):   # the worker evaluates it, as before
+        q01.run({}, ctx)
+    assert calls == ["holdout"]
+
+
+def test_the_tool_refuses_a_q01_burst_that_would_evaluate_the_holdout_and_deletes_its_scratch(
+        made, tmp_path, monkeypatch, capsys):
+    _, export, _ = made
+    monkeypatch.setenv(B.SECRET_ENV, SECRET)
+    monkeypatch.setenv(B.URL_ENV, "https://live.example")
+    monkeypatch.setenv(B.AUTH_ENV, "owner:hunter2-password")
+    fetched = []
+
+    class Fake:
+        def get(self, url, headers=None, auth=None):
+            fetched.append(url)
+            return SimpleResponse(200, {"previous": []})
+
+    monkeypatch.setattr(B, "_http_client", lambda url, auth: Fake())
+
+    def refuse(*a, **k):
+        (tmp_path / "s" / "out").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "s" / "out" / "holdout.parquet").write_bytes(b"x")
+        raise B.HoldoutRefused("EXP-Q01's holdout would be evaluated: the holdout evaluation runs on the worker only")
+
+    monkeypatch.setattr(B, "run_burst", refuse)
+    rc = B.main(["--kind", "models.xs_lgbm", "--export", str(export), "--dry-run", "--scratch", str(tmp_path / "s"),
+                 "--keep", "--threads", "1"])
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert rc == 1 and "worker only" in text and fetched == ["/burst/previous/models.xs_lgbm"]
+    assert "verdict" not in text and "hunter2" not in text and SECRET not in text
+    assert not (tmp_path / "s").exists()
+
+
+def test_a_q01_dry_run_needs_the_droplets_state(made, tmp_path, monkeypatch, capsys):
+    _, export, _ = made
+    for v in (B.SECRET_ENV, B.URL_ENV, B.AUTH_ENV):
+        monkeypatch.delenv(v, raising=False)
+    rc = B.main(["--kind", "models.xs_lgbm", "--export", str(export), "--dry-run", "--scratch", str(tmp_path / "s")])
+    assert rc == 1 and B.URL_ENV in capsys.readouterr().err
+
+
+def test_the_door_refuses_a_q01_holdout_the_droplet_did_not_evaluate(tmp_path):
+    from lane_m_harness import publish_artifact
+
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    ho = pd.DataFrame({"verdict": ["FAIL"], "methodology_version": [1]})
+    publish_artifact(db, root, "models.xs_lgbm", {"holdout": ho, "gates": pd.DataFrame({"g": ["dsr"]})},
+                     finished=NOW - timedelta(days=3))
+
+    def pq_bytes(df):
+        import io
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        return buf.getvalue()
+
+    D.check_holdout("models.xs_lgbm", {"holdout": pq_bytes(ho), "gates": pq_bytes(pd.DataFrame({"g": ["dsr"]}))},
+                    db=db, root=root)                                       # carried unchanged
+    D.check_holdout("models.xs_lgbm", {"scores": pq_bytes(pd.DataFrame({"s": [1.0]}))}, db=db, root=root)
+    with pytest.raises(D.Refused) as e:
+        D.check_holdout("models.xs_lgbm", {"holdout": pq_bytes(ho.assign(verdict="PASS"))}, db=db, root=root)
+    assert e.value.status == 409 and e.value.error == "holdout_worker_only"
+    with pytest.raises(D.Refused):                                           # no holdout on the droplet at all
+        D.check_holdout("models.xs_lgbm", {"holdout": pq_bytes(ho)}, db=tmp_path / "none.sqlite", root=root)
+
+
+# --- fix round 1: minors ------------------------------------------------------------------------------------------
+
+def test_caddys_upload_cap_is_the_doors(monkeypatch):
+    import re as _re
+
+    text = (REPO_ROOT / "deploy" / "Caddyfile").read_text()
+    sizes = _re.findall(r"max_size\s+(\S+)", text)
+    assert sizes == [str(B.MAX_UPLOAD_BYTES)]
+
+
+def test_a_parquet_that_decodes_past_the_cap_is_refused():
+    import io
+
+    buf = io.BytesIO()
+    pd.DataFrame({"x": [0] * 3_000_000}).to_parquet(buf, index=False, compression="zstd")
+    raw = buf.getvalue()
+    assert len(raw) < 200_000                                    # small on the wire
+    with pytest.raises(D.Refused) as e:
+        D._parquet(raw, "summary.parquet", budget=D.DecodeBudget())
+    assert e.value.status == 422 and e.value.error == "bad_file" and "decode" in e.value.detail
+
+
+def test_uploads_are_one_at_a_time(door, made):
+    client, _ = door
+    _, _, run = made
+    jid = _hold(client)
+    assert D._UPLOAD_LOCK.acquire(blocking=False)
+    try:
+        r = client_post_raw(client, f"/burst/jobs/{jid}/artifact", _body(run, jid))
+        assert r.status_code == 429 and r.json()["error"] == "busy"
+    finally:
+        D._UPLOAD_LOCK.release()
+    assert client_post_raw(client, f"/burst/jobs/{jid}/artifact", _body(run, jid)).status_code == 201
+
+
+def test_a_table_whose_columns_differ_from_the_droplets_worker_artifact_is_refused(door, made):
+    client, d = door
+    art, _, run = made
+    conn = connect(d.db)
+    wid = art.name
+    shutil.copytree(art, d.root / "risk.mc_atlas" / wid)
+    conn.execute("INSERT INTO artifacts (id, kind, params_hash, finished_at, path, data_asof) VALUES (?,?,?,?,?,?)",
+                 (wid, "risk.mc_atlas", params_hash(ATLAS), iso(NOW - timedelta(days=1)),
+                  str(d.root / "risk.mc_atlas" / wid), None))
+    jid = _hold(client)
+    obj = json.loads(_body(run, jid))
+    import io
+
+    s = pd.read_parquet(run.staging / "summary.parquet").rename(columns={"var": "var_renamed"})
+    buf = io.BytesIO()
+    s.to_parquet(buf, index=False)
+    obj["files"]["summary.parquet"] = base64.b64encode(buf.getvalue()).decode()
+    r = client_post_raw(client, f"/burst/jobs/{jid}/artifact", json.dumps(obj).encode())
+    assert r.status_code == 422 and r.json()["error"] == "schema_mismatch", r.text
+    assert client_post_raw(client, f"/burst/jobs/{jid}/artifact", _body(run, jid)).status_code == 201
+
+
+def test_each_upload_stages_in_its_own_directory(door, made, monkeypatch):
+    client, d = door
+    _, _, run = made
+    seen = []
+    real = D.publish_burst
+
+    def spy(conn, job_id, **k):
+        seen.append(k["staging"])
+        return real(conn, job_id, **k)
+
+    monkeypatch.setattr(D, "publish_burst", spy)
+    a, b = _hold(client), _hold(client, kind="cov.league", params={})
+    client_post_raw(client, f"/burst/jobs/{a}/artifact", _body(run, a))
+    client_post_raw(client, f"/burst/jobs/{b}/artifact", _body(run, b))
+    assert seen and all(p.parent == d.root / ".staging" and p.name != f"burst-{a}" for p in seen)
+
+
+def test_a_replayed_hold_is_refused(door):
+    client, _ = door
+    body = json.dumps({"kind": "cov.league", "params": {}}).encode()
+    h = B.signed_headers(SECRET, "POST", "/burst/hold", body)
+    assert client.post("/burst/hold", content=body, headers=h).status_code == 200
+    r = client.post("/burst/hold", content=body, headers=h)
+    assert r.status_code == 409 and r.json()["error"] == "replayed"
+
+
+def test_bad_inputs_are_refused_not_500(door):
+    client, _ = door
+    deep = b"[" * 100_000 + b"]" * 100_000
+    assert client_post_raw(client, "/burst/hold", deep).status_code == 422
+    deep_params = json.dumps({"kind": "cov.league", "params": {"a": 1}}).replace('{"a": 1}', "[" * 2000 + "]" * 2000)
+    assert client_post_raw(client, "/burst/hold", deep_params.encode()).status_code == 422
+    h = {B.TS_HEADER: "9" * 5000, B.SIG_HEADER: "0" * 64}
+    assert client.post("/burst/hold", content=b"{}", headers=h).status_code == 401
+    r = client_post(client, "/burst/hold", {"kind": "farm.sweep", "params": {"budget_minutes": 1e300}})
+    assert r.status_code == 422, r.text
+
+
+def test_retention_always_keeps_the_newest_worker_artifact(tmp_path):
+    from lane_m_harness import publish_artifact
+
+    from ohcamel_quant.jobs.artifacts import prune
+
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    wid, _ = publish_artifact(db, root, "cov.league", {"league": pd.DataFrame({"x": [1.0]})},
+                              finished=NOW - timedelta(hours=3), params={"p": 1})
+    bids = []
+    for h in (2, 1):
+        bid, bpath = publish_artifact(db, root, "cov.league", {"league": pd.DataFrame({"x": [2.0]})},
+                                      finished=NOW - timedelta(hours=h), params={"p": 1})
+        m = json.loads((bpath / "manifest.json").read_text())
+        (bpath / "manifest.json").write_text(json.dumps({**m, "host": "burst"}))
+        bids.append(bid)
+    prune(connect(db), kind="cov.league", keep=1)
+    ids = {r[0] for r in connect(db).execute("SELECT id FROM artifacts")}
+    assert wid in ids and bids[-1] in ids
+
+
+def test_a_lookup_recorded_before_worker_only_still_replays(tmp_path):
+    """Artifacts made before this task recorded lookups without " worker_only=True"; regenerate pins by name."""
+    from lane_m_harness import publish_artifact
+
+    from ohcamel_quant.jobs.provenance import Recorder
+    from ohcamel_quant.products.io import lookup_name, previous_artifact
+
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    aid, path = publish_artifact(db, root, "farm.sweep", {"cells": pd.DataFrame({"x": [1.0]})})
+    with Recorder(replay={lookup_name("farm.sweep", None, None): str(path)}).active():
+        assert previous_artifact("farm.sweep", db_path=db, worker_only=True)[0]["id"] == aid
+
+
+class SimpleResponse:
+    def __init__(self, status, obj):
+        self.status_code, self._obj = status, obj
+        self.content = json.dumps(obj).encode()
+        self.text = self.content.decode()
+
+    def json(self):
+        return self._obj
 
 
 # --- isolation: the public host, the desk -------------------------------------------------------------------------

@@ -56,15 +56,30 @@ def create_burst_app() -> FastAPI:
     @app.post("/burst/hold")
     async def hold(request: Request, door: DoorDep) -> Any:
         body = await _read(request)
-        D.check_request(door, "POST", request.url.path, request.headers, body)
+        D.check_request(door, "POST", request.url.path, request.headers, body, single_use=True)
         return await run_in_threadpool(D.hold, door, body, now=datetime.now(UTC))
 
     @app.post("/burst/jobs/{job_id}/artifact", status_code=201)
     async def upload(job_id: str, request: Request, door: DoorDep) -> Any:
-        body = await _read(request)
-        D.check_request(door, "POST", request.url.path, request.headers, body)
-        out = await run_in_threadpool(D.accept_upload, door, job_id, body, now=datetime.now(UTC))
+        # one upload at a time (fix round 1, M2): taken before the body is read, so a second upload never holds a
+        # body in memory beside the first's
+        if not D._UPLOAD_LOCK.acquire(blocking=False):
+            return JSONResponse(status_code=429, headers={"Retry-After": "60"},
+                                content={"error": "busy", "detail": "another upload is being verified; retry"})
+        try:
+            holder = [await _read(request)]
+            D.check_request(door, "POST", request.url.path, request.headers, holder[0], single_use=True)
+            out = await run_in_threadpool(D.accept_upload, door, job_id, holder, now=datetime.now(UTC))
+        finally:
+            D._UPLOAD_LOCK.release()
         return JSONResponse(status_code=201, content=out)
+
+    @app.get("/burst/previous/{kind}")
+    async def previous(kind: str, request: Request, door: DoorDep) -> Any:
+        """The earlier artifacts a run of ``kind`` may read, without holding anything: a dry run mirrors them too
+        (fix round 1, I2), so an EXP-Q01 dry run applies the droplet's holdout decision."""
+        D.check_request(door, "GET", request.url.path, request.headers, b"")
+        return await run_in_threadpool(D.previous_of, door, kind)
 
     @app.get("/burst/artifact/{kind}/{art_id}/{name}")
     async def artifact(kind: str, art_id: str, name: str, request: Request, door: DoorDep) -> Any:

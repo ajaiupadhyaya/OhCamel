@@ -74,7 +74,7 @@ def test_schema_is_contract_ii2_and_wal(conn):
     art = [r["name"] for r in conn.execute("PRAGMA table_info(artifacts)")]
     assert art == ["id", "kind", "params_hash", "finished_at", "path", "data_asof"]
     idx = {r["name"] for r in conn.execute("PRAGMA index_list(jobs)")}
-    assert {"jobs_state", "jobs_live_dedupe"} <= idx
+    assert {"jobs_state", "jobs_live_dedupe_queue", "jobs_live_dedupe_burst"} <= idx and "jobs_live_dedupe" not in idx
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 

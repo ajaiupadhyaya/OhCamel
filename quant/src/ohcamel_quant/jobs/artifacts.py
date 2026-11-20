@@ -187,7 +187,9 @@ def _keeps_each_series(kind: str) -> bool:
 
 def prune(conn: sqlite3.Connection, *, kind: str | None = None, keep: int = KEEP_NEWEST) -> list[str]:
     """II.3 retention, per kind: the newest ``keep`` plus the newest of each calendar month (UTC).
-    Scheduled kinds also keep the newest artifact of each params_hash (``_keeps_each_series``)."""
+    Scheduled kinds also keep the newest artifact of each params_hash (``_keeps_each_series``). The newest artifact
+    of each kind the worker made (manifest ``host`` not ``burst``) is always kept (completion task 3.7 fix round 1,
+    M9): the desk reads worker artifacts only, so burst uploads must never retire the one it reads."""
     sql, args = "SELECT id, kind, params_hash, finished_at, path FROM artifacts", []
     if kind is not None:
         sql += " WHERE kind = ?"
@@ -198,6 +200,14 @@ def prune(conn: sqlite3.Connection, *, kind: str | None = None, keep: int = KEEP
     pruned: list[str] = []
     for k, rows in by_kind.items():
         kept = {r["id"] for r in rows[:keep]}
+        for r in rows:                      # newest first: the first worker artifact is the one the desk reads
+            try:
+                host = json.loads((Path(r["path"]) / "manifest.json").read_text()).get("host")
+            except (OSError, ValueError):
+                continue
+            if host != "burst":
+                kept.add(r["id"])
+                break
         series = _keeps_each_series(k)
         months: set[str] = set()
         hashes: set[str] = set()

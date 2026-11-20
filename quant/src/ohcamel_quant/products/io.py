@@ -49,6 +49,9 @@ def previous_artifact(kind: str, params_hash: str | None = None, *, db_path: Pat
     rec = current()
     lookup = lookup_name(kind, params_hash, with_table, worker_only)
     if rec is not None and rec.replay is not None:
+        legacy = lookup_name(kind, params_hash, with_table)    # recorded before worker_only existed (task 3.7)
+        if lookup not in rec.replay and worker_only and legacy in rec.replay:
+            lookup = legacy
         if lookup not in rec.replay:
             raise LookupError(f"the re-run looked up {lookup}, which the original run did not")
         pinned = rec.replay[lookup]

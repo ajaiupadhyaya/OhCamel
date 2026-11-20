@@ -32,16 +32,28 @@ R6 keeps the droplet its size; heavy research runs elsewhere. In order (``main``
    behind the live host's basic auth and signed (below). A retried upload the door already published counts as
    success.
 
-A dry run (``--dry-run`` / ``DRY_RUN=1``) does steps 1, 2, 4 and 5 and stops: nothing is held or uploaded and the
-droplet is not contacted beyond the rsync pull (none at all with ``--export``). Earlier artifacts are not fetched
-in a dry run, so a farm or Q01 dry run starts from no state; it says so.
+A dry run (``--dry-run`` / ``DRY_RUN=1``) does steps 1, 2, 4 and 5 and stops: nothing is held or uploaded. It
+mirrors the droplet's earlier artifacts through the read-only signed ``GET /burst/previous`` when the three
+variables below are set, and must for ``models.xs_lgbm`` (it refuses without them); otherwise (a farm dry run with
+nothing set) it starts from no carried state and says so.
+
+A burst never evaluates EXP-Q01's once-only holdout (fix round 1, I2). Inside ``run_burst`` the product's
+``refuse_holdout`` call stops the run before the holdout is touched whenever the droplet's holdout decision would
+be to evaluate it (no holdout yet, or a re-evaluation the owner approved): the result could otherwise go
+unrecorded -- a dry run, a refused upload -- and a holdout looked at and not recorded is spent. The tool then
+deletes the scratch directory whatever ``--keep`` says, and an EXP-Q01 dry run prints no verdict. The worker
+evaluates the holdout, always recorded. A burst that carries the droplet's holdout forward (or marks it stale) runs,
+and the door checks the carried tables are the droplet's, unchanged. The farm has no once-only evaluation: each
+night re-scores its cells walk-forward by design, and DSR deflates by the grid's trial count, which a re-run does
+not change, so an unrecorded farm run spends nothing; its artifacts never reach the desk (worker_only).
 
 SIGNING. The spec does not say what signs an upload, so: HMAC-SHA256, keyed by ``OHCAMEL_BURST_SECRET`` (at least
 32 characters; the door refuses everything while its copy is unset or shorter), over
-``ohcamel-burst/1 \\n METHOD \\n PATH \\n TS \\n SHA-256(body)``. The body holds the manifest and every file, so the MAC
-covers the manifest and each file's bytes. TS is Unix seconds, sent in ``X-OhCamel-Burst-Ts``; the door refuses
-one more than five minutes from its clock. The MAC is ``X-OhCamel-Burst-Signature``, compared in constant time.
-The path binds a signature to one job; a job is published once, so a replay finds it done.
+``ohcamel-burst/1 \\n METHOD \\n PATH \\n TS \\n NONCE \\n SHA-256(body)``. The body holds the manifest and every file, so
+the MAC covers the manifest and each file's bytes. TS is Unix seconds, sent in ``X-OhCamel-Burst-Ts``; the door
+refuses one more than five minutes from its clock. NONCE is 16 random bytes in hex (``X-OhCamel-Burst-Nonce``):
+the door remembers every POST's signature for the window and refuses one it has seen (409 replayed), so a captured
+hold or upload cannot be replayed. The MAC is ``X-OhCamel-Burst-Signature``, compared in constant time.
 
 THE OWNER'S ENVIRONMENT, never the repository, never printed:
     OHCAMEL_BURST_URL     https://<the live host>
@@ -54,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextvars
 import hashlib
 import hmac
 import json
@@ -63,6 +76,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -75,6 +90,7 @@ URL_ENV = "OHCAMEL_BURST_URL"
 MIN_SECRET_LEN = 32
 TS_HEADER = "X-OhCamel-Burst-Ts"
 SIG_HEADER = "X-OhCamel-Burst-Signature"
+NONCE_HEADER = "X-OhCamel-Burst-Nonce"
 TS_WINDOW_S = 300
 #: The largest upload the door reads (Caddy's request_body cap on the live host is the same).
 MAX_UPLOAD_BYTES = 64 * 2**20
@@ -96,6 +112,9 @@ BURST_TABLES: dict[str, frozenset[str]] = {
 LOOKUP_KINDS: dict[str, tuple[str, ...]] = {
     "risk.mc_atlas": (), "cov.league": (), "farm.sweep": ("farm.sweep",), "models.xs_lgbm": ("models.xs_lgbm",),
 }
+#: Kinds whose dry run must carry the droplet's state (fix round 1, I2): EXP-Q01's once-only holdout decision
+#: depends on it.
+STATE_REQUIRED = frozenset({"models.xs_lgbm"})
 _ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 _FILE = re.compile(r"^(manifest\.json|[a-z][a-z0-9_]{0,63}\.parquet)$")
 
@@ -113,18 +132,48 @@ class BurstError(RuntimeError):
     """Something the tool refuses, or the door refused; the message says which and why."""
 
 
+class HoldoutRefused(BurstError):
+    """A burst run reached a once-only holdout evaluation (EXP-Q01's). Refused before anything was evaluated."""
+
+
+_IN_BURST: contextvars.ContextVar[bool] = contextvars.ContextVar("ohcamel_burst", default=False)
+
+
+@contextmanager
+def burst_context() -> Iterator[None]:
+    """Mark the code inside as a burst run (``run_burst`` wraps the handler in it)."""
+    token = _IN_BURST.set(True)
+    try:
+        yield
+    finally:
+        _IN_BURST.reset(token)
+
+
+def refuse_holdout(experiment: str) -> None:
+    """Called by a product just before it evaluates a once-only holdout (fix round 1, I2). Inside a burst run it
+    refuses: the evaluation would happen where its result might never be recorded (a dry run, a refused upload),
+    and a holdout looked at once and not recorded is no longer a holdout. The worker evaluates it, always recorded."""
+    if _IN_BURST.get():
+        raise HoldoutRefused(f"{experiment}'s once-only holdout would be evaluated by this run; the holdout "
+                             "evaluation runs on the worker only, where its result is always recorded. Nothing was "
+                             "evaluated; let the worker's scheduled run do it")
+
+
 def usable_secret(value: str | None) -> str | None:
     return value if isinstance(value, str) and len(value) >= MIN_SECRET_LEN else None
 
 
-def signature(secret: str, method: str, path: str, ts: int, body: bytes) -> str:
-    msg = "\n".join(("ohcamel-burst/1", method.upper(), path, str(int(ts)), hashlib.sha256(body).hexdigest()))
+def signature(secret: str, method: str, path: str, ts: int, body: bytes, nonce: str = "") -> str:
+    msg = "\n".join(("ohcamel-burst/1", method.upper(), path, str(int(ts)), nonce, hashlib.sha256(body).hexdigest()))
     return hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
 
 def signed_headers(secret: str, method: str, path: str, body: bytes, *, now: datetime | None = None) -> dict[str, str]:
+    import secrets
+
     ts = int((now or datetime.now(UTC)).timestamp())
-    return {TS_HEADER: str(ts), SIG_HEADER: signature(secret, method, path, ts, body),
+    nonce = secrets.token_hex(16)
+    return {TS_HEADER: str(ts), NONCE_HEADER: nonce, SIG_HEADER: signature(secret, method, path, ts, body, nonce),
             "Content-Type": "application/json"}
 
 
@@ -195,7 +244,7 @@ def run_burst(kind: str, params: dict[str, Any], export_dir: Path, *, scratch: P
     before = resource.getrusage(resource.RUSAGE_SELF)
     ran_at = datetime.now(UTC)
     try:
-        with pinned_clock(clock):
+        with pinned_clock(clock), burst_context():
             result = execute(kind, dict(params), ctx, staging)
     finally:
         ctx.close()
@@ -264,6 +313,15 @@ def hold(kind: str, params: dict[str, Any], *, client: Any, base_url: str, secre
     if r.status_code != 200:
         raise _refused(r)
     return r.json()
+
+
+def previous_of(kind: str, *, client: Any, base_url: str, secret: str, auth: tuple[str, str] | None) -> list[Any]:
+    """The droplet's earlier artifacts a run of ``kind`` may read, without a hold (a dry run's mirror)."""
+    path = f"/burst/previous/{kind}"
+    r = client.get(base_url + path, headers=signed_headers(secret, "GET", path, b""), auth=auth)
+    if r.status_code != 200:
+        raise _refused(r)
+    return list(r.json()["previous"])
 
 
 def mirror(previous: list[dict[str, Any]], data_dir: Path, *, client: Any, base_url: str, secret: str,
@@ -402,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"burst: REFUSED -- --params must be a JSON object ({e})", file=sys.stderr)
         return 2
     own = a.scratch is None
+    removed = False
     scratch = Path(tempfile.mkdtemp(prefix="ohcamel-burst-")) if own else Path(a.scratch)
     try:
         if not _tree_clean():
@@ -435,8 +494,18 @@ def main(argv: list[str] | None = None) -> int:
                 n = mirror(held["previous"], data, client=client, base_url="", secret=secret, auth=auth)
                 _say(f"mirrored {n} earlier artifact(s) the run may read from the droplet")
         elif LOOKUP_KINDS[a.kind]:
-            _say(f"dry run: the droplet's earlier {', '.join(LOOKUP_KINDS[a.kind])} artifacts are not fetched, so "
-                 "this run starts from no carried state (a real run mirrors them first)")
+            # fix round 1 (I2): a dry run carries the droplet's state too when it can (read-only, signed GETs), and
+            # must for EXP-Q01, so it applies the droplet's holdout decision exactly
+            have = all(os.environ.get(v) for v in (URL_ENV, SECRET_ENV, AUTH_ENV))
+            if have or a.kind in STATE_REQUIRED:
+                url, secret, auth = _credentials()
+                client = _http_client(url, auth)
+                prev = previous_of(a.kind, client=client, base_url="", secret=secret, auth=auth)
+                n = mirror(prev, data, client=client, base_url="", secret=secret, auth=auth)
+                _say(f"dry run: mirrored {n} earlier artifact(s) from the droplet (read-only)")
+            else:
+                _say(f"dry run: the droplet's earlier {', '.join(LOOKUP_KINDS[a.kind])} artifacts are not fetched "
+                     f"({URL_ENV}, {AUTH_ENV}, {SECRET_ENV} unset), so this run starts from no carried state")
         run = run_burst(a.kind, params, export, scratch=scratch, threads=a.threads, data_dir=data)
         stale = fixture_reads(run.result["reads"])
         if stale:
@@ -445,8 +514,10 @@ def main(argv: list[str] | None = None) -> int:
                              "use an export taken after a complete ingest")
         m = manifest_for(run, job_id=job_id, code_sha=checkout_sha())
         body = body_for(run, m)
+        shown = "withheld (EXP-Q01: an unpublished run prints no holdout verdict)" \
+            if a.kind in STATE_REQUIRED and a.dry_run else m.get("verdict")
         _say(f"ran in {run.cpu_seconds:.1f} cpu s on {m['burst']['machine']['platform']} (kernels "
-             f"{(m.get('kernels') or {}).get('engine')}); verdict {m.get('verdict')}; data_hash {m['data_hash']}; "
+             f"{(m.get('kernels') or {}).get('engine')}); result {shown}; data_hash {m['data_hash']}; "
              f"tables {', '.join(m['tables'])}; upload {len(body) / 2**20:.2f} MiB")
         if len(body) > MAX_UPLOAD_BYTES:
             raise BurstError(f"the upload is {len(body)} bytes, over the door's {MAX_UPLOAD_BYTES}")
@@ -457,13 +528,21 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"published {a.kind}/{out['id']} as a burst artifact" + (" (an earlier upload already had)"
                                                                        if out.get("already") else ""))
         return 0
+    except HoldoutRefused as e:
+        # nothing of a run that reached a holdout is kept, whatever --keep or --scratch said (fix round 1, I2)
+        shutil.rmtree(scratch, ignore_errors=True)
+        removed = True
+        print(f"burst: REFUSED -- {e}", file=sys.stderr, flush=True)
+        return 1
     except BurstError as e:
         print(f"burst: REFUSED -- {e}", file=sys.stderr, flush=True)
         return 1
     finally:
-        if own and not a.keep:
+        if removed:
+            pass
+        elif own and not a.keep:
             shutil.rmtree(scratch, ignore_errors=True)
-        elif a.keep or not own:
+        else:
             _say(f"scratch kept at {scratch}")
 
 

@@ -114,6 +114,11 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         notes.append(f"holdout evidence predates methodology v{version} / config {h}; re-evaluating the holdout is "
                      "the owner's decision (holdout_reevaluation_approved)")
     else:
+        # completion task 3.7 fix round 1 (I2): a burst run never evaluates the once-only holdout -- its result could
+        # go unrecorded (a dry run, a refused upload) -- so a burst stops here; the worker evaluates it, as before
+        from ..jobs.burst import refuse_holdout
+
+        refuse_holdout("EXP-Q01")
         ho = X.run_holdout(samples, panel, cfg, sel, ctx.threads)
         tables.update({"holdout": pd.DataFrame([{**ho.row, "methodology_version": version, "config_hash": h,
                                                  "evaluated_at": datetime.now(UTC).isoformat()}]),

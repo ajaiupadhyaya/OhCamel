@@ -4,10 +4,13 @@ It runs as its own service (``ohcamel-quant burst-door``, compose service ohcame
 only through the live host's Caddy block, behind its basic auth. The public app does not mount it: the public host
 has no route to it at all. Three requests, each signed (jobs/burst.py, SIGNING):
 
-* ``POST /burst/hold {kind, params}`` holds the queued job with that kind and params for a burst run (creating one,
-  ``submitted_by='burst'``, which the worker never runs) for the kind's wall limit plus ``HOLD_MARGIN_S``, and
-  answers with the job id, the droplet's code SHA and lock hash, the exports it holds, and the earlier artifacts the
-  run may read (``previous_for``). 403 for a kind not marked burstable; 409 when the worker is already running it.
+* ``POST /burst/hold {kind, params}`` creates, or renews, the burst job with that kind and params
+  (``submitted_by='burst'``; the worker never runs it) for the kind's wall limit plus ``HOLD_MARGIN_S`` (at most
+  ``MAX_HOLD_S``), and answers with the job id, the droplet's code SHA and lock hash, the exports it holds, and the
+  earlier artifacts the run may read (``previous_for``). 403 for a kind not marked burstable; 409 ``scheduled``
+  while a schedule's job with the same kind and params is live -- a burst never changes whether, when or as which
+  job the worker runs a scheduled one (fix round 1, I1: a schedule firing during a burst gets its own job).
+* ``GET /burst/previous/<kind>`` is that list without a hold: a dry run mirrors the droplet's state too.
 * ``GET /burst/artifact/<kind>/<id>/<file>`` serves one file of one of those earlier artifacts, byte for byte:
   ``manifest.json`` or a table its manifest lists, of a kind some burstable kind reads, under the artifact root.
 * ``POST /burst/jobs/<id>/artifact`` is the upload. ``accept_upload`` refuses, in order:
@@ -15,9 +18,12 @@ has no route to it at all. Three requests, each signed (jobs/burst.py, SIGNING):
   ====  =========================  ===============================================================================
   503   burst_off                  the door's secret is unset or under 32 characters (every request)
   413   too_large                  a body over ``burst.MAX_UPLOAD_BYTES`` (every request)
-  401   bad_signature / stale      no MAC, a wrong one, or a timestamp more than 5 minutes off (every request)
+  401   bad_signature / stale      no MAC or nonce, a wrong one, or a timestamp more than 5 minutes off
+  409   replayed                   a POST whose signature the door already received inside the window
+  429   busy                       another upload is being verified (uploads are one at a time)
   422   bad_request                not the JSON ``{"manifest": {...}, "files": {...}}``
   404   not_found                  no such job
+  409   scheduled                  the job is not a burst job: a schedule queued it and the worker runs it
   403   not_burstable              the job's kind, or the manifest's, is not burstable
   409   claimed                    the worker is running the job; its own artifact will be published
   409   already_done               the job is done (the body names the artifact, so a retried upload can tell)
@@ -26,8 +32,9 @@ has no route to it at all. Three requests, each signed (jobs/burst.py, SIGNING):
   422   bad_manifest               a field publish does not know, a missing one, a wrong type, a bad verdict or
                                    engine, an unseeded draw (``build_manifest``'s own checks), host not "burst"
   422   bad_file                   a file name outside the kind's allow-list (``burst.BURST_TABLES``) or a table
-                                   missing; base64 that is not; bytes that are not a readable Parquet file; a bad
-                                   reads.json
+                                   missing; base64 that is not; bytes that are not a readable Parquet file, or
+                                   one that would decode past the budget (rows, columns, cells, bytes: M2); a
+                                   bad reads.json
   422   inconsistent_manifest      the manifest the door rebuilds with ``build_manifest`` from the job, the reads
                                    and the uploaded fields differs from the uploaded one -- the data_hash the door
                                    computes from reads.json among them
@@ -40,6 +47,10 @@ has no route to it at all. Three requests, each signed (jobs/burst.py, SIGNING):
   422   clock                      started_at is not the export's exported_at (the run's clock must be the data's)
   409   stale_state                an earlier artifact it read is not what the droplet holds, is no longer the
                                    newest, or was published after the export (``verify_artifact_reads``)
+  409   holdout_worker_only        an EXP-Q01 upload carries holdout tables that are not the droplet's newest
+                                   holdout, unchanged: a burst never evaluates the once-only holdout (I2)
+  422   schema_mismatch            a table's column names or types are not those of the droplet's newest worker
+                                   artifact of the kind (an all-null column matches any type; M3)
   ====  =========================  ===============================================================================
 
   Then the files are written into a fresh staging directory under names from the kind's allow-list and
@@ -54,7 +65,11 @@ one it has, byte for byte), the data_hash over the uploaded reads (so the manife
 every read is of a source an export holds, and every earlier-artifact read against its own store. That each
 warehouse read's hash is what that export returns for that query rests on the uploader -- the owner's machine,
 authenticated by the basic auth and the MAC, running the deployed code (code_drift) -- and is checkable afterwards:
-``tools/regenerate.py <artifact> --warehouse <the export the burst block names>`` reruns it.
+``tools/regenerate.py <artifact> --warehouse <the export the burst block names>`` reruns it. Likewise the gates the
+worker's child applies while the handler runs: the door passes ``unseeded=[]`` and ``unrecorded=[]`` to
+``build_manifest`` because it cannot see the run, so the unseeded-randomness check (the recorder watching numpy and
+``random``) and every gate the handler computes inside itself (its verdict) rest on the client running the deployed
+code; regenerate re-runs them. docs/runbooks/burst.md has the owner regenerate every burst artifact on the droplet.
 """
 
 from __future__ import annotations
@@ -66,6 +81,9 @@ import json
 import os
 import re
 import shutil
+import tempfile
+import threading
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -76,11 +94,42 @@ from typing import Any
 from . import burst as B
 from .artifacts import TABLE_NAME, inside
 from .db import connect, parse_iso
+from .queue import publish_burst
 
 #: How long past the kind's wall limit a hold lasts: the restore before the run and the upload after it.
 HOLD_MARGIN_S = 3600
+#: The longest hold the door grants (fix round 1, M6): a budget past it is refused, not turned into a timedelta
+#: overflow. Two days is the farm's 90-minute budget many times over.
+MAX_HOLD_S = 2 * 86400
 MAX_MANIFEST_BYTES = 1 << 20
 MAX_PARAMS_BYTES = 16_384
+#: Nesting the door parses (fix round 1, M6): deeper JSON is refused before anything recurses over it.
+MAX_JSON_DEPTH = 32
+#: A timestamp header is Unix seconds: at most 12 digits (M6: thousands of digits are refused, not converted).
+MAX_TS_DIGITS = 12
+
+# The decode budget (fix round 1, M2), sized to ohcamel-burst's 384 MiB limit. Peak while an upload is verified:
+#   ~130 MiB  the process (Python, FastAPI, pandas and pyarrow imported)
+#   +64 MiB   the request body (the cap), dropped once parsed
+#   +64 MiB   the parsed JSON's base64 text, each file's text dropped as it is decoded
+#   +48 MiB   the decoded files (3/4 of the base64), replacing that text
+#   +<=16 MiB one Parquet record batch decoded at a time (1,024 rows; string columns read as dictionaries), freed
+#             before the next
+# The body and the text are not held together with all the decoded files, so the peak is under ~310 MiB, and
+# uploads are verified one at a time (_UPLOAD_LOCK; a second gets 429) so two cannot double it. Per upload, across
+# its tables: at most MAX_DECODED_BYTES decoded (summed batch by batch), MAX_ENCODED_BYTES of uncompressed column
+# chunks (Parquet metadata, before decoding), MAX_CELLS rows x columns; per table at most MAX_ROWS rows and
+# MAX_COLUMNS columns.
+MAX_ROWS = 2_000_000
+MAX_COLUMNS = 512
+MAX_CELLS = 8_000_000
+MAX_ENCODED_BYTES = 64 * 2**20
+MAX_DECODED_BYTES = 96 * 2**20
+BATCH_ROWS = 1024
+_UPLOAD_LOCK = threading.Lock()
+#: Signatures of POSTs seen inside the timestamp window (fix round 1, M5): a replayed hold or upload is refused.
+_SEEN: dict[str, float] = {}
+_SEEN_LOCK = threading.Lock()
 _ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -121,7 +170,10 @@ class Door:
 
 # --- every request --------------------------------------------------------------------------------------------------
 
-def check_request(door: Door, method: str, path: str, headers: Any, body: bytes, *, now: datetime | None = None) -> None:
+def check_request(door: Door, method: str, path: str, headers: Any, body: bytes, *, now: datetime | None = None,
+                  single_use: bool = False) -> None:
+    """The secret, the size, the timestamp and the MAC; ``single_use`` (every POST) also refuses a signature already
+    seen inside the window, so a captured hold or upload cannot be replayed (409 replayed)."""
     secret = B.usable_secret(door.secret)
     if secret is None:
         raise Refused(503, "burst_off", f"the burst door is off: {B.SECRET_ENV} is not set (at least "
@@ -129,23 +181,47 @@ def check_request(door: Door, method: str, path: str, headers: Any, body: bytes,
     if len(body) > B.MAX_UPLOAD_BYTES:
         raise Refused(413, "too_large", f"at most {B.MAX_UPLOAD_BYTES} bytes")
     ts_text, sig = headers.get(B.TS_HEADER) or "", headers.get(B.SIG_HEADER) or ""
-    if not ts_text.isdigit() or not re.fullmatch(r"[0-9a-f]{64}", sig):
+    nonce = headers.get(B.NONCE_HEADER) or ""
+    if not ts_text.isdigit() or len(ts_text) > MAX_TS_DIGITS or not re.fullmatch(r"[0-9a-f]{64}", sig) \
+            or not re.fullmatch(r"[0-9a-f]{32}", nonce):
         raise Refused(401, "bad_signature", "the request is not signed (docs/runbooks/burst.md)")
     t = (now or datetime.now(UTC)).timestamp()
     if abs(t - int(ts_text)) > B.TS_WINDOW_S:
         raise Refused(401, "stale", f"the request's timestamp is more than {B.TS_WINDOW_S} s from this host's clock")
-    want = B.signature(secret, method, path, int(ts_text), body)
+    want = B.signature(secret, method, path, int(ts_text), body, nonce)
     if not hmac.compare_digest(want, sig):
         raise Refused(401, "bad_signature", "the signature does not match")
+    if single_use:
+        with _SEEN_LOCK:
+            mono = time.monotonic()
+            for k in [k for k, exp in _SEEN.items() if exp < mono]:
+                del _SEEN[k]
+            if sig in _SEEN:
+                raise Refused(409, "replayed", "this signed request was already received; sign a new one")
+            _SEEN[sig] = mono + 2 * B.TS_WINDOW_S + 1
+
+
+def _depth_ok(obj: Any, limit: int = MAX_JSON_DEPTH) -> bool:
+    """True when ``obj`` nests no deeper than ``limit`` (iterative: nothing here recurses)."""
+    stack = [(obj, 1)]
+    while stack:
+        o, d = stack.pop()
+        if isinstance(o, (dict, list)):
+            if d > limit:
+                return False
+            stack.extend((v, d + 1) for v in (o.values() if isinstance(o, dict) else o))
+    return True
 
 
 def _json(body: bytes) -> dict[str, Any]:
     try:
         obj = json.loads(body)
-    except (ValueError, UnicodeDecodeError) as e:
-        raise Refused(422, "bad_request", f"the body is not JSON ({e})") from e
+    except (ValueError, UnicodeDecodeError, RecursionError) as e:
+        raise Refused(422, "bad_request", f"the body is not JSON the door reads ({type(e).__name__})") from e
     if not isinstance(obj, dict):
         raise Refused(422, "bad_request", "the body is not a JSON object")
+    if not _depth_ok(obj):
+        raise Refused(422, "bad_request", f"the body nests deeper than {MAX_JSON_DEPTH} levels")
     return obj
 
 
@@ -175,11 +251,18 @@ def hold(door: Door, body: bytes, *, now: datetime | None = None) -> dict[str, A
     except ValueError as e:
         raise Refused(422, "bad_request", str(e)) from e
     hold_s = wall_limit_for(spec, obj["params"]) + HOLD_MARGIN_S
+    if not hold_s <= MAX_HOLD_S:
+        raise Refused(422, "bad_request", f"the job's wall limit would hold it past {MAX_HOLD_S} s; a burst job's "
+                                          "budget must be smaller")
     with closing(connect(door.db)) as conn:
         job, created, until = hold_for_burst(conn, kind=spec.name, params=obj["params"], mem_class=spec.mem_class,
                                              heavy=spec.heavy, hold_s=hold_s, now=now)
         if until is None:
-            raise Refused(409, "claimed", f"the worker is running {spec.name} {job.id}; its artifact will be published")
+            if job.submitted_by != "burst":
+                raise Refused(409, "scheduled", f"{spec.name} {job.id} with these params was queued by "
+                                                f"{job.submitted_by} and is {job.state}: the worker runs it and "
+                                                "publishes its artifact; a burst never stands in for it")
+            raise Refused(409, "claimed", f"{spec.name} {job.id} is {job.state}")
         previous = previous_for(conn, door.root, spec.name)
     return {"job_id": job.id, "created": created, "hold_until": until, "code_sha": door.code_sha,
             "lock_hash": door.lock_hash, "previous": previous, "exports": held_exports(door.exports)}
@@ -233,6 +316,15 @@ def previous_for(conn: Any, root: Path, kind: str) -> list[dict[str, Any]]:
                 need_worker = False
                 t_worker |= set(tables)
     return out
+
+
+def previous_of(door: Door, kind: str) -> dict[str, Any]:
+    """``previous_for`` without a hold (the dry run's mirror); 403 for a kind not burstable."""
+    spec = _burstable(kind)
+    if not door.db.exists():
+        return {"previous": []}
+    with closing(connect(door.db)) as conn:
+        return {"previous": previous_for(conn, door.root, spec.name)}
 
 
 def artifact_file(door: Door, kind: str, art_id: str, name: str) -> Path:
@@ -332,10 +424,10 @@ def _reads(raw: bytes) -> list[dict[str, Any]]:
 
     try:
         reads = json.loads(raw)
-    except (ValueError, UnicodeDecodeError) as e:
+    except (ValueError, UnicodeDecodeError, RecursionError) as e:
         raise Refused(422, "bad_file", "reads.json is not JSON") from e
-    if not isinstance(reads, list):
-        raise Refused(422, "bad_file", "reads.json is a list")
+    if not isinstance(reads, list) or not _depth_ok(reads, 3):
+        raise Refused(422, "bad_file", "reads.json is a list of flat objects")
     out = []
     for r in reads:
         if not isinstance(r, dict) or not _READ_KEYS <= set(r) <= _READ_KEYS | {"artifact"} \
@@ -350,23 +442,58 @@ def _reads(raw: bytes) -> list[dict[str, Any]]:
     return out
 
 
-def _parquet(raw: bytes, name: str) -> None:
-    """Readable Parquet, parsed from memory by pyarrow (no path, no pickle, no code), with distinct column names."""
+@dataclass
+class DecodeBudget:
+    """What one upload's tables may decode to, summed across them (module constants, M2)."""
+    encoded: int = 0
+    decoded: int = 0
+    cells: int = 0
+
+
+def _parquet(raw: bytes, name: str, *, budget: DecodeBudget) -> Any:
+    """Readable Parquet, parsed from memory by pyarrow (no path, no pickle, no code), with distinct column names,
+    inside the decode budget -> its Arrow schema. The metadata is read first and checked (rows, columns, cells,
+    uncompressed bytes); then the file is decoded one batch at a time, string columns as dictionaries (so a
+    repeated value is not expanded), and refused as soon as the decoded bytes pass the budget."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     if len(raw) < 12 or raw[:4] != b"PAR1" or raw[-4:] != b"PAR1":
         raise Refused(422, "bad_file", f"{name} is not a Parquet file")
+
+    def over(why: str) -> Refused:
+        return Refused(422, "bad_file", f"{name} would decode past the door's budget ({why})")
+
     try:
-        t = pq.read_table(pa.BufferReader(raw))
+        schema = pq.read_schema(pa.BufferReader(raw))
+        md = pq.read_metadata(pa.BufferReader(raw))
+        if md.num_columns > MAX_COLUMNS or md.num_rows > MAX_ROWS:
+            raise over(f"{md.num_rows} rows x {md.num_columns} columns; at most {MAX_ROWS} x {MAX_COLUMNS}")
+        budget.cells += md.num_rows * md.num_columns
+        budget.encoded += sum(md.row_group(i).total_byte_size for i in range(md.num_row_groups))
+        if budget.cells > MAX_CELLS or budget.encoded > MAX_ENCODED_BYTES:
+            raise over(f"{budget.cells} cells, {budget.encoded} uncompressed bytes so far; at most {MAX_CELLS} "
+                       f"and {MAX_ENCODED_BYTES}")
+        strings = [f.name for f in schema if pa.types.is_string(f.type) or pa.types.is_large_string(f.type)
+                   or pa.types.is_binary(f.type) or pa.types.is_large_binary(f.type)]
+        pf = pq.ParquetFile(pa.BufferReader(raw), read_dictionary=strings)
+        for batch in pf.iter_batches(batch_size=BATCH_ROWS):
+            budget.decoded += batch.nbytes
+            del batch
+            if budget.decoded > MAX_DECODED_BYTES:
+                raise over(f"over {MAX_DECODED_BYTES} decoded bytes")
+    except Refused:
+        raise
     except Exception as e:  # noqa: BLE001 - any parse failure is a refusal, named
         raise Refused(422, "bad_file", f"{name} is not a readable Parquet file ({type(e).__name__})") from e
-    if len(set(t.column_names)) != len(t.column_names):
+    if len(set(schema.names)) != len(schema.names):
         raise Refused(422, "bad_file", f"{name} has duplicate column names")
+    return schema
 
 
-def _files(obj: Any, kind: str, tables: list[str]) -> tuple[dict[str, bytes], list[dict[str, Any]]]:
-    """``{table: Parquet bytes}`` keyed by names from the kind's allow-list, and the parsed reads."""
+def _files(obj: Any, kind: str, tables: list[str]) -> tuple[dict[str, bytes], dict[str, Any], list[dict[str, Any]]]:
+    """``{table: Parquet bytes}`` keyed by names from the kind's allow-list, their Arrow schemas, and the parsed
+    reads. Each file's base64 text is dropped from ``obj`` as soon as it is decoded (the memory budget)."""
     allowed = B.BURST_TABLES[kind]
     if not isinstance(obj, dict):
         raise Refused(422, "bad_file", "files is an object of name: base64")
@@ -381,6 +508,7 @@ def _files(obj: Any, kind: str, tables: list[str]) -> tuple[dict[str, bytes], li
 
     def decode(name: str) -> bytes:
         v = obj[name]
+        obj[name] = None
         if not isinstance(v, str):
             raise Refused(422, "bad_file", f"{name} is not base64 text")
         try:
@@ -389,12 +517,80 @@ def _files(obj: Any, kind: str, tables: list[str]) -> tuple[dict[str, bytes], li
             raise Refused(422, "bad_file", f"{name} is not base64") from e
 
     out: dict[str, bytes] = {}
+    schemas: dict[str, Any] = {}
+    budget = DecodeBudget()
     for t in sorted(allowed):                     # the name is the allow-list's string, never the upload's
         if t in tables:
             raw = decode(f"{t}.parquet")
-            _parquet(raw, f"{t}.parquet")
+            schemas[t] = _parquet(raw, f"{t}.parquet", budget=budget)
             out[t] = raw
-    return out, _reads(decode(B.READS_FILE))
+    return out, schemas, _reads(decode(B.READS_FILE))
+
+
+def _compatible(a: Any, b: Any) -> bool:
+    """Two Arrow types the same column may carry from run to run: equal, or one of them all-null."""
+    import pyarrow as pa
+
+    return a == b or pa.types.is_null(a) or pa.types.is_null(b)
+
+
+def check_schemas(kind: str, schemas: dict[str, Any], *, db: Path, root: Path) -> None:
+    """Fix round 1, M3: each uploaded table has the column names (in order) and types of the same table in the
+    droplet's newest worker artifact of the kind, when there is one; 422 schema_mismatch otherwise. A column that is
+    all-null on one side (Arrow ``null``) matches any type."""
+    import pyarrow.parquet as pq
+
+    from ..products.io import _newest
+
+    if not schemas or not Path(db).exists():
+        return
+    got = _newest(kind, None, db, None, True)
+    if got is None or not inside(root, got[1] / "manifest.json"):
+        return
+    for t, up in schemas.items():
+        f = got[1] / f"{t}.parquet"
+        if not inside(root, f) or not f.is_file():
+            continue
+        want = pq.read_schema(f)
+        if up.names != want.names or not all(_compatible(up.field(n).type, want.field(n).type) for n in up.names):
+            show = lambda sc: ", ".join(f"{fl.name}:{fl.type}" for fl in sc)[:300]  # noqa: E731
+            raise Refused(422, "schema_mismatch", f"{t}: the upload's columns ({show(up)}) are not those of the "
+                                                  f"droplet's newest worker {kind} {got[0].get('id')} ({show(want)})")
+
+
+#: EXP-Q01's once-only holdout tables (products/q01.py HOLDOUT_TABLES; restated so the door never imports pandas
+#: models). A burst never evaluates them (fix round 1, I2): a Q01 upload may carry them only unchanged from the
+#: droplet's newest artifact holding a holdout.
+Q01_HOLDOUT_TABLES = ("holdout", "holdout_returns", "holdout_costs", "holdout_regimes", "holdout_ic",
+                      "holdout_deciles", "gates")
+
+
+def check_holdout(kind: str, blobs: dict[str, bytes], *, db: Path, root: Path) -> None:
+    """A burst never evaluates EXP-Q01's once-only holdout (fix round 1, I2). An upload holding the ``holdout``
+    table must carry every holdout table byte-for-value equal (canonical frame hash) to the droplet's newest
+    artifact holding a holdout -- i.e. carried forward, never new. 409 holdout_worker_only otherwise."""
+    import io
+
+    import pandas as pd
+
+    from ..products.io import _newest
+    from .provenance import frame_hash
+
+    if kind != "models.xs_lgbm" or "holdout" not in blobs:
+        return
+    refuse = Refused(409, "holdout_worker_only", "this upload carries an EXP-Q01 holdout the droplet did not evaluate: "
+                                                 "the once-only holdout evaluation runs on the worker only")
+    got = _newest(kind, None, db, "holdout", False) if Path(db).exists() else None
+    if got is None or not inside(root, got[1] / "manifest.json"):
+        raise refuse
+    for t in Q01_HOLDOUT_TABLES:
+        if t not in blobs:
+            continue
+        f = got[1] / f"{t}.parquet"
+        if not inside(root, f) or not f.is_file():
+            raise refuse
+        if frame_hash(pd.read_parquet(io.BytesIO(blobs[t]))) != frame_hash(pd.read_parquet(f)):
+            raise refuse
 
 
 _DIGESTS: dict[tuple[str, int, int], str] = {}
@@ -489,14 +685,18 @@ def _published(conn: Any, job: Any) -> dict[str, Any] | None:
     return {"id": job.artifact_id, "host": m.get("host", "worker"), "data_hash": m.get("data_hash")}
 
 
-def accept_upload(door: Door, job_id: str, body: bytes, *, now: datetime | None = None) -> dict[str, Any]:
-    """Verify an upload (module docstring, in that order) and publish it. -> the published artifact."""
+def accept_upload(door: Door, job_id: str, body: bytes | list[bytes], *,
+                  now: datetime | None = None) -> dict[str, Any]:
+    """Verify an upload (module docstring, in that order) and publish it. -> the published artifact. ``body`` may be
+    a one-element list, emptied here once parsed, so the raw body is not held beside the decoded files (M2)."""
     from .artifacts import build_manifest, prune
     from .provenance import data_hash as compute_data_hash
-    from .queue import canonical_params, get_job, publish_burst
+    from .queue import canonical_params, get_job
 
     now = now or datetime.now(UTC)
-    obj = _json(body)
+    raw_body = body.pop() if isinstance(body, list) else body
+    obj = _json(raw_body)
+    del raw_body
     if set(obj) != {"manifest", "files"} or not isinstance(obj["manifest"], dict):
         raise Refused(422, "bad_request", 'the body is {"manifest": {...}, "files": {...}}')
     m: dict[str, Any] = obj["manifest"]
@@ -510,6 +710,9 @@ def accept_upload(door: Door, job_id: str, body: bytes, *, now: datetime | None 
             raise Refused(404, "not_found", f"no job {job_id}")
         _burstable(job.kind)
         _burstable(m.get("kind"))
+        if job.submitted_by != "burst":
+            raise Refused(409, "scheduled", f"{job.id} was queued by {job.submitted_by}: the worker runs it and publishes "
+                                            "its artifact; a burst uploads only for a job the burst door holds")
         if job.state == "running":
             raise Refused(409, "claimed", f"the worker claimed {job.id}; its own artifact will be published")
         if job.state == "done":
@@ -525,7 +728,8 @@ def accept_upload(door: Door, job_id: str, body: bytes, *, now: datetime | None 
             raise Refused(409, "job_mismatch", f"the artifact was made for other params or another kind than the queued "
                                                f"job {job.id} ({job.kind}); burst again with the job's params exactly")
     tables = _check_types(m, job.kind)
-    blobs, reads = _files(obj["files"], job.kind, tables)
+    blobs, schemas, reads = _files(obj["files"], job.kind, tables)
+    obj["files"] = None
     # the manifest the worker's publish would write for this job, from the job row, the reads and the uploaded
     # fields: build_manifest's checks (engine, verdict, seed) and its data_hash, computed here
     shape = SimpleNamespace(id=job.id, kind=job.kind, params=job.params, params_hash=job.params_hash,
@@ -548,7 +752,8 @@ def accept_upload(door: Door, job_id: str, body: bytes, *, now: datetime | None 
                                                     "and the uploaded reads in: " + ", ".join(differ))
     if m.get("data_hash") is None:
         raise Refused(422, "unrecorded_reads", "a burst artifact must record every read (its data_hash is null)")
-    assert m["data_hash"] == compute_data_hash(reads)
+    if m["data_hash"] != compute_data_hash(reads):     # implied by the rebuild above; stated, not asserted (M7)
+        raise Refused(422, "inconsistent_manifest", "the data_hash is not the hash of the uploaded reads")
     live = [r["name"][:120] for r in reads if not r["regenerable"]]
     if live:
         raise Refused(409, "not_from_export", "the run read data no export holds: " + "; ".join(live[:5]))
@@ -571,10 +776,12 @@ def accept_upload(door: Door, job_id: str, body: bytes, *, now: datetime | None 
     if parse_iso(m["finished_at"]).timestamp() > now.timestamp() + B.TS_WINDOW_S:
         raise Refused(422, "clock", "finished_at is in the future")
     verify_artifact_reads(reads, db=door.db, root=door.root, exported_at=exported_at)
+    check_holdout(job.kind, blobs, db=door.db, root=door.root)
+    check_schemas(job.kind, schemas, db=door.db, root=door.root)
 
-    staging = Path(door.root) / ".staging" / f"burst-{job.id}"
-    shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True)
+    # a staging directory of its own (M4): two uploads for one job never share one
+    (Path(door.root) / ".staging").mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"burst-{job.id}-", dir=Path(door.root) / ".staging"))
     try:
         for t, raw in blobs.items():
             (staging / f"{t}.parquet").write_bytes(raw)
@@ -585,6 +792,8 @@ def accept_upload(door: Door, job_id: str, body: bytes, *, now: datetime | None 
                                       root=Path(door.root), manifest=full, cpu_seconds=float(m["cpu_seconds"]),
                                       peak_rss_bytes=m.get("peak_rss_bytes"), now=now)
             if not ok:
+                if state == "scheduled":
+                    raise Refused(409, "scheduled", f"{job.id} is not a burst job")
                 if state == "running":
                     raise Refused(409, "claimed", f"the worker claimed {job.id} meanwhile")
                 if state == "done":

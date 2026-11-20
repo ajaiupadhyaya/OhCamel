@@ -14,9 +14,9 @@ IF NOT EXISTS). The additive tables:
   result).
 * ``schedule_runs`` one row per (schedule name, scheduled instant): the
   scheduler's idempotency key.
-* ``job_holds``     completion task 3.7: a queued job held for a burst run
-  until ``until``; the worker does not claim it while the hold lasts
-  (queue.hold_for_burst, queue.claim_next).
+* ``job_holds``     completion task 3.7: how long a burst job (``submitted_by='burst'``,
+  never claimed by the worker) stays queued waiting for its upload
+  (queue.hold_for_burst, queue.expire_holds).
 
 Timestamps are fixed-width UTC strings (``iso``), so string order is time order.
 """
@@ -47,7 +47,14 @@ CREATE TABLE IF NOT EXISTS jobs (
   submitted_by  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, priority, submitted_at);
-CREATE UNIQUE INDEX IF NOT EXISTS jobs_live_dedupe ON jobs(kind, params_hash) WHERE state IN ('queued','running');
+-- One live job per (kind, params_hash), counted separately for the burst door's jobs (completion task 3.7 fix
+-- round 1): a schedule's enqueue never dedupes onto a burst job, so a burst never decides whether the worker runs a
+-- scheduled job. The original index (both kinds of job in one) is replaced in place.
+DROP INDEX IF EXISTS jobs_live_dedupe;
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_live_dedupe_queue ON jobs(kind, params_hash)
+  WHERE state IN ('queued','running') AND submitted_by != 'burst';
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_live_dedupe_burst ON jobs(kind, params_hash)
+  WHERE state IN ('queued','running') AND submitted_by = 'burst';
 CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, params_hash TEXT NOT NULL,
   finished_at TEXT NOT NULL, path TEXT NOT NULL, data_asof TEXT
