@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2311<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2317<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -780,6 +780,18 @@ Rollback is a deploy of the previous good sha: the newest `ok` line in
 tail -5 ~/deploys.log
 deploy/deploy.sh --sha <previous good sha> --live
 ```
+
+**Before rolling back past ff34e86 (completion task 3.7, burst research), cancel every live burst job.** Code from
+before that commit builds a unique index over every live job's kind and params in `jobs.sqlite` on each connect;
+a live burst job that shares them with a scheduled job makes the index impossible, and the older API and worker
+cannot open the queue. The same holds for every deploy: no burst job may be live while one runs.
+
+```
+docker compose -f deploy/docker-compose.yml exec -T ohcamel-worker python -m ohcamel_quant.jobs cancel-burst
+```
+
+(prefix it with `OHCAMEL_TAG=$(git rev-parse HEAD)`; the statement it runs, and how to run it when the worker is
+already on older code, are in docs/runbooks/burst.md, "Before any deploy, and before any rollback").
 
 Rolling back the code does not roll back the journal, and it does not need
 to, because **the journal is additive**: `desk/journal.ml` is at schema

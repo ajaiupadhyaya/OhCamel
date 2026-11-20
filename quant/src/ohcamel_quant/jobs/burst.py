@@ -30,7 +30,8 @@ R6 keeps the droplet its size; heavy research runs elsewhere. In order (``main``
    optimizer-fitted product, so a burst artifact is reproducible exactly only on its own platform.
 6. The upload (not in a dry run): ``POST /burst/jobs/<id>/artifact``, the manifest and every file in one JSON body,
    behind the live host's basic auth and signed (below). A retried upload the door already published counts as
-   success.
+   success; a 429 (the door verifies one upload at a time) is retried after its Retry-After, bounded (round 2).
+   A ``--scratch`` the owner names must be empty or new: the tool clears only what it made there.
 
 A dry run (``--dry-run`` / ``DRY_RUN=1``) does steps 1, 2, 4 and 5 and stops: nothing is held or uploaded. It
 mirrors the droplet's earlier artifacts through the read-only signed ``GET /burst/previous`` when the three
@@ -356,6 +357,26 @@ def mirror(previous: list[dict[str, Any]], data_dir: Path, *, client: Any, base_
     return n
 
 
+#: A 429 (the door verifies one upload at a time) is retried after its Retry-After, at most this many times, each
+#: wait capped (round 2).
+BUSY_RETRIES = 5
+BUSY_MAX_WAIT_S = 120.0
+
+
+def _sleep(seconds: float) -> None:
+    import time
+
+    time.sleep(seconds)
+
+
+def _retry_after(r: Any) -> float:
+    try:
+        v = float((getattr(r, "headers", None) or {}).get("Retry-After", 30))
+    except (TypeError, ValueError):
+        v = 30.0
+    return min(max(v, 1.0), BUSY_MAX_WAIT_S)
+
+
 def upload(run: BurstRun, job_id: str, *, client: Any, base_url: str, secret: str, auth: tuple[str, str] | None,
            code_sha: str | None = None) -> dict[str, Any]:
     from .provenance import checkout_sha
@@ -363,7 +384,13 @@ def upload(run: BurstRun, job_id: str, *, client: Any, base_url: str, secret: st
     m = manifest_for(run, job_id=job_id, code_sha=code_sha or checkout_sha())
     body = body_for(run, m)
     path = f"/burst/jobs/{job_id}/artifact"
-    r = client.post(base_url + path, content=body, headers=signed_headers(secret, "POST", path, body), auth=auth)
+    for attempt in range(BUSY_RETRIES + 1):   # each attempt signed anew: a fresh nonce, so no replay refusal
+        r = client.post(base_url + path, content=body, headers=signed_headers(secret, "POST", path, body), auth=auth)
+        if r.status_code != 429 or attempt == BUSY_RETRIES:
+            break
+        wait = _retry_after(r)
+        _say(f"the door is verifying another upload; retrying in {wait:.0f} s ({attempt + 1}/{BUSY_RETRIES})")
+        _sleep(wait)
     if r.status_code == 201:
         return r.json()
     if r.status_code == 409:
@@ -461,6 +488,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     own = a.scratch is None
     removed = False
+    if not own and Path(a.scratch).exists() and any(Path(a.scratch).iterdir()):
+        # round 2 (N4): the tool clears only what it made, so it works only in an empty (or new) directory
+        print(f"burst: REFUSED -- --scratch {a.scratch} is not empty; name an empty or new directory", file=sys.stderr)
+        return 2
     scratch = Path(tempfile.mkdtemp(prefix="ohcamel-burst-")) if own else Path(a.scratch)
     try:
         if not _tree_clean():
@@ -529,8 +560,17 @@ def main(argv: list[str] | None = None) -> int:
                                                                        if out.get("already") else ""))
         return 0
     except HoldoutRefused as e:
-        # nothing of a run that reached a holdout is kept, whatever --keep or --scratch said (fix round 1, I2)
-        shutil.rmtree(scratch, ignore_errors=True)
+        # nothing of a run that reached a holdout is kept, whatever --keep said (fix round 1, I2). The tool made
+        # everything in the scratch (a named --scratch must start empty, round 2), so it empties it; its own
+        # temporary directory goes whole, a directory the owner named stays.
+        if own:
+            shutil.rmtree(scratch, ignore_errors=True)
+        else:
+            for child in Path(scratch).iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
         removed = True
         print(f"burst: REFUSED -- {e}", file=sys.stderr, flush=True)
         return 1

@@ -477,11 +477,24 @@ def _parquet(raw: bytes, name: str, *, budget: DecodeBudget) -> Any:
         strings = [f.name for f in schema if pa.types.is_string(f.type) or pa.types.is_large_string(f.type)
                    or pa.types.is_binary(f.type) or pa.types.is_large_binary(f.type)]
         pf = pq.ParquetFile(pa.BufferReader(raw), read_dictionary=strings)
-        for batch in pf.iter_batches(batch_size=BATCH_ROWS):
-            budget.decoded += batch.nbytes
-            del batch
-            if budget.decoded > MAX_DECODED_BYTES:
-                raise over(f"over {MAX_DECODED_BYTES} decoded bytes")
+        # round 2 (N3): a dictionary column's batches carry their row group's dictionary -- the same values again,
+        # growing as pages are read -- so each batch counts its indices, and the dictionary counts only by how much
+        # it grew past the largest seen for that column in that row group: the distinct values, once. (A dictionary
+        # is never larger than the column chunk's uncompressed pages, which MAX_ENCODED_BYTES bounds, so one batch
+        # in memory stays within that.)
+        for rg in range(pf.num_row_groups):
+            largest: dict[int, int] = {}
+            for batch in pf.iter_batches(batch_size=BATCH_ROWS, row_groups=[rg]):
+                for i, col in enumerate(batch.columns):
+                    if pa.types.is_dictionary(col.type):
+                        size = col.dictionary.nbytes
+                        budget.decoded += col.indices.nbytes + max(0, size - largest.get(i, 0))
+                        largest[i] = max(size, largest.get(i, 0))
+                    else:
+                        budget.decoded += col.nbytes
+                del batch
+                if budget.decoded > MAX_DECODED_BYTES:
+                    raise over(f"over {MAX_DECODED_BYTES} decoded bytes")
     except Refused:
         raise
     except Exception as e:  # noqa: BLE001 - any parse failure is a refusal, named
@@ -528,16 +541,22 @@ def _files(obj: Any, kind: str, tables: list[str]) -> tuple[dict[str, bytes], di
 
 
 def _compatible(a: Any, b: Any) -> bool:
-    """Two Arrow types the same column may carry from run to run: equal, or one of them all-null."""
+    """Two Arrow types the same column may carry from run to run: equal, one of them all-null, or both numeric (an
+    integer column becomes float when a run has a missing value; round 2)."""
     import pyarrow as pa
 
-    return a == b or pa.types.is_null(a) or pa.types.is_null(b)
+    def numeric(t: Any) -> bool:
+        return pa.types.is_integer(t) or pa.types.is_floating(t)
+
+    return a == b or pa.types.is_null(a) or pa.types.is_null(b) or (numeric(a) and numeric(b))
 
 
-def check_schemas(kind: str, schemas: dict[str, Any], *, db: Path, root: Path) -> None:
+def check_schemas(kind: str, schemas: dict[str, Any], *, db: Path, root: Path, code_sha: str) -> None:
     """Fix round 1, M3: each uploaded table has the column names (in order) and types of the same table in the
-    droplet's newest worker artifact of the kind, when there is one; 422 schema_mismatch otherwise. A column that is
-    all-null on one side (Arrow ``null``) matches any type."""
+    droplet's newest worker artifact of the kind -- compared only when that artifact was made by this deployment's
+    code (``code_sha``, round 2): a burst runs the deployed code (code_drift), and a deploy may change a table's
+    columns, so an artifact older code made says nothing about what this code writes. 422 schema_mismatch
+    otherwise. All-null columns match any type; integer and float match each other."""
     import pyarrow.parquet as pq
 
     from ..products.io import _newest
@@ -545,7 +564,7 @@ def check_schemas(kind: str, schemas: dict[str, Any], *, db: Path, root: Path) -
     if not schemas or not Path(db).exists():
         return
     got = _newest(kind, None, db, None, True)
-    if got is None or not inside(root, got[1] / "manifest.json"):
+    if got is None or not inside(root, got[1] / "manifest.json") or got[0].get("code_sha") != code_sha:
         return
     for t, up in schemas.items():
         f = got[1] / f"{t}.parquet"
@@ -566,9 +585,9 @@ Q01_HOLDOUT_TABLES = ("holdout", "holdout_returns", "holdout_costs", "holdout_re
 
 
 def check_holdout(kind: str, blobs: dict[str, bytes], *, db: Path, root: Path) -> None:
-    """A burst never evaluates EXP-Q01's once-only holdout (fix round 1, I2). An upload holding the ``holdout``
-    table must carry every holdout table byte-for-value equal (canonical frame hash) to the droplet's newest
-    artifact holding a holdout -- i.e. carried forward, never new. 409 holdout_worker_only otherwise."""
+    """A burst never evaluates EXP-Q01's once-only holdout (fix round 1, I2). An upload holding any holdout table
+    (round 2) must carry each one equal (canonical frame hash) to the droplet's newest artifact holding a holdout --
+    i.e. carried forward, never new. 409 holdout_worker_only otherwise."""
     import io
 
     import pandas as pd
@@ -576,7 +595,12 @@ def check_holdout(kind: str, blobs: dict[str, bytes], *, db: Path, root: Path) -
     from ..products.io import _newest
     from .provenance import frame_hash
 
-    if kind != "models.xs_lgbm" or "holdout" not in blobs:
+    present = [t for t in Q01_HOLDOUT_TABLES if t in blobs]
+    if kind != "models.xs_lgbm" or not present:
+        return
+    # round 2 (N2): any holdout table is checked, not only `holdout`; an INSUFFICIENT DATA run publishes an empty
+    # `gates` and nothing else, which is no holdout
+    if present == ["gates"] and pd.read_parquet(io.BytesIO(blobs["gates"])).empty:
         return
     refuse = Refused(409, "holdout_worker_only", "this upload carries an EXP-Q01 holdout the droplet did not evaluate: "
                                                  "the once-only holdout evaluation runs on the worker only")
@@ -777,7 +801,7 @@ def accept_upload(door: Door, job_id: str, body: bytes | list[bytes], *,
         raise Refused(422, "clock", "finished_at is in the future")
     verify_artifact_reads(reads, db=door.db, root=door.root, exported_at=exported_at)
     check_holdout(job.kind, blobs, db=door.db, root=door.root)
-    check_schemas(job.kind, schemas, db=door.db, root=door.root)
+    check_schemas(job.kind, schemas, db=door.db, root=door.root, code_sha=door.code_sha)
 
     # a staging directory of its own (M4): two uploads for one job never share one
     (Path(door.root) / ".staging").mkdir(parents=True, exist_ok=True)

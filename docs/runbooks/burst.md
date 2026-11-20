@@ -80,7 +80,9 @@ DSR deflates by the grid's trial count, which a re-run does not change), so a fa
    runs it as always; your burst job is a separate artifact. The desk reads the worker's artifacts only.
 3. If it fails part way, run it again: a hold is renewed, and an upload the door already published is recognised
    as done. If you give up, nothing is needed: the burst job is cancelled when its hold expires (it is never run on
-   the droplet). The door verifies one upload at a time; a second gets `429 busy` and the tool says so -- rerun it.
+   the droplet). The door verifies one upload at a time. A second gets `429 busy`, and the tool waits the door's
+   `Retry-After` (at most 2 minutes) and tries again, up to 5 times. A `--scratch` you name must be empty or new:
+   the tool clears only what it made there.
 4. **Regenerate every burst artifact on the droplet** (outside market hours; it is a heavy run). This is what
    re-checks what the door cannot (below): that the export gives the reads the artifact names, the seeds, the
    unseeded-randomness check and the product's own gates. On the droplet, in the deploy checkout:
@@ -132,6 +134,31 @@ What the door cannot check, plainly. It does not see the run, so it cannot check
 
 Both rest on your machine (basic auth plus the key, deployed code only). Step 4's regenerate re-checks both on the
 droplet, from the export the manifest names.
+
+## Before any deploy, and before any rollback
+
+**No burst job may be live during a deploy or a rollback.** Since fix round 1, a burst job may share its kind
+and params with a live scheduled job. Code from before that commit (ff34e86) builds a unique index over every
+live job's kind and params on each connect to `jobs.sqlite`, so while such a pair exists, any service on the
+older code fails to connect: the API and the worker go down. That covers a rollback past ff34e86, and old
+containers still running for the seconds a forward deploy takes to replace them.
+
+The door cannot cheaply tell which versions the other services run, so this is a rule for you, not a check. Do
+not run a burst while a deploy is in progress, and cancel every live burst job first:
+
+        cd ~/OhCamel    # the droplet's deploy checkout
+        OHCAMEL_TAG=$(git rev-parse HEAD) docker compose -f deploy/docker-compose.yml exec -T ohcamel-worker \
+          python -m ohcamel_quant.jobs cancel-burst
+
+That cancels every queued burst job and drops every hold. A burst you were running is then refused at upload
+(`not_queued`); run it again after the deploy. If the code is already older and the worker cannot start, run the
+same statement directly against the file:
+
+        OHCAMEL_TAG=$(git rev-parse HEAD) docker compose -f deploy/docker-compose.yml run --rm --no-deps \
+          --entrypoint python ohcamel-worker -c "import sqlite3; c = sqlite3.connect('/data/jobs.sqlite'); \
+          c.executescript(\"UPDATE jobs SET state='cancelled', finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), \
+          error='cancelled before a deploy or rollback' WHERE submitted_by='burst' AND state IN ('queued','running'); \
+          DELETE FROM job_holds;\"); c.close()"
 
 ## Rotating or closing the door
 

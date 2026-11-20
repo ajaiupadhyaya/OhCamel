@@ -5,6 +5,8 @@
   cancel ID                           cancel a queued or running job
   wall-times [--days N]               per kind, p95 and max wall time of the last N days' finished runs beside its
                                       wall limit; flags a kind whose slowest run took over 70% of it (read-only)
+  cancel-burst                        cancel every live burst job and drop every hold: run before a deploy and
+                                      before any rollback (docs/runbooks/burst.md)
 
 ``run-schedule`` enqueues with the entry's kind, priority, memory class and
 heavy flag, ``submitted_by = schedule:NAME`` (contract II.2 allows only that
@@ -162,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("job_id")
     wt = sub.add_parser("wall-times", help="per kind, p95 and max wall time beside its wall limit (read-only)")
     wt.add_argument("--days", type=int, default=30)
+    sub.add_parser("cancel-burst", help="cancel every live burst job (before a deploy or a rollback)")
     a = p.parse_args(argv)
     db = a.db
     if db is None:
@@ -175,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
             return _status(conn)
         if a.cmd == "run-schedule":
             return _run_schedule(conn, a.schedules, a.name, a.params)
+        if a.cmd == "cancel-burst":
+            from .queue import cancel_burst_jobs
+
+            ids = cancel_burst_jobs(conn, now=utcnow())
+            print(f"cancelled {len(ids)} live burst job(s)" + (": " + ", ".join(ids) if ids else ""))
+            return 0
         return _cancel(conn, a.job_id)
 
 

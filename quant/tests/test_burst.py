@@ -506,7 +506,7 @@ def test_the_tool_refuses_a_q01_burst_that_would_evaluate_the_holdout_and_delete
     text = out.out + out.err
     assert rc == 1 and "worker only" in text and fetched == ["/burst/previous/models.xs_lgbm"]
     assert "verdict" not in text and "hunter2" not in text and SECRET not in text
-    assert not (tmp_path / "s").exists()
+    assert (tmp_path / "s").is_dir() and list((tmp_path / "s").iterdir()) == []   # emptied, not removed (N4)
 
 
 def test_a_q01_dry_run_needs_the_droplets_state(made, tmp_path, monkeypatch, capsys):
@@ -672,6 +672,7 @@ def test_a_lookup_recorded_before_worker_only_still_replays(tmp_path):
 class SimpleResponse:
     def __init__(self, status, obj):
         self.status_code, self._obj = status, obj
+        self.headers = {}
         self.content = json.dumps(obj).encode()
         self.text = self.content.decode()
 
@@ -819,3 +820,150 @@ def _body(run, job_id, *, manifest_changes=None, reads=None, code_sha=None) -> b
         m = B.manifest_for(run, job_id=job_id, code_sha=code_sha or checkout_sha())
     m.update(manifest_changes or {})
     return B.body_for(run, m)
+
+
+# --- round 2 -------------------------------------------------------------------------------------------------------
+
+OLD_INDEX = ("CREATE UNIQUE INDEX IF NOT EXISTS jobs_live_dedupe ON jobs(kind, params_hash) "
+             "WHERE state IN ('queued','running')")
+
+
+def test_cancelling_live_burst_jobs_lets_code_from_before_round_1_open_the_queue(door):
+    """N1: code from before ff34e86 creates the old unique index on every connect, which cannot be built while a
+    burst job shares (kind, params) with a live scheduled one. `python -m ohcamel_quant.jobs cancel-burst` (the
+    runbook's step before a rollback) clears that."""
+    import sqlite3
+
+    from ohcamel_quant.jobs.__main__ import main as jobs_cli
+
+    client, d = door
+    conn = connect(d.db)
+    held = client_post(client, "/burst/hold", {"kind": "risk.mc_atlas", "params": {}}).json()
+    enqueue(conn, kind="risk.mc_atlas", params={}, priority=2, mem_class="M", heavy=True,
+            submitted_by="schedule:risk-atlas-nightly", now=NOW)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(OLD_INDEX)
+    assert jobs_cli(["--db", str(d.db), "cancel-burst"]) == 0
+    assert get_job(conn, held["job_id"]).state == "cancelled"
+    assert conn.execute("SELECT COUNT(*) FROM job_holds").fetchone()[0] == 0
+    conn.execute(OLD_INDEX)                                       # the old code's connect now succeeds
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE state = 'queued'").fetchone()[0] == 1
+
+
+def test_the_door_checks_any_holdout_table_not_only_holdout(tmp_path):
+    """N2: an upload carrying a holdout table without the `holdout` table itself is checked too; an INSUFFICIENT
+    DATA run's empty `gates` alone is not a holdout."""
+    import io
+
+    from lane_m_harness import publish_artifact
+
+    def pq_bytes(df):
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        return buf.getvalue()
+
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    rets = pd.DataFrame({"r": [0.01, -0.02]})
+    publish_artifact(db, root, "models.xs_lgbm", {"holdout": pd.DataFrame({"verdict": ["FAIL"]}),
+                                                   "holdout_returns": rets}, finished=NOW - timedelta(days=3))
+    D.check_holdout("models.xs_lgbm", {"holdout_returns": pq_bytes(rets)}, db=db, root=root)
+    with pytest.raises(D.Refused) as e:
+        D.check_holdout("models.xs_lgbm", {"holdout_returns": pq_bytes(rets * 2)}, db=db, root=root)
+    assert e.value.error == "holdout_worker_only"
+    empty_gates = pd.DataFrame(columns=["gate", "value", "rule", "passed", "note"])
+    D.check_holdout("models.xs_lgbm", {"gates": pq_bytes(empty_gates)}, db=db, root=root)
+
+
+def test_a_dictionary_column_of_unique_strings_is_counted_once_per_row_group():
+    """N3: 200,000 unique strings (~8 MB as Arrow) fit the 96 MiB budget; the dictionary is not counted again in
+    every 1,024-row batch."""
+    import io
+
+    buf = io.BytesIO()
+    pd.DataFrame({"s": [f"cell-{i:08d}-tsmom-us-equity-ix" for i in range(200_000)]}).to_parquet(
+        buf, index=False, compression="zstd")
+    budget = D.DecodeBudget()
+    D._parquet(buf.getvalue(), "cells.parquet", budget=budget)
+    assert budget.decoded < 32 * 2**20
+
+
+def test_the_tool_never_deletes_what_it_did_not_create(made, tmp_path, monkeypatch, capsys):
+    """N4: a non-empty --scratch is refused before anything runs; on a holdout refusal an empty --scratch the
+    owner named is emptied, not removed."""
+    _, export, _ = made
+    full = tmp_path / "mine"
+    full.mkdir()
+    (full / "notes.txt").write_text("keep me")
+    assert B.main(["--kind", "risk.mc_atlas", "--params", json.dumps(ATLAS), "--export", str(export), "--dry-run",
+                   "--scratch", str(full)]) == 2
+    assert (full / "notes.txt").read_text() == "keep me" and "not empty" in capsys.readouterr().err
+    monkeypatch.setenv(B.SECRET_ENV, SECRET)
+    monkeypatch.setenv(B.URL_ENV, "https://live.example")
+    monkeypatch.setenv(B.AUTH_ENV, "owner:pw")
+    monkeypatch.setattr(B, "_http_client", lambda url, auth: type("F", (), {
+        "get": lambda self, url, headers=None, auth=None: SimpleResponse(200, {"previous": []})})())
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    def refuse(*a, **k):
+        (empty / "out").mkdir()
+        (empty / "warehouse.duckdb").write_bytes(b"x")
+        raise B.HoldoutRefused("the holdout evaluation runs on the worker only")
+
+    monkeypatch.setattr(B, "run_burst", refuse)
+    assert B.main(["--kind", "models.xs_lgbm", "--export", str(export), "--dry-run", "--scratch", str(empty)]) == 1
+    assert empty.is_dir() and list(empty.iterdir()) == []
+
+
+def test_schemas_are_compared_only_with_a_worker_artifact_of_the_same_code_and_int_widens_to_float(tmp_path):
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from lane_m_harness import publish_artifact
+
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    _, path = publish_artifact(db, root, "cov.league", {"league": pd.DataFrame({"n": [1, 2], "x": [1.0, 2.0]})},
+                               finished=NOW - timedelta(days=1))
+    m = json.loads((path / "manifest.json").read_text())
+    (path / "manifest.json").write_text(json.dumps({**m, "code_sha": "a" * 40}))
+
+    def schema(df):
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        return pq.read_schema(pa.BufferReader(buf.getvalue()))
+
+    renamed = {"league": schema(pd.DataFrame({"n": [1], "y": [1.0]}))}
+    D.check_schemas("cov.league", renamed, db=db, root=root, code_sha="b" * 40)   # older code made it: not compared
+    with pytest.raises(D.Refused) as e:
+        D.check_schemas("cov.league", renamed, db=db, root=root, code_sha="a" * 40)
+    assert e.value.error == "schema_mismatch"
+    widened = {"league": schema(pd.DataFrame({"n": [1.5], "x": [1.0]}))}
+    D.check_schemas("cov.league", widened, db=db, root=root, code_sha="a" * 40)
+
+
+def test_the_tool_retries_a_busy_door_after_its_retry_after(made, monkeypatch):
+    _, _, run = made
+    answers = [SimpleResponse(429, {"error": "busy", "detail": "another upload"}),
+               SimpleResponse(201, {"id": "X", "kind": "risk.mc_atlas"})]
+    answers[0].headers = {"Retry-After": "2"}
+    slept = []
+
+    class Fake:
+        def post(self, url, content=None, headers=None, auth=None):
+            return answers.pop(0)
+
+    monkeypatch.setattr(B, "_sleep", slept.append)
+    out = B.upload(run, "01JD0000000000000000000000", client=Fake(), base_url="", secret=SECRET, auth=None)
+    assert out["id"] == "X" and slept == [2.0]
+    busy = [SimpleResponse(429, {"error": "busy", "detail": "x"}) for _ in range(B.BUSY_RETRIES + 1)]
+    for b in busy:
+        b.headers = {"Retry-After": "999"}
+
+    class Busy:
+        def post(self, url, content=None, headers=None, auth=None):
+            return busy.pop(0)
+
+    with pytest.raises(B.BurstError, match="429"):
+        B.upload(run, "01JD0000000000000000000000", client=Busy(), base_url="", secret=SECRET, auth=None)
+    assert all(s <= B.BUSY_MAX_WAIT_S for s in slept)

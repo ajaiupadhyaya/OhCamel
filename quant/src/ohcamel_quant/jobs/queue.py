@@ -385,6 +385,27 @@ def expire_holds(conn: sqlite3.Connection, *, now: datetime) -> list[tuple[str, 
     return out
 
 
+#: The statement ``cancel_burst_jobs`` runs (docs/runbooks/burst.md quotes it for a rollback without this code).
+CANCEL_BURST_SQL = ("UPDATE jobs SET state='cancelled', finished_at=?, error=? "
+                    "WHERE submitted_by='burst' AND state IN ('queued','running')")
+BURST_CANCELLED = "cancelled before a deploy or rollback: no burst job may be live then (docs/runbooks/burst.md)"
+
+
+def cancel_burst_jobs(conn: sqlite3.Connection, *, now: datetime) -> list[str]:
+    """Cancel every live burst job and drop every hold (round 2, N1). Code from before completion task 3.7's fix
+    round 1 builds a unique index over (kind, params_hash) of ALL live jobs on every connect; a burst job sharing a
+    scheduled job's params makes that index impossible and every such connect fails. Run before a rollback past that
+    commit, and before a deploy. -> the cancelled ids."""
+    with tx(conn):
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM jobs WHERE submitted_by='burst' AND state IN ('queued','running')").fetchall()]
+        conn.execute(CANCEL_BURST_SQL, (iso(now), BURST_CANCELLED))
+        conn.execute("DELETE FROM job_holds")
+        for jid in ids:
+            _event(conn, jid, "cancelled", now, None, BURST_CANCELLED)
+    return ids
+
+
 def list_jobs(conn: sqlite3.Connection, *, kind: str | None = None, state: str | None = None,
               limit: int = 50) -> list[Job]:
     sql, args = "SELECT * FROM jobs WHERE 1=1", []
