@@ -14,6 +14,20 @@ What is removed, wherever it sits in the payload:
   known for this payload: the ones just found, and this image's ``OHCAMEL_GIT_SHA``. A whole-value match removes
   the key (a list keeps its length, with ``null``); a run inside text becomes ``·``.
 
+A candidate must hold at least one letter a-f: a run of digits is a number (a CIK, a date, a count), never taken
+for a SHA, whatever it prefixes.
+
+The redaction knows a SHA only if the payload carries it, so the convention is: a route that serves text derived
+from a manifest (notes, provenance) passes the manifest's ``code_sha`` under that key -- the artifacts router's
+``_head`` does, on every artifact route -- and the key never leaves; it only teaches the redaction what to scrub. A
+SHA the app reads from somewhere else (the committed perf recordings' ``sha``) is dropped at its route.
+quant/tests/test_public_sha.py walks every public GET route and asks git whether any hex run is a commit.
+
+NOT REDACTED: ``text/event-stream``. The one stream, ``/api/jobs/events``, sends a fixed set of fields per event
+(``type``, ``id``, ``state``, ``progress``, ``message``) from job_events; it must never carry a SHA, and the job
+queue writes none there (pinned by quant/tests/test_public_sha.py). Any stream added later must hold to the same
+rule, because this middleware does not buffer streams.
+
 What is not touched: 64-hex data and params hashes (they name data, not code), ULIDs, a CIK or a date written as
 digits, and anything else that merely looks like hex without matching a known SHA. The stored manifests are never
 rewritten (tools/regenerate.py reads ``code_sha`` from the files), and the gated host is unchanged: the burst
@@ -50,13 +64,16 @@ def _collect(obj: Any, out: set[str]) -> None:
     elif isinstance(obj, list):
         for v in obj:
             _collect(v, out)
-    elif isinstance(obj, str) and _FULL.match(obj):
+    elif isinstance(obj, str) and _FULL.match(obj) and _LETTER.search(obj):
         out.add(obj.lower())
+
+
+_LETTER = re.compile(r"[a-fA-F]")
 
 
 def _is_known(token: str, known: set[str]) -> bool:
     t = token.lower()
-    return any(k.startswith(t) for k in known)
+    return bool(_LETTER.search(t)) and any(k.startswith(t) for k in known)
 
 
 def _clean(obj: Any, known: set[str]) -> Any:
@@ -72,7 +89,7 @@ def _clean(obj: Any, known: set[str]) -> Any:
     if isinstance(obj, list):
         return [None if (c := _clean(v, known)) is _DROP else c for v in obj]
     if isinstance(obj, str):
-        if _FULL.match(obj) or (_HEXVAL.match(obj) and _is_known(obj, known)):
+        if (_FULL.match(obj) and _LETTER.search(obj)) or (_HEXVAL.match(obj) and _is_known(obj, known)):
             return _DROP
         if known and _TOKEN.search(obj):
             return _TOKEN.sub(lambda m: "·" if _is_known(m.group(0), known) else m.group(0), obj)

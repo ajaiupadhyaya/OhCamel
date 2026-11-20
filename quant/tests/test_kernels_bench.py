@@ -73,7 +73,8 @@ def test_endpoint_serves_rows(tmp_path):
     p = tmp_path / "kernels.json"
     p.write_text(json.dumps({"kernels": [ROW]}))
     j = _client(p).get("/api/ops/kernels").json()
-    assert j["kernels"] == [ROW]
+    # the row's commit (``sha``) is not served: the public host shows no commit SHA (the owner's ruling, 2026-11-20)
+    assert j["kernels"] == [{k: v for k, v in ROW.items() if k != "sha"}]
     assert j["engine"] in ("rust", "python")
     assert set(j["engines"]) == set(bench.SIZES)
     assert j["provenance"][0]["source"] == "docs/perf/kernels.json"

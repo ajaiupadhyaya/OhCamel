@@ -118,7 +118,6 @@ const KERNEL_COLS: Column<KernelRow>[] = [
   { key: "rust_2t_ms", label: "RS 2T MS", numeric: true, hideBelow: 600, format: (v) => (v == null ? "1T ONLY" : fmtNum(v, 2)) },
   { key: "speedup", label: "1T ×", numeric: true, format: (v) => fmtMultiple(v, 1) },
   { key: "scaling", label: "2T/1T", numeric: true, hideBelow: 900, format: (v) => (v == null ? "—" : fmtMultiple(v, 2)) },
-  { key: "sha", label: "SHA", align: "right", hideBelow: 1200, render: (r) => <span className="num">{r.sha ? r.sha.slice(0, 7) : "—"}</span> },
 ];
 
 /** A list read's rows, merged with the job stream. */

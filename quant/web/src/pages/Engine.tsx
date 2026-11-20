@@ -77,7 +77,7 @@ export default function Engine() {
                     make propagation
                   </a>
                   <span>
-                    · {rec!.sha.slice(0, 7)} · {rec!.machine.toUpperCase()}
+                    · {rec!.machine.toUpperCase()}
                   </span>
                 </div>
               </>

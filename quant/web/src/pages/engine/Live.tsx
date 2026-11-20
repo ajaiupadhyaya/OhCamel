@@ -69,7 +69,6 @@ export function LiveEngine() {
                 ["SYMBOLS", fmtNum(st.feed.symbols, 0)],
                 ["UPTIME", uptime(st.uptime_s ?? undefined)],
                 ["ROUND TRIP", `${fmtNum(st.latency_ms, 0)} MS`],
-                ["BUILD", st.git_sha ? st.git_sha.slice(0, 7) : "—"],
                 ["NODES RECOMPUTED", fmtNum(st.process.nodes_recomputed, 0)],
               ]}
             />

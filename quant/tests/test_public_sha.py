@@ -145,3 +145,142 @@ def test_the_gated_hosts_burst_door_still_returns_the_deployments_sha(tmp_path):
     body = json.dumps({"kind": "cov.league", "params": {}}).encode()
     r = TestClient(app).post("/burst/hold", content=body, headers=B.signed_headers("s" * 40, "POST", "/burst/hold", body))
     assert r.status_code == 200 and r.json()["code_sha"] == SHA
+
+
+# --- round 2: the two committed perf recordings, and every public GET route -------------------------------------
+
+def _perf_sha(name: str) -> str:
+    from ohcamel_quant.config import REPO_ROOT
+
+    body = json.loads((REPO_ROOT / "docs" / "perf" / name).read_text())
+    rows = body if isinstance(body, list) else body.get("kernels", body)
+    if isinstance(rows, list):
+        return next(str(r["sha"]) for r in rows if isinstance(r, dict) and r.get("sha"))
+    return str(body["sha"])
+
+
+def test_the_propagation_and_kernel_recordings_carry_no_commit_sha(tmp_path):
+    """docs/perf/propagation.json and kernels.json name the commit they were recorded at (12 characters, under
+    ``sha``); the files stay as they are, the public routes drop it."""
+    prop, kern = _perf_sha("propagation.json"), _perf_sha("kernels.json")
+    c = TestClient(_app(tmp_path / "jobs.sqlite"))
+    for url, sha in (("/api/engine/propagation", prop), ("/api/ops/kernels", kern)):
+        r = c.get(url)
+        assert r.status_code == 200, (url, r.text)
+        assert leaks(r.text, sha) == [] and '"sha"' not in r.text, url
+
+
+def test_a_digits_only_value_is_never_taken_for_a_sha():
+    from ohcamel_quant.api.redact import redact_payload
+
+    digits = "1234567890123456789012345678901234567890"
+    out = redact_payload({"a": digits, "b": "1234567", "c": "n 1234567 m"}, extra=("1234567abc",))
+    assert out == {"a": digits, "b": "1234567", "c": "n 1234567 m"}
+
+
+def test_the_job_event_stream_carries_only_its_fixed_fields(tmp_path):
+    """text/event-stream is not redacted (api/redact.py): the job stream's events are a fixed set of fields -- the
+    job's id, state, progress and message -- and none of them is a commit SHA."""
+    from ohcamel_quant.api.routers.jobs import get_jobs_db_path, get_sse_idle, get_sse_lifetime
+    from ohcamel_quant.jobs.db import connect
+    from ohcamel_quant.jobs.queue import enqueue
+
+    db = tmp_path / "jobs.sqlite"
+    app = create_app()
+    app.dependency_overrides[get_jobs_db_path] = lambda: db
+    app.dependency_overrides[get_sse_lifetime] = lambda: 1.0
+    app.dependency_overrides[get_sse_idle] = lambda: 0.6
+    enqueue(connect(db), kind="ops.selftest", params={}, priority=0, mem_class="S", heavy=False, submitted_by="api",
+            now=NOW)
+    with TestClient(app).stream("GET", "/api/jobs/events", headers={"Last-Event-ID": "0"}) as r:
+        text = "".join(r.iter_text())
+    events = [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+    assert events and all(set(e) == {"type", "id", "state", "progress", "message"} for e in events)
+    assert leaks(text, BUILD, SHA) == []
+
+
+ROUTE_PARAMS = {"kind": "cov.league", "table": "league", "ticker": "SPY", "cik": "0001067983"}
+QUERY_PARAMS = {"ids": "DGS10", "tickers": "SPY", "q": "apple"}
+NOT_WALKED = {"/api/jobs/events"}   # a stream (test_the_job_event_stream_carries_only_its_fixed_fields)
+
+
+def _commits(tokens: set[str]) -> set[str]:
+    """The tokens git resolves to a commit object in this repository."""
+    import subprocess
+
+    from ohcamel_quant.config import REPO_ROOT
+
+    if not tokens:
+        return set()
+    out = subprocess.run(["git", "-C", str(REPO_ROOT), "cat-file", "--batch-check"], input="\n".join(sorted(tokens)),
+                         capture_output=True, text=True, check=True).stdout
+    found = set()
+    for want, line in zip(sorted(tokens), out.splitlines(), strict=True):
+        parts = line.split()
+        if len(parts) == 3 and parts[1] == "commit":
+            found.add(want)
+    return found
+
+
+@pytest.fixture(scope="module")
+def walked(tmp_path_factory):
+    """Every public GET route the app registers (its OpenAPI paths), each answered with fixture data present: an
+    artifact whose manifest names this checkout's HEAD, a job, the machine built from that store, and an engine
+    behind the bridge whose build is HEAD too. -> {path: response text}."""
+    import subprocess
+
+    from lane_m_harness import publish_artifact
+    from test_engine_bridge import HEALTH, HISTORY, OPS, SNAPSHOT
+
+    from ohcamel_quant.api.routers import engine as engine_mod
+    from ohcamel_quant.api.routers import machine as machine_router
+    from ohcamel_quant.config import REPO_ROOT, Settings
+    from ohcamel_quant.jobs.db import connect
+    from ohcamel_quant.jobs.queue import enqueue
+    from ohcamel_quant.machine.service import MachineCache, build_machine
+
+    head = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    root = tmp_path_factory.mktemp("walk")
+    db = root / "jobs.sqlite"
+    aid, path = publish_artifact(db, root / "artifacts", "cov.league", {"league": pd.DataFrame({"x": [1.0]})},
+                                 finished=NOW - timedelta(hours=1))
+    m = json.loads((path / "manifest.json").read_text())
+    m.update(code_sha=head, notes=[f"made at {head[:9]}"])
+    (path / "manifest.json").write_text(json.dumps(m))
+    job, _ = enqueue(connect(db), kind="ops.selftest", params={}, priority=0, mem_class="S", heavy=False,
+                     submitted_by="api", now=NOW)
+    app = _app(db)
+    settings = Settings(offline=True, data_dir=root)
+    app.dependency_overrides[machine_router.get_machine_db_path] = lambda: db
+    app.dependency_overrides[machine_router.get_machine_cache] = lambda: MachineCache(
+        lambda now: build_machine(db, settings, now), lambda: None)
+    app.dependency_overrides[engine_mod.get_engine_url] = lambda: "http://engine.test:8081"
+    app.dependency_overrides[engine_mod.get_book_public] = lambda: False
+    engine_mod._cache.clear()
+    ops = {**OPS, "build": {"git_sha": head, "built_at": "2026-11-20T00:00:00Z"}}
+    params = {**ROUTE_PARAMS, "art_id": aid, "job_id": job.id}
+    out = {}
+    with respx.mock(assert_all_called=False) as mock:
+        for p, body in (("ops", ops), ("health", HEALTH), ("snapshot", SNAPSHOT), ("history", HISTORY)):
+            mock.get(f"http://engine.test:8081/api/{p}").mock(return_value=httpx.Response(200, json=body))
+        c = TestClient(app)
+        for p, item in sorted(app.openapi()["paths"].items()):
+            if "get" not in item or not p.startswith("/api/") or p in NOT_WALKED or p.startswith("/api/docs"):
+                continue
+            url = p.format(**params)
+            query = {x["name"]: QUERY_PARAMS[x["name"]] for x in item["get"].get("parameters", [])
+                     if x.get("in") == "query" and x.get("required")}
+            out[p] = c.get(url, params=query).text
+    engine_mod._cache.clear()
+    return out
+
+
+def test_no_public_get_route_names_a_commit_of_this_repository(walked):
+    """The class, not the instances: every 7-to-40 hex run (with a letter in it: a run of digits is a number) in
+    every public GET route's answer is looked up with git; none may be a commit. In a shallow clone older commits
+    are absent and pass unseen; the named-route tests above do not depend on git."""
+    assert len(walked) >= 45
+    seen = {p: {t.lower() for t in HEX.findall(text) if re.search(r"[a-fA-F]", t)} for p, text in walked.items()}
+    hits = {p: sorted(_commits(toks)) for p, toks in seen.items()}
+    assert {p: h for p, h in hits.items() if h} == {}

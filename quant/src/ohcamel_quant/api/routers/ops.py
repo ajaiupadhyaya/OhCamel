@@ -194,13 +194,16 @@ def get_kernels_table_path() -> Path:
 def kernels_table(path: Annotated[Path, Depends(get_kernels_table_path)]) -> Any:
     """The kernel benchmark table: Python reference vs Rust at one and two threads.
 
-    ``{"kernels": [{name, python_ms, rust_1t_ms, rust_2t_ms, measured_on, sha}],
-    "engine", "engines", "provenance", "notes"}``. 503
+    ``{"kernels": [{name, python_ms, rust_1t_ms, rust_2t_ms, measured_on}],
+    "engine", "engines", "provenance", "notes"}``. Each row's ``sha`` (the commit it was
+    measured at) stays in the committed file and is not served: the public host shows no
+    commit SHA (the owner's ruling, 2026-11-20). 503
     ``{"error": "kernels_table_unavailable", "detail"}`` when the file is absent
     from this build or invalid.
     """
     try:
-        rows = kernel_bench.validate_table(json.loads(path.read_text(encoding="utf-8")))
+        rows = [{k: v for k, v in r.items() if k != "sha"}
+                for r in kernel_bench.validate_table(json.loads(path.read_text(encoding="utf-8")))]
     except FileNotFoundError:
         return JSONResponse(status_code=503, content={
             "error": "kernels_table_unavailable", "detail": f"{path.name} is not present in this build"})

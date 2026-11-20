@@ -103,6 +103,9 @@ describe("kernelRows", () => {
     expect(r[1]).toMatchObject({ speedup: 1.5, scaling: 2, engine: "python" });
     expect(r[2]).toMatchObject({ speedup: 0.15, engine: null });
   });
+  it("carries no commit SHA, even from a table that names one (the owner's ruling, 2026-11-20)", () => {
+    for (const row of kernelRows(body)) expect(row).not.toHaveProperty("sha");
+  });
   it("is empty for a body without kernels", () => {
     expect(kernelRows({})).toEqual([]);
     expect(kernelRows(null)).toEqual([]);

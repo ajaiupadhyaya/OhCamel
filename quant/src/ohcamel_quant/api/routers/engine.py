@@ -312,7 +312,9 @@ def propagation(path: Annotated[Path, Depends(get_propagation_path)]) -> Any:
     """What each kind of input recomputes, recorded from the real graph.
 
     The recording's own fields (``graph``, ``events``, ``scaling``, ``book``,
-    ``machine``, ``sha``...) with ``provenance`` and ``notes``. 503
+    ``machine``...) with ``provenance`` and ``notes``. The commit the recording was
+    made at (the file's ``sha``) is not served: the public host shows no commit SHA
+    (the owner's ruling, 2026-11-20). 503
     ``{"error": "propagation_unavailable", "detail"}`` when the file is absent
     from this build or invalid.
     """
@@ -325,8 +327,8 @@ def propagation(path: Annotated[Path, Depends(get_propagation_path)]) -> Any:
         return JSONResponse(status_code=503, content={
             "error": "propagation_unavailable", "detail": f"{path.name} is invalid: {e}"})
     return {
-        **body,
-        "provenance": [Provenance.now("docs/perf/propagation.json", sha=body.get("sha")).to_dict()],
+        **{k: v for k, v in body.items() if k != "sha"},
+        "provenance": [Provenance.now("docs/perf/propagation.json").to_dict()],
         "notes": [
             "A recording of the real engine on an example book of real closes, not the live book "
             "and not a simulation. `make propagation` regenerates it.",

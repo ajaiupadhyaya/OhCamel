@@ -26,7 +26,8 @@ export interface EngineStatus extends Envelope {
   ops: {
     mode?: "demo" | "live" | string;
     uptime_s?: number;
-    build?: { git_sha?: string; built_at?: string };
+    // no commit SHA reaches the public app (api/redact.py): only the build time
+    build?: { built_at?: string };
     feed?: { healthy?: boolean; symbols?: number; stale?: number; never_seen?: number };
     stream?: { frames_sent?: number; subscribers?: number };
   } | null;
@@ -110,14 +111,13 @@ export interface HistoryOut extends Envelope {
   history: History;
 }
 
-/** GET /api/engine/vitals: numbers, the mode and a commit hash; nothing from the book. */
+/** GET /api/engine/vitals: numbers and the mode; no commit SHA (api/redact.py), nothing from the book. */
 export interface EngineVitals extends Envelope {
   configured: boolean;
   reachable: boolean;
   book_public: boolean;
   latency_ms: number;
   mode: "demo" | "live" | null;
-  git_sha: string | null;
   uptime_s: number | null;
   stabilize_ms: { n: number | null; p50: number | null; p99: number | null; max: number | null; window: number | null };
   process: { nodes_recomputed: number | null; stabilizes: number | null };
@@ -163,7 +163,6 @@ export interface ScalingRow {
 export interface Recording extends Envelope {
   schema: number;
   generated_at: string;
-  sha: string;
   machine: string;
   ocaml: string;
   samples: number;

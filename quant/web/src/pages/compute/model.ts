@@ -63,7 +63,6 @@ export interface KernelRow {
   rust_1t_ms: number | null;
   rust_2t_ms: number | null;
   measured_on: string | null;
-  sha: string | null;
   /** Python ms / Rust 1-thread ms (below 1: Rust is slower). */
   speedup: number | null;
   /** Rust 1-thread ms / Rust 2-thread ms; null for a single-threaded kernel. */
@@ -156,7 +155,6 @@ export function kernelRows(body: unknown): KernelRow[] {
       rust_1t_ms: r1,
       rust_2t_ms: r2,
       measured_on: typeof k.measured_on === "string" ? k.measured_on : null,
-      sha: typeof k.sha === "string" ? k.sha : null,
       speedup: py != null && r1 ? py / r1 : null,
       scaling: r1 != null && r2 ? r1 / r2 : null,
       engine: eng === "rust" || eng === "python" ? eng : null,

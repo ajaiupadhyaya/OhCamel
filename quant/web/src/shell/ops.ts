@@ -10,6 +10,7 @@ import type { Session } from "./dateline";
 
 export interface OpsOut {
   mode?: string | null;
+  // git_sha: never sent by the public app (api/redact.py); typed for the footer, which shows it only when present
   build?: { git_sha?: string | null; version?: string | null } | null;
   jobs?: { queued?: number; running?: number; done_24h?: number; failed_24h?: number; cpu_seconds_24h?: number } | null;
   /** The session clock, in the same shape the Flight Deck reads from /deck/reading. */

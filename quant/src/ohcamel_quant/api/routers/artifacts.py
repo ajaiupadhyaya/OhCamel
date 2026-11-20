@@ -93,7 +93,10 @@ def _public(kind: str, m: dict[str, Any]) -> dict[str, Any]:
 def _head(m: dict[str, Any]) -> dict[str, Any]:
     # host (completion task 3.7): "burst" for an artifact made on a burst machine against the nightly export and
     # uploaded through the live host's burst door, "worker" for the droplet's own
-    return {"verdict": m.get("verdict"), "verdict_detail": m.get("verdict_detail"), "host": m.get("host", "worker")}
+    # code_sha never leaves the public app (api/redact.py strips the key): passing it here teaches the redaction
+    # which commit to scrub from the notes and provenance served beside it, on every artifact route
+    return {"verdict": m.get("verdict"), "verdict_detail": m.get("verdict_detail"), "host": m.get("host", "worker"),
+            "code_sha": m.get("code_sha")}
 
 
 def _meta(m: dict[str, Any]) -> dict[str, Any]:
