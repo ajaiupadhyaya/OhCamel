@@ -27,6 +27,11 @@ never deleting it. ``schema_version`` is a table like any other, so the migratio
 version. Whether the services are stopped is deploy/restore.sh's question, asked before this runs.
 
 ``python -m ohcamel_quant.warehouse export SRC ROOT [--date D]`` and ``restore EXPORT TARGET [--replace]``.
+
+``export_digest(export_dir)`` (completion task 3.7) names an export by its bytes: the SHA-256 of the sorted
+``name<TAB>sha256`` lines of every regular file in it, export.json included. A burst run records the digest of the
+export it read; the burst door recomputes it from the export the droplet holds and refuses an upload naming one it
+does not hold. deploy/pull-backups.sh copies an export byte for byte, so the laptop's copy has the droplet's digest.
 """
 
 from __future__ import annotations
@@ -194,6 +199,26 @@ def export_warehouse(src: Path, root: Path, *, day: str, jobs_db: Path | None = 
             os.replace(old, final)
         raise
     return final
+
+
+def export_digest(export_dir: Path) -> str:
+    """The SHA-256 of an export's files (module docstring). A subdirectory or a symlink in it is refused: EXPORT
+    DATABASE writes neither, and a link would make the digest name bytes outside the export."""
+    import hashlib
+
+    d = Path(export_dir)
+    lines = []
+    for p in sorted(d.iterdir(), key=lambda q: q.name):
+        if p.is_symlink() or not p.is_file():
+            raise ExportFailed(f"{p} is not a plain file: an export holds only the files EXPORT DATABASE wrote")
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        lines.append(f"{p.name}\t{h.hexdigest()}")
+    if not lines:
+        raise ExportFailed(f"{d} is empty")
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def read_record(export_dir: Path) -> dict[str, Any]:

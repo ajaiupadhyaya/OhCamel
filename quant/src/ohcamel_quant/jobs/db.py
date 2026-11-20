@@ -14,6 +14,9 @@ IF NOT EXISTS). The additive tables:
   result).
 * ``schedule_runs`` one row per (schedule name, scheduled instant): the
   scheduler's idempotency key.
+* ``job_holds``     completion task 3.7: a queued job held for a burst run
+  until ``until``; the worker does not claim it while the hold lasts
+  (queue.hold_for_burst, queue.claim_next).
 
 Timestamps are fixed-width UTC strings (``iso``), so string order is time order.
 """
@@ -60,6 +63,7 @@ CREATE TABLE IF NOT EXISTS job_events (
 CREATE TABLE IF NOT EXISTS job_clients (job_id TEXT PRIMARY KEY, client TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS job_clients_client ON job_clients(client);
 CREATE TABLE IF NOT EXISTS job_readers (job_id TEXT NOT NULL, client TEXT NOT NULL, PRIMARY KEY (job_id, client));
+CREATE TABLE IF NOT EXISTS job_holds (job_id TEXT PRIMARY KEY, held_at TEXT NOT NULL, until TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schedule_runs (
   name TEXT NOT NULL, scheduled_for TEXT NOT NULL, job_id TEXT NOT NULL, enqueued_at TEXT NOT NULL,
   PRIMARY KEY (name, scheduled_for)

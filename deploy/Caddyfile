@@ -52,8 +52,29 @@ import Caddyfile.snippets
 		{$OHCAMEL_LIVE_USER} {$OHCAMEL_LIVE_HASH}
 	}
 
-	reverse_proxy ohcamel-live:8081 {
-		import ohcamel_stream_proxy
+	# The burst door (completion task 3.7, spec R6): a heavy research job run
+	# on another machine against the nightly export uploads its artifact here.
+	# Only this host routes to it, after basic_auth (Caddy orders basic_auth
+	# before handle); the public host's block above has no such route, and the
+	# public app does not mount the door at all. The door also checks an HMAC
+	# on every request and refuses everything while its secret is unset
+	# (quant/src/ohcamel_quant/jobs/burst_door.py). 64MB is its upload cap.
+	handle /burst/* {
+		request_body {
+			max_size 64MB
+		}
+		reverse_proxy ohcamel-burst:8092 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 300s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy ohcamel-live:8081 {
+			import ohcamel_stream_proxy
+		}
 	}
 }
 

@@ -98,7 +98,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     ctx.seed(BOOTSTRAP_SEED, "bootstrap")   # recorded even when no cell runs tonight (Task 3.3)
     budget = float(params.get("budget_minutes", BUDGET_MINUTES)) * 60.0
     t0 = time.monotonic()
-    prev = previous_artifact("farm.sweep", db_path=DB_PATH)
+    # worker_only (task 3.7): the monthly freeze reads the newest worker farm artifact for the desk, so the worker's
+    # farm never carries a burst run's cells forward into it; a burst farm run carries the worker's state forward
+    prev = previous_artifact("farm.sweep", db_path=DB_PATH, worker_only=True)
     cells = read_table(prev[1], "cells") if prev else None
     regimes = read_table(prev[1], "regimes") if prev else None
     trials = read_table(prev[1], "trials") if prev else None

@@ -80,7 +80,7 @@ def newest_farm(db_path: Path | None = None) -> tuple[str | None, pd.DataFrame |
     does not list has none. ``(None, None)`` when no farm artifact exists."""
     from ..products.io import previous_artifact, read_table
 
-    got = previous_artifact("farm.sweep", db_path=db_path if db_path is not None else _db())
+    got = previous_artifact("farm.sweep", db_path=db_path if db_path is not None else _db(), worker_only=True)
     if got is None:
         return None, None
     manifest, path = got
@@ -113,7 +113,7 @@ def _take(key: str, cells: list[Cell], db: Path) -> tuple[pd.DataFrame, str | No
 
     farm_id, farm = newest_farm(db)
     last_key = month_key(_previous_month(date.fromisoformat(key + "-01")))
-    last = previous_artifact(FREEZE_KIND, _phash(last_key), db_path=db)
+    last = previous_artifact(FREEZE_KIND, _phash(last_key), db_path=db, worker_only=True)
     last_rows = read_table(last[1], "params") if last else None
     rows = []
     for c in cells:
@@ -184,7 +184,7 @@ def frozen_params(ctx: Any, *, month: date, cells: list[Cell]) -> tuple[dict[str
 
     db = _db()
     key = month_key(month)
-    got = previous_artifact(FREEZE_KIND, _phash(key), db_path=db)
+    got = previous_artifact(FREEZE_KIND, _phash(key), db_path=db, worker_only=True)
     if got is None:
         if ctx is not None:
             ctx.progress(0.0, f"taking the {key} parameter freeze")
@@ -214,5 +214,5 @@ def freeze_id(month: date) -> str | None:
     traced to the freeze that held them."""
     from ..products.io import previous_artifact
 
-    got = previous_artifact(FREEZE_KIND, _phash(month_key(month)), db_path=_db())
+    got = previous_artifact(FREEZE_KIND, _phash(month_key(month)), db_path=_db(), worker_only=True)
     return None if got is None else str(got[0]["id"])

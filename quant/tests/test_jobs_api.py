@@ -360,3 +360,19 @@ def test_result_of_an_api_job_is_readable_only_by_who_asked_for_it(api, tmp_path
     r = client.get(f"/api/jobs/{jid}/result", headers=ip_c)
     assert r.status_code == 403 and r.json()["error"] == "forbidden" and "ok" not in r.text
     assert client.get(f"/api/jobs/{jid}", headers=ip_c).json()["result_url"] is None
+
+
+def test_a_job_held_for_a_burst_run_is_listed_as_such_and_cannot_be_cancelled_here(api):
+    """Completion task 3.7: the burst door's job (submitted_by 'burst') is public like a scheduled one, says where
+    it runs, and the public API has no way to cancel it or to upload for it."""
+    from ohcamel_quant.jobs.queue import hold_for_burst
+
+    client, db = api
+    job, created, until = hold_for_burst(connect(db), kind="cov.league", params={}, mem_class="M", heavy=True,
+                                         hold_s=600, now=utcnow())
+    assert created and until
+    listed = {j["id"]: j for j in client.get("/api/jobs", params={"kind": "cov.league"}).json()["jobs"]}
+    assert listed[job.id]["submitted_by"] == "burst" and listed[job.id]["params_redacted"] is False
+    assert client.delete(f"/api/jobs/{job.id}", headers=IP_A).status_code == 403
+    assert client.post(f"/api/jobs/{job.id}/artifact", content=b"{}").status_code in (404, 405)
+    assert get_job(connect(db), job.id).state == "queued"

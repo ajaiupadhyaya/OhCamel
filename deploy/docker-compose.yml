@@ -512,6 +512,61 @@ services:
     logging: *logging
     networks: [ohcamel]
 
+  # The burst door (completion task 3.7, spec R6): the ohcamel-quant image
+  # serving `ohcamel-quant burst-door`, a separate app with no other route, so
+  # the public site (ohcamel-quant above) has no write door at all. Caddy
+  # routes /burst/* on the password-gated live host here and nowhere else.
+  # A heavy research job run on another machine against the nightly export
+  # (tools/burst.py) holds its queued job, mirrors the earlier artifacts it
+  # reads, and uploads its artifact here; the door verifies it
+  # (quant/src/ohcamel_quant/jobs/burst_door.py) and publishes it into
+  # /data/artifacts as the worker would, marked host: burst.
+  #
+  # quant_data read-write: jobs.sqlite and the artifact store are what it
+  # writes. The nightly exports read-only at /exports: it computes the digest
+  # of the export an upload names from the bytes the droplet holds, and never
+  # writes there. /etc/ohcamel/burst.env holds OHCAMEL_BURST_SECRET (the HMAC
+  # key; the owner's machine holds the same value) and nothing else -- no
+  # trading or data keys reach this service. Without it the door refuses
+  # every request. Live profile: it belongs to the live host. The batch tier,
+  # after ohcamel-research and before the worker in the OOM order: an upload
+  # is a 64 MB JSON body parsed and its Parquet read in memory, briefly.
+  # Pinned by deploy/test/resource_budget_test.sh.
+  ohcamel-burst:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
+    restart: unless-stopped
+    init: true
+    profiles: ["live"]
+    command: ["burst-door", "--port", "8092"]
+    env_file:
+      - path: /etc/ohcamel/burst.env
+        required: false
+    environment:
+      OHCAMEL_QUANT_DATA_DIR: /data
+      OHCAMEL_QUANT_OFFLINE: "1"
+      OHCAMEL_QUANT_RECORDER: "0"
+      OHCAMEL_BURST_EXPORTS: /exports
+    volumes:
+      - quant_data:/data
+      - "${OHCAMEL_BACKUP_DIR:-/var/backups/ohcamel}/warehouse:/exports:ro"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cgroup_parent: ohcamel-batch.slice
+    cpu_shares: 128
+    mem_limit: 384m
+    oom_score_adj: 700
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/burst/health', timeout=4)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *logging
+    networks: [ohcamel]
+
   # The nightly backup's container (finish plan ruling 11, Task 14), behind
   # profile "backup" so no `up` ever starts it: deploy/backup.sh runs it once
   # per line of deploy/backup.list, as `docker compose --profile backup run

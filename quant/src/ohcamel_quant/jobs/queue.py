@@ -3,15 +3,24 @@
 Every state change appends a ``job_events`` row (the SSE stream's source).
 ``claim_next`` is one ``UPDATE ... RETURNING`` inside ``BEGIN IMMEDIATE``, so
 two claimers can never take the same job.
+
+Burst (completion task 3.7, spec R6): ``hold_for_burst`` holds a queued job of a burstable kind for a run on
+another machine (creating it, ``submitted_by='burst'``, when none is live); ``claim_next`` skips a held job until
+its hold expires, and never claims a job the burst door created. ``publish_burst`` is the door's one write: in one
+transaction it checks the job is still queued with the same kind and params, renames the verified artifact into
+place and marks the job done. ``expire_holds`` (worker housekeeping) cancels a burst-created job whose hold ran out
+with nothing uploaded; a held scheduled job simply goes back to the worker.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .db import iso, tx
@@ -123,12 +132,16 @@ def claim_next(conn: sqlite3.Connection, *, allowed_classes: frozenset[str] | se
         return None
     marks = ",".join("?" * len(classes))
     with tx(conn):
+        # completion task 3.7: a job held for a burst run waits out its hold; one the burst door created is never
+        # the worker's (it exists only for the upload, and is cancelled when its hold expires)
         rows = conn.execute(
             f"UPDATE jobs SET state='running', started_at=?, attempts=attempts+1"
-            f" WHERE id = (SELECT id FROM jobs WHERE state='queued' AND mem_class IN ({marks})"
-            f"             AND (heavy = 0 OR ?) ORDER BY priority, submitted_at, id LIMIT 1)"
+            f" WHERE id = (SELECT j.id FROM jobs j WHERE j.state='queued' AND j.mem_class IN ({marks})"
+            f"             AND (j.heavy = 0 OR ?) AND j.submitted_by != 'burst'"
+            f"             AND NOT EXISTS (SELECT 1 FROM job_holds h WHERE h.job_id = j.id AND h.until > ?)"
+            f"             ORDER BY j.priority, j.submitted_at, j.id LIMIT 1)"
             f" RETURNING *",
-            (iso(now), *classes, 1 if allow_heavy else 0)).fetchall()  # fetchall: finish the statement before COMMIT
+            (iso(now), *classes, 1 if allow_heavy else 0, iso(now))).fetchall()  # fetchall: finish before COMMIT
         if not rows:
             return None
         job = Job.from_row(rows[0])
@@ -256,6 +269,101 @@ def requeue_stale(conn: sqlite3.Connection, *, now: datetime, stale_after_s: flo
                 conn.execute("UPDATE jobs SET state='queued', started_at=NULL, error=? WHERE id=?", (err, r["id"]))
                 _event(conn, r["id"], "queued", now, None, err)
                 out.append((r["id"], "queued"))
+    return out
+
+
+# --- burst (completion task 3.7) -----------------------------------------------------------------------------------
+
+BURST_EXPIRED = "burst hold expired: no artifact was uploaded for this burst job, so it was cancelled (the worker " \
+                "never runs a job the burst door created)"
+
+
+def hold_for_burst(conn: sqlite3.Connection, *, kind: str, params: dict[str, Any], mem_class: str, heavy: bool,
+                   hold_s: float, now: datetime) -> tuple[Job, bool, str | None]:
+    """Hold the live job with this (kind, params) for a burst run until ``now + hold_s``, creating it
+    (``submitted_by='burst'``, priority 2) when none is live. -> (job, created, until); ``until`` is None and
+    nothing is held when the worker is already running the job."""
+    if mem_class not in MEM_CLASSES:
+        raise ValueError(f"mem_class must be one of {MEM_CLASSES}")
+    text = canonical_params(params)
+    phash = hashlib.sha256(text.encode()).hexdigest()
+    until = iso(now + timedelta(seconds=float(hold_s)))
+    with tx(conn):
+        job = find_live(conn, kind, phash)
+        created = False
+        if job is not None and job.state == "running":
+            return job, False, None
+        if job is None:
+            jid = new_ulid(int(now.timestamp() * 1000))
+            conn.execute(
+                "INSERT INTO jobs (id, kind, params, params_hash, priority, mem_class, heavy, state, submitted_at,"
+                " attempts, submitted_by) VALUES (?,?,?,?,2,?,?,'queued',?,0,'burst')",
+                (jid, kind, text, phash, mem_class, 1 if heavy else 0, iso(now)))
+            created = True
+            job = _get(conn, jid)
+            assert job is not None
+        conn.execute("INSERT INTO job_holds (job_id, held_at, until) VALUES (?,?,?)"
+                     " ON CONFLICT(job_id) DO UPDATE SET held_at=excluded.held_at, until=excluded.until",
+                     (job.id, iso(now), until))
+        _event(conn, job.id, "queued", now, None, f"held for a burst run until {until}")
+    return job, created, until
+
+
+def publish_burst(conn: sqlite3.Connection, job_id: str, *, kind: str, params_hash_: str, staging: Path,
+                  root: Path, manifest: dict[str, Any], cpu_seconds: float | None, peak_rss_bytes: int | None,
+                  now: datetime) -> tuple[bool, str]:
+    """The burst door's write. In one transaction: the job must still be queued with ``kind`` and
+    ``params_hash_``; the verified staging directory is published (artifacts.publish: manifest written, renamed
+    into ``root/<kind>/<id>``), the artifact row inserted, the job marked done and its hold dropped. -> (published,
+    the job's state). ``started_at`` stays NULL: the run happened elsewhere (its times are in the manifest's
+    ``burst`` block), so the droplet's wall-times report never counts it."""
+    from .artifacts import publish
+
+    with tx(conn):
+        job = _get(conn, job_id)
+        if job is None:
+            return False, "missing"
+        if job.state != "queued" or job.kind != kind or job.params_hash != params_hash_:
+            return False, job.state
+        final = Path(root) / job.kind / job.id
+        if final.exists() and conn.execute("SELECT 1 FROM artifacts WHERE id = ?", (job.id,)).fetchone() is None:
+            shutil.rmtree(final)                 # an earlier attempt's leftover: no row names it
+        final = publish(staging, Path(root), job, manifest)
+        try:
+            conn.execute("INSERT INTO artifacts (id, kind, params_hash, finished_at, path, data_asof)"
+                         " VALUES (?,?,?,?,?,?)", (job.id, job.kind, job.params_hash, manifest["finished_at"],
+                                                   str(final), manifest.get("data_asof")))
+            conn.execute("UPDATE jobs SET state='done', started_at=NULL, finished_at=?, artifact_id=?, cpu_seconds=?,"
+                         " peak_rss_bytes=?, error=NULL WHERE id=?",
+                         (iso(now), job.id, cpu_seconds, peak_rss_bytes, job.id))
+            conn.execute("DELETE FROM job_holds WHERE job_id = ?", (job.id,))
+            _event(conn, job.id, "done", now, 1.0, "published from a burst run (host: burst)")
+        except BaseException:
+            shutil.rmtree(final, ignore_errors=True)
+            raise
+    return True, "done"
+
+
+def expire_holds(conn: sqlite3.Connection, *, now: datetime) -> list[tuple[str, str]]:
+    """Holds whose time is up, or whose job is no longer queued, are dropped. A burst-created job left queued
+    without a live hold is cancelled with ``BURST_EXPIRED``. -> [(job id, 'cancelled' | 'released')]."""
+    out: list[tuple[str, str]] = []
+    with tx(conn):
+        rows = conn.execute(
+            "SELECT h.job_id, j.state, j.submitted_by FROM job_holds h LEFT JOIN jobs j ON j.id = h.job_id"
+            " WHERE h.until <= ? OR j.state IS NULL OR j.state != 'queued'", (iso(now),)).fetchall()
+        for r in rows:
+            conn.execute("DELETE FROM job_holds WHERE job_id = ?", (r["job_id"],))
+            if r["state"] == "queued" and r["submitted_by"] != "burst":
+                out.append((r["job_id"], "released"))
+        orphans = conn.execute(
+            "SELECT id FROM jobs WHERE state = 'queued' AND submitted_by = 'burst'"
+            " AND NOT EXISTS (SELECT 1 FROM job_holds h WHERE h.job_id = jobs.id)").fetchall()
+        for r in orphans:
+            conn.execute("UPDATE jobs SET state='cancelled', finished_at=?, error=? WHERE id=?",
+                         (iso(now), BURST_EXPIRED, r["id"]))
+            _event(conn, r["id"], "cancelled", now, None, BURST_EXPIRED)
+            out.append((r["id"], "cancelled"))
     return out
 
 

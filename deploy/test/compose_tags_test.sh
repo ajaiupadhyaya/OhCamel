@@ -158,12 +158,14 @@ A="$scratch/A.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef)
 if render "$A" "$scratch/A.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
 	ok "A1 base + live renders at OHCAMEL_TAG=deadbeef"
-	# 7 = caddy + ohcamel-quant + ohcamel-hostd + ohcamel-worker + signals-init (default profile) +
-	# ohcamel-live + ohcamel-research (live); ohcamel-worker runs the ohcamel-quant image and
-	# signals-init the engine image, so each of those refs appears twice.
-	expect_images "A2 the seven live-profile images are caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker; engine twice: signals-init)" "$A" \
+	# 8 = caddy + ohcamel-quant + ohcamel-hostd + ohcamel-worker + signals-init (default profile) +
+	# ohcamel-live + ohcamel-research + ohcamel-burst (live); ohcamel-worker and ohcamel-burst run
+	# the ohcamel-quant image and signals-init the engine image, so quant appears three times and
+	# the engine twice.
+	expect_images "A2 the eight live-profile images are caddy 2.11.4 and the four ghcr refs at :deadbeef (quant thrice: the worker and the burst door; engine twice: signals-init)" "$A" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
@@ -200,9 +202,10 @@ fi
 C="$scratch/C.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef OHCAMEL_IMAGE=registry.example/mirror/ohcamel)
 if render "$C" "$scratch/C.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
-	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone (ohcamel-live and signals-init); research, quant (and the worker) and hostd stay on ghcr" "$C" \
+	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone (ohcamel-live and signals-init); research, quant (and the worker and the burst door) and hostd stay on ghcr" "$C" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
@@ -271,14 +274,16 @@ if render "$E" "$scratch/E.err" --env-file "$harness_env" -f "$base" -f "$local_
 	else
 		ok "E3 caddy has no build block"
 	fi
-	# 8 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-hostd,
-	# ohcamel-worker, signals-init, ohcamel-demo, ohcamel-live, ohcamel-research
-	# -- the engine ref three times (the two engine services expand the same
-	# anchor, and signals-init runs the engine image as root), and the quant
-	# ref twice, because ohcamel-worker runs the ohcamel-quant image.
+	# 9 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-hostd,
+	# ohcamel-worker, signals-init, ohcamel-demo, ohcamel-live, ohcamel-research,
+	# ohcamel-burst -- the engine ref three times (the two engine services expand
+	# the same anchor, and signals-init runs the engine image as root), and the
+	# quant ref three times, because ohcamel-worker and ohcamel-burst run the
+	# ohcamel-quant image.
 	expect_images "E4 the harness runs the four ghcr refs at :local and caddy 2.11.4" "$E" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:local \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:local \
@@ -334,9 +339,10 @@ fi
 FL="$scratch/FL.yml"
 if render "$FL" "$scratch/FL.err" --env-file "$harness_env" -f "$base" -f "$ci_yml" --profile live; then
 	ok "F2 base + ci renders, live profile, with no /etc/ohcamel and no scratch override"
-	expect_images "F3 the ci override runs caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker; engine twice: signals-init)" "$FL" \
+	expect_images "F3 the ci override runs caddy 2.11.4 and the four ghcr refs at :deadbeef (quant thrice: the worker and the burst door; engine twice: signals-init)" "$FL" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
@@ -430,7 +436,7 @@ fi
 
 # --- H. json-file, 10m x 3, on every long-running service, caddy included ---
 if [ -s "$A" ]; then
-	for svc in caddy ohcamel-quant ohcamel-hostd ohcamel-worker ohcamel-live ohcamel-research; do
+	for svc in caddy ohcamel-quant ohcamel-hostd ohcamel-worker ohcamel-live ohcamel-research ohcamel-burst; do
 		block=$(service_block "$A" "$svc")
 		if echo "$block" | grep -q 'driver: json-file' \
 			&& echo "$block" | grep -qE 'max-size: "?10m"?' \

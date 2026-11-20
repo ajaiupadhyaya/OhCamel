@@ -91,6 +91,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 .PHONY: factor kronos-test kronos-forecast kronos-score all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench propagation coverage fmt clean deps doctor \
         check-counts \
         quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image hostd-image kernels-dev \
+        research-burst \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
@@ -378,6 +379,20 @@ quant-web:
 # (online: real vendors, cached under quant/.data).
 quant-serve: quant-web
 	cd quant && uv sync --frozen && uv run --frozen ohcamel-quant serve --port $(QUANT_PORT)
+
+# Burst research (completion task 3.7, spec R6): one heavy job -- farm.sweep,
+# models.xs_lgbm, cov.league or risk.mc_atlas -- run on THIS machine against the
+# droplet's newest nightly export (pulled by deploy/pull-backups.sh), with every
+# core, and its artifact uploaded through the live host's burst door as a
+# `host: burst` artifact. DRY_RUN=1 runs it here and stops before the droplet:
+# nothing is held or uploaded. The live host's URL, basic auth and the door's
+# HMAC key come from your environment, never this file:
+#   make research-burst KIND=cov.league PARAMS='{}' DRY_RUN=1
+# Everything it does, and refuses, is docs/runbooks/burst.md.
+research-burst:
+	@test -n "$(KIND)" || { echo "usage: make research-burst KIND=<kind> PARAMS='<json>' [DRY_RUN=1]" >&2; exit 2; }
+	cd quant && uv run --frozen python $(CURDIR)/tools/burst.py --kind '$(KIND)' --params '$(or $(PARAMS),{})' \
+	  $(if $(DRY_RUN),--dry-run,)
 
 # The production image, from the repository root (it bakes in fixtures/ and
 # docs/crisis/), tagged for the localhost harness (LOCAL_TAG, below). The

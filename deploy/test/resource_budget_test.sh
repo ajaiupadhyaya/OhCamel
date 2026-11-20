@@ -75,6 +75,7 @@ want = {  # service: (slice, cpu_shares, mem bytes, oom_score_adj)
     "ohcamel-research": ("ohcamel-batch.slice",  256,  384 * 2**20,  500),
     "ohcamel-hostd":    ("ohcamel-web.slice",   1024,   32 * 2**20, -500),
     "ohcamel-worker":   ("ohcamel-batch.slice",  128, 1280 * 2**20,  800),
+    "ohcamel-burst":    ("ohcamel-batch.slice",  128,  384 * 2**20,  700),
 }
 bad = []
 for name, (slice_, shares, mem, oom) in want.items():
@@ -114,9 +115,17 @@ if ("quant_data", "/data", False) not in vols:
 if parse_dur(worker.get("stop_grace_period")) < 25:
     bad.append(f"ohcamel-worker: stop_grace_period {worker.get('stop_grace_period')}, want >= 25s "
                "(SIGTERM gives a running job 15 s, plus the child's terminate/kill)")
+burst = svc.get("ohcamel-burst", {})
+if burst.get("command") != ["burst-door", "--port", "8092"]:
+    bad.append(f"ohcamel-burst: command {burst.get('command')}, want ['burst-door', '--port', '8092']")
+bvols = [(v.get("source"), v.get("target"), bool(v.get("read_only", False))) for v in burst.get("volumes", [])]
+if ("quant_data", "/data", False) not in bvols or not any(t == "/exports" and ro for _, t, ro in bvols):
+    bad.append(f"ohcamel-burst: volumes {bvols}, want quant_data at /data and the exports read-only at /exports")
+if burst.get("profiles") != ["live"]:
+    bad.append(f"ohcamel-burst: profiles {burst.get('profiles')}, want ['live'] (the live host's door)")
 ooms = {n: svc[n].get("oom_score_adj", 0) for n in svc if n in want}
 if not (ooms.get("ohcamel-live", 0) < ooms.get("ohcamel-quant", 0) < ooms.get("ohcamel-research", 0)
-        < ooms.get("ohcamel-worker", 0)):
+        < ooms.get("ohcamel-burst", 0) < ooms.get("ohcamel-worker", 0)):
     bad.append(f"OOM order wrong: {ooms}")
 if bad:
     print("resource_budget_test: FAIL"); print("\n".join("  " + b for b in bad)); sys.exit(1)

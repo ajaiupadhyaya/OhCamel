@@ -91,7 +91,9 @@ def _public(kind: str, m: dict[str, Any]) -> dict[str, Any]:
 
 
 def _head(m: dict[str, Any]) -> dict[str, Any]:
-    return {"verdict": m.get("verdict"), "verdict_detail": m.get("verdict_detail")}
+    # host (completion task 3.7): "burst" for an artifact made on a burst machine against the nightly export and
+    # uploaded through the live host's burst door, "worker" for the droplet's own
+    return {"verdict": m.get("verdict"), "verdict_detail": m.get("verdict_detail"), "host": m.get("host", "worker")}
 
 
 def _meta(m: dict[str, Any]) -> dict[str, Any]:

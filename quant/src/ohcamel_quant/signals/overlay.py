@@ -223,7 +223,7 @@ def exposure_scale(vol_target: float, vol_forecast: float) -> float:
 def _latest(kind: str, now: datetime, notes: list[str]) -> tuple[dict[str, Any], Path] | None:
     from ..products.io import latest_with_path
 
-    got = latest_with_path(kind, now=now, db_path=_db())
+    got = latest_with_path(kind, now=now, db_path=_db(), worker_only=True)  # never a burst artifact (task 3.7)
     if got is None:
         return None
     manifest, path, stale = got
@@ -315,7 +315,7 @@ def _sequence(signals_dir: Path) -> int:
     from ..products.io import previous_artifact, read_table
 
     prev = 0
-    got = previous_artifact(KIND, db_path=_db())
+    got = previous_artifact(KIND, db_path=_db(), worker_only=True)
     if got is not None:
         t = read_table(got[1], "overlay")
         if t is not None and len(t):

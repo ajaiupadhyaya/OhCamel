@@ -1,6 +1,6 @@
 """The worker process: ``python -m ohcamel_quant worker`` (compose service ohcamel-worker).
 
-One job at a time. Each poll: housekeeping every minute (stale re-queue, SSE
+One job at a time. Each poll: housekeeping every minute (stale re-queue, expired burst holds, SSE
 events older than 48 h, abandoned staging dirs), stamp the heartbeat file (the
 compose healthcheck), ask admission, claim, run in a child, settle -- and
 after each published artifact, prune its kind (II.3 retention). A run past its kind's wall limit (completion task
@@ -30,6 +30,7 @@ from .kinds import UnknownKind, get_kind, retries_for, wall_limit_for
 from .queue import (
     Job,
     claim_next,
+    expire_holds,
     fail,
     finish,
     heartbeat,
@@ -78,6 +79,8 @@ class Worker:
     def _housekeeping(self) -> None:
         for job_id, state in requeue_stale(self.conn, now=self.now()):
             log.warning("stale job %s -> %s", job_id, state)
+        for job_id, state in expire_holds(self.conn, now=self.now()):   # completion task 3.7: burst holds
+            log.info("burst hold on %s expired -> %s", job_id, state)
         prune_housekeeping(self.conn, self.cfg.artifacts_root, now=self.now())
 
     def run_once(self) -> Outcome | None:

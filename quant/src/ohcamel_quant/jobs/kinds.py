@@ -33,6 +33,9 @@ class KindSpec:
     draws_random: bool = False
     #: Completion task 3.6: an L kind's compute budget in seconds (its wall limit is this plus WALL_MARGIN_S).
     budget_s: int | None = None
+    #: Completion task 3.7 (spec R6): the kind may run on a burst machine against the nightly warehouse export and
+    #: have its artifact uploaded through the burst door (jobs/burst_door.py). Only the four heavy research kinds.
+    burstable: bool = False
 
     @property
     def retries(self) -> int:
@@ -143,17 +146,22 @@ for _kind, _mem, _heavy in (("ingest.universes", "S", False), ("ingest.bars_dail
 
 # Lane M's products (compute plan M2-M8; ship plan Lane M). Private: scheduled only.
 _P = "ohcamel_quant.products"
+# burstable (completion task 3.7, spec R6): the four heavy research kinds may run on a burst machine against the
+# nightly export (tools/burst.py) and publish through the burst door. The desk's readers (signals/: the overlay
+# reads cov.league and risk.mc_atlas, the monthly freeze reads farm.sweep) look artifacts up worker_only, so a
+# burst artifact (manifest host: burst) never reaches the book.
 # draws_random (Task 3.3): Monte Carlo paths, bootstraps, MCS/SPA resampling, LightGBM, HMM restarts, Kronos
 # sampling -- each records the seed it already used (none was changed).
-register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True, draws_random=True))
+register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True, draws_random=True, burstable=True))
 register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False, draws_random=True))
 register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True, draws_random=True))
-register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True))
+register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True, burstable=True))
 # farm.sweep's budget is products/farm.py's BUDGET_MINUTES (90; this module must not import pandas, so the number
 # is restated and tests/test_jobs_worker.py holds the two equal).
-register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=True, budget_s=5400))
+register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=True, budget_s=5400,
+                  burstable=True))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
-register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True, draws_random=True))
+register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True, draws_random=True, burstable=True))
 register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True, draws_random=True))
 # 2026-10-19 (docs/superpowers/plans/2026-10-19-kronos-qlib-rdagent.md): Kronos in prospective shadow (EXP-K01's
 # design; torch runs in research/kronos's own venv, a subprocess), the owner's factor ledger re-screened on the
