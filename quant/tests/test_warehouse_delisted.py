@@ -457,3 +457,24 @@ def test_a_reuser_inside_the_window_is_cut_off_at_the_gap():
     assert none is None and same.equals(raw)
     early, none = delisted.cut_at_gap(gapped, date(2020, 9, 8))  # the gap ends before the exit: not this one
     assert none is None and early.equals(gapped)
+
+
+# ------------------------------------------------------------------ fix round 3
+def test_a_series_with_no_bar_on_or_before_the_date_fails():
+    """N3a: a series that starts after the last trading date is not the company's prices up to its delisting."""
+    days = [d.date() for d in pd.bdate_range("2008-09-18", "2008-10-17")]
+    ok, why = accept.judge(date(2008, 9, 17), days)
+    assert ok is False and "on or before the last trading date" in why
+
+
+def test_a_continuous_run_on_passes_for_a_failure_and_fails_for_an_acquisition():
+    """N3b: the same company carries on over the counter only after a failure; an acquired company's code never
+    continues, so prints more than 5 weekdays past the date fail for an acquisition."""
+    days = [d.date() for d in pd.bdate_range("2008-09-02", "2008-10-15")]
+    ok, why = accept.judge(date(2008, 9, 17), days, kind="failure")
+    assert ok is True and "ran on" in why
+    ok, why = accept.judge(date(2008, 9, 17), days, kind="acquisition")
+    assert ok is False and "acquisition" in why and "2008-10-15" in why
+    # an acquisition whose prints stop within tolerance past the date still passes
+    near = [d.date() for d in pd.bdate_range("2008-09-02", "2008-09-22")]
+    assert accept.judge(date(2008, 9, 17), near, kind="acquisition")[0] is True

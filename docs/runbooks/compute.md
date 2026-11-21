@@ -425,10 +425,12 @@ It is `tools/accept_delisted.py` (the image has no `tools/` directory, so on the
 asks EODHD for each of the 26 known failures and acquisitions in
 `quant/src/ohcamel_quant/warehouse/delisted_acceptance.csv` (Lehman, Bear Stearns, Washington Mutual, SVB, First
 Republic, Bed Bath & Beyond and twenty more, each with its last trading date and the notice it came from), 26
-requests, under a minute. A name passes when it has a bar within 5 weekdays of its last trading date. Prints after
-the date are fine when they continue without a gap -- the same company carrying on, as when the vendor stitches the
-over-the-counter continuation onto the exchange code (the verdict says it ran on) -- and fail when they resume after
-a gap of more than 5 weekdays (another company under the code). It prints one PASS/FAIL line per name. At 24 of 26
+requests, under a minute. A name passes when it has a bar within 5 weekdays of its last trading date (a series with
+no bar on or before that date fails). For a failure, prints after the date are fine when they continue without a gap
+-- the same company carrying on, as when the vendor stitches the over-the-counter continuation onto the exchange code
+(the verdict says it ran on); for an acquisition, whose ticker never continues, prints running more than 5 weekdays
+past the date fail. Prints that resume after a gap of more than 5 weekdays fail for both (another company under the
+code). It prints one PASS/FAIL line per name. At 24 of 26
 or better it prints ACCEPTED, records `accepted_at` in the warehouse and exits 0; otherwise NOT ACCEPTED, exit 1,
 nothing recorded. **Exit 3, "PASSED, NOT RECORDED"**, means the names passed but the warehouse stayed busy past the
 writer's 30-second wait (an ingest was writing): it is not a failure -- run the command again, away from the 18:20-19:15
