@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2362<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2379<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -276,9 +276,10 @@ From the Ship spec (`superpowers/specs/2026-10-05-the-ship-design.md` §2); each
   that brings a warehouse migration* says ([runbooks/compute.md](runbooks/compute.md)). 006 (completion task 3.8)
   is instant; rerun `ingest.universes` after it so the membership carries the rename map.
 - **Delisted names (R5, completion task 3.8): a spending decision, not taken.** EODHD All-World, about $20 a month,
-  is built behind `OHCAMEL_DELISTED_SOURCE`, off. Single-name backtests over index members stay refused until the
-  owner subscribes, runs the acceptance test on the key and it passes (runbook, *Delisted names*). One test skips,
-  BLOCKED, until a recorded delisted-ticker response is committed with the same key.
+  is built behind `OHCAMEL_DELISTED_SOURCE`, off. Backtests over dated index membership are refused until the owner
+  subscribes, the acceptance test passes on the key and 95% of the S&P 500's exits since 2011 have prices to the exit
+  (runbook, *Delisted names*). Hand-picked baskets of single names still run and are labelled as survivors chosen
+  with hindsight. One test skips, BLOCKED, until a recorded delisted-ticker response is committed with the same key.
 
 ---
 

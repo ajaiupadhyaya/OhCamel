@@ -139,3 +139,31 @@ def test_http_log_lines_never_carry_a_key():
     for f in logging.getLogger("httpx").filters:
         f.filter(rec)
     assert "abc123" not in rec.getMessage() and "api_token=***" in rec.getMessage()
+
+
+@respx.mock
+@pytest.mark.parametrize("which", ["fred", "eodhd"])
+def test_no_key_reaches_a_log_record_or_an_exception(monkeypatch, caplog, which):
+    """M2: the shared HTTP layer's own retry log and its errors carry the vendor's words, scrubbed of every key:
+    by parameter name and by the key's literal value, wherever the vendor echoes it."""
+    import logging
+
+    from ohcamel_quant.data import fred
+
+    monkeypatch.setattr(http, "_sleep", lambda s: None)
+    http.reset_rate_limits()
+    secret = "s3cr3t-value-0123456789"
+    body = f"bad request api_key={secret} api_token={secret} echoed {secret}"
+    respx.get(url__regex=r"https://(api\.stlouisfed\.org|eodhd\.com)/.*").mock(
+        side_effect=[httpx.Response(503, text=body), httpx.Response(400, text=body)])
+    caplog.set_level(logging.DEBUG)
+    s = Settings(offline=False, http_retries=1, FRED_API_KEY=secret, EODHD_API_KEY=secret)
+    with pytest.raises(DataUnavailable) as e:
+        if which == "fred":
+            http.get_json("https://api.stlouisfed.org/fred/series/observations", s,
+                          params={"series_id": "UNRATE", "api_key": secret, "file_type": "json"}, source="fred-api")
+        else:
+            eodhd.bars("LEH", date(2008, 9, 1), date(2008, 9, 30), delisted=True, settings=s)
+    assert secret not in str(e.value)
+    assert caplog.records and not [r for r in caplog.records if secret in r.getMessage()]
+    assert fred  # the FRED client passes its key the same way (data/fred.py)

@@ -4,7 +4,7 @@ names from SEC company_tickers where it lists the ticker. Each universe is
 replaced whole in one transaction. Completion task 3.5: in the same transaction, a
 universe whose changes table is committed (sp500) has its dated stints replaced in
 ``universe_membership`` (``constituents.membership_intervals``). Completion task 3.8: the walk applies the committed
-rename map (``constituents/sp500_renames.csv``), and each row carries its company's price series (``series``)."""
+rename map (``constituents/sp500_renames.csv``), and each row's company's price series goes to ``membership_series``."""
 
 from __future__ import annotations
 
@@ -77,9 +77,11 @@ def write_membership(con: Any, universe: str) -> tuple[int, list[str]]:
     if frame.empty:
         return 0, notes
     con.execute("DELETE FROM universe_membership WHERE universe = ?", [universe])
-    insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source, series) SELECT '
-                      'universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), source, series FROM incoming',
-                 frame)
+    con.execute("DELETE FROM membership_series WHERE universe = ?", [universe])
+    insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source) SELECT '
+                      'universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), source FROM incoming', frame)
+    insert_frame(con, 'INSERT INTO membership_series (universe, ticker, "start", "end", series) SELECT '
+                      'universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), series FROM incoming', frame)
     as_of = load_constituents(universe).as_of
     log_row(con, "universe_membership", universe, "ok", len(frame),
             f'{{"stints": {len(frame)}, "unplaced_rows": {len(notes)}}}', as_of)

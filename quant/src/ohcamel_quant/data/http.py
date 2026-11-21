@@ -42,9 +42,20 @@ SECRET_PARAMS = ("api_token", "api_key", "apikey", "token")
 _SECRET_RE = re.compile(r"((?:" + "|".join(SECRET_PARAMS) + r")=)[^&\s\"']+", re.I)
 
 
-def scrub(text: str) -> str:
-    """``text`` with the value of every credential query parameter replaced by ``***``."""
-    return _SECRET_RE.sub(r"\1***", text)
+def scrub(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """``text`` with the value of every credential query parameter replaced by ``***``, and every literal value in
+    ``secrets`` too (a vendor may echo a key without its parameter name)."""
+    out = _SECRET_RE.sub(r"\1***", text)
+    for v in secrets:
+        if v:
+            out = out.replace(v, "***")
+    return out
+
+
+def _secrets(params: dict[str, Any] | None) -> tuple[str, ...]:
+    """The credential values among a request's parameters (``SECRET_PARAMS``), longest first."""
+    vals = [str(v) for k, v in (params or {}).items() if str(k).lower() in SECRET_PARAMS and v]
+    return tuple(sorted(vals, key=len, reverse=True))
 
 
 class _ScrubSecrets(logging.Filter):
@@ -186,6 +197,7 @@ def request(
     interval = HOST_MIN_INTERVAL.get(host, DEFAULT_MIN_INTERVAL) if min_interval is None else min_interval
     n_retries = settings.http_retries if retries is None else retries
     c = client(settings)
+    keys = _secrets(params)       # completion task 3.8 fix round 1 (M2): never in a log line or an error
     last_err = "unknown error"
     last_status: int | None = None
     for attempt in range(n_retries + 1):
@@ -193,7 +205,7 @@ def request(
         try:
             resp = c.request(method, url, params=params, headers=headers, json=json)
         except httpx.TransportError as e:  # connect/read timeouts, resets, DNS
-            last_err, last_status = f"{type(e).__name__}: {e}", None
+            last_err, last_status = scrub(f"{type(e).__name__}: {e}", keys), None
             if attempt < n_retries:
                 d = backoff_delay(attempt)
                 log.info("%s: %s; retry %d in %.2fs", label, last_err, attempt + 1, d)
@@ -203,7 +215,7 @@ def request(
         if resp.status_code < 400:
             return resp
         last_status = resp.status_code
-        last_err = f"HTTP {resp.status_code}" + (f": {_excerpt(resp)}" if _excerpt(resp) else "")
+        last_err = scrub(f"HTTP {resp.status_code}" + (f": {_excerpt(resp)}" if _excerpt(resp) else ""), keys)
         if resp.status_code in RETRY_STATUS and attempt < n_retries:
             d = backoff_delay(attempt, resp.headers.get("Retry-After"))
             log.info("%s: %s; retry %d in %.2fs", label, last_err, attempt + 1, d)
@@ -225,7 +237,8 @@ def get_json(url: str, settings: Settings, **kw: Any) -> Any:
         return resp.json()
     except ValueError as e:
         raise FetchError(
-            f"{kw.get('source') or urlsplit(url).netloc}: response is not JSON ({_excerpt(resp, 80)})",
+            f"{kw.get('source') or urlsplit(url).netloc}: response is not JSON "
+            f"({scrub(_excerpt(resp, 80), _secrets(kw.get('params')))})",
             status=resp.status_code, url=url,
         ) from e
 

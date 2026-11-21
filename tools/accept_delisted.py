@@ -2,10 +2,13 @@
 """The delisted-names acceptance test (completion task 3.8, spec R5): ask the delisted-names source for each of the
 26 known failures and acquisitions in quant/src/ohcamel_quant/warehouse/delisted_acceptance.csv and, when at least 24
 come back with prices up to their last trading date, record ``accepted_at`` in the warehouse and exit 0. Otherwise
-exit 1 and record nothing. Single-name research stays refused until this has passed on the owner's key.
+exit 1 and record nothing. Backtests over dated index membership stay refused until this has passed on the owner's
+key.
 
-    cd quant && OHCAMEL_DELISTED_SOURCE=eodhd EODHD_API_KEY=... OHCAMEL_QUANT_WAREHOUSE_PATH=... \\
-        uv run --frozen python ../tools/accept_delisted.py
+    cd quant && EODHD_API_KEY=... OHCAMEL_QUANT_WAREHOUSE_PATH=... uv run --frozen python ../tools/accept_delisted.py
+
+It needs the key only, not OHCAMEL_DELISTED_SOURCE: run it before the switch goes on, so a failure leaves the
+switch off. Exit 0 accepted and recorded, 1 not accepted, 2 not configured, 3 passed but not recorded (warehouse busy: run again).
 
 On the droplet the image has no tools/ directory; the same code runs as
 ``dc exec ohcamel-worker python -m ohcamel_quant.warehouse accept-delisted`` (docs/runbooks/compute.md, Delisted

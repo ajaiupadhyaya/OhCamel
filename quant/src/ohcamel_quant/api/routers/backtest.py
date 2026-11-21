@@ -189,6 +189,23 @@ class Prepared:
     notes: list[str]
     tickers: list[str]
     start: pd.Timestamp | None
+    survivorship: str | None = None
+
+
+def survivorship_label(tickers: list[str]) -> str | None:
+    """The label every result over a hand-picked basket carries (completion task 3.8, fix round 1): None when every
+    ticker is one of the site's universes.json instruments (ETFs, indices and two cryptocurrencies that existed
+    throughout); otherwise the names that are not, and why a backtest on them overstates what was achievable.
+    Backtests over dated index membership, which hold the names that left, are ``engine.run_members_backtest``."""
+    known = {m["ticker"].upper() for u in load_universes().get("universes", {}).values() for m in u["members"]}
+    picked = [t for t in dict.fromkeys(x.upper() for x in tickers) if t not in known]
+    if not picked:
+        return None
+    return (f"Survivorship: {', '.join(picked)} {'is a name' if len(picked) == 1 else 'are names'} picked today, so "
+            f"{'it is a survivor' if len(picked) == 1 else 'they are survivors'} chosen with hindsight: companies that "
+            "failed or were delisted are not in this basket, and this result overstates what was achievable. Backtests "
+            "over dated index membership, which hold the names that left, stay refused until the delisted-names "
+            "source passes its acceptance test.")
 
 
 def _resolve_tickers(body: BacktestIn, spec: StrategySpec) -> list[str]:
@@ -256,7 +273,8 @@ def _prepare(body: BacktestIn, market: MarketData) -> Prepared:
     tickers = _resolve_tickers(body, spec)
     params = validate_params(spec, body.params, tickers)
     extra = [p for p in (params.get("safe_asset"),) if p]
-    notes: list[str] = []
+    surv = survivorship_label(tickers + extra)
+    notes: list[str] = [surv] if surv else []
     start_ts = pd.Timestamp(body.start) if body.start else None
     data_start = body.start
     if body.start is not None:
@@ -309,7 +327,7 @@ def _prepare(body: BacktestIn, market: MarketData) -> Prepared:
         notes.append(f"top_k={params.get('top_k')} holds all {len(tickers)} assets, so the momentum ranking never "
                      "changes the portfolio: this run is an equal-weight portfolio. Add assets or lower top_k.")
     return Prepared(spec, params, ctx, _masked(spec.fn, start_ts), config, rf, bench_ret,
-                    provenance, notes, tickers, start_ts)
+                    provenance, notes, tickers, start_ts, surv)
 
 
 def _run(p: Prepared, config: EngineConfig | None = None) -> BacktestResult:
@@ -447,6 +465,7 @@ def _do_run(body: BacktestIn, market: Market) -> dict[str, Any]:
                 "reference": "Bailey & Lopez de Prado (2012), The Sharpe Ratio Efficient Frontier"},
         "look_ahead_audit": res.audit,
         "method": _method(p),
+        "survivorship": p.survivorship,
         "notes": _std_notes(p, res, len(net)),
         "provenance": p.provenance + [_kernel_provenance({"backtest_weights": res.kernel_engine})],
     }

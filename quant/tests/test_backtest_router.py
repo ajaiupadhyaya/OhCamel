@@ -311,3 +311,33 @@ def test_backtest_payload_engine_follows_the_dispatcher(bt_client):
                                                       "bootstrap_reps": 103})
     assert r.status_code == 200, r.text
     assert _kernel_prov(r.json()) == {"engine": "python", "kernels": {"backtest_weights": "python"}}
+
+
+# ------------------------------------------------- survivorship labels (completion task 3.8, fix round 1, I1)
+def _without(monkeypatch, ticker):
+    """The site's universes with ``ticker`` taken out: it then stands for a hand-picked single name."""
+    import copy
+
+    from ohcamel_quant.api.routers import backtest as B
+
+    real = copy.deepcopy(B.load_universes())
+    for u in real["universes"].values():
+        u["members"] = [m for m in u["members"] if m["ticker"] != ticker]
+    monkeypatch.setattr(B, "load_universes", lambda: real)
+
+
+def test_a_basket_with_a_single_name_is_labelled_as_survivors(bt_client, monkeypatch):
+    _without(monkeypatch, "XLK")
+    body = {"strategy": "buy_and_hold", "tickers": ["SPY", "XLK"], "bootstrap_reps": 100, "cost_bps": 7.0}
+    j = bt_client.post("/api/backtest/run", json=body).json()
+    s = j["survivorship"]
+    assert s and "XLK" in s and "SPY" not in s.split(":")[1] and "survivor" in s and "overstates" in s
+    assert j["notes"][0] == s                                     # first among the notes the page renders
+    c = bt_client.post("/api/backtest/costs", json={**body, "bps": [0, 10]}).json()
+    assert c["notes"][0] == s                                     # every result built on the same tickers
+
+
+def test_an_etf_basket_carries_no_survivorship_label(bt_client):
+    j = bt_client.post("/api/backtest/run", json={"strategy": "buy_and_hold", "tickers": ["SPY", "XLK"],
+                                                   "bootstrap_reps": 100, "cost_bps": 6.0}).json()
+    assert j["survivorship"] is None and not any(n.startswith("Survivorship:") for n in j["notes"])

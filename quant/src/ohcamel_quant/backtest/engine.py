@@ -51,13 +51,20 @@ at least ``COVERAGE_REQUIRED`` (95%) of the universe's exits have prices to the
 exit (``readers.survivorship_free``). Every result's notes carry the coverage.
 
 The investable set on a decision date is ``readers.members_asof`` that day; a target
-on any other name is zeroed. A name with no bar on the EXECUTION session cannot be
-traded there: a buy is not made, and a holding is sold. A holding in a name whose
-series ENDS (a delisting: its last bar is its last trade) earns that bar's return,
-is then valued at that last price -- no return, no interest -- and is sold at it at
-the next execution, paying costs. The loss up to the last trade is in the returns;
-nothing is dropped. No delisting return beyond the last exchange print is applied
-(the vendor serves none): an over-the-counter tail after a delisting is not seen.
+on any other name is zeroed. A name whose series has ENDED by the execution session
+(no bar then or later) is not bought, and a holding in it is sold at its last price:
+it earns its last bar's return, is valued at that last print afterwards -- no return,
+no interest -- and is sold at the next execution, paying costs. A name with no bar on
+an execution session whose series goes on (a halt, a vendor gap) is left untraded at
+that execution, never sold at a price that did not print (``run_weights(untraded=)``).
+
+The last print OVERSTATES the outcome of a failure whose last exchange print exceeds
+its recovery (SVB last printed about $106 on Nasdaq; its shareholders got nearly
+nothing), so every such result also carries a LOWER BOUND (:func:`lower_bound_run`):
+the same run with each holding whose series ends inside the test marked to zero on the
+first session it no longer trades. Both totals are reported side by side; the headline
+stays the last-print run, and the bound is a bound, not an estimate. No delisting-
+return model is applied (the vendor serves none).
 """
 
 from __future__ import annotations
@@ -157,6 +164,9 @@ class BacktestResult:
     config: EngineConfig | None = None
     trades: pd.DataFrame | None = None  # signed w*_i - w~_i traded at each close (0 elsewhere)
     kernel_engine: str = "python"       # which kernels engine ran the accounting loop (compute plan A6)
+    #: Completion task 3.8, fix round 1 (I2): a single-name run over dated membership also runs with every holding
+    #: whose series ends inside the test marked to zero at its end -- a lower bound, beside the headline.
+    lower_bound: dict[str, Any] | None = None
 
     def live(self, s: pd.Series | pd.DataFrame) -> Any:
         """Slice a series/frame to the live period, which STARTS at the first
@@ -279,9 +289,15 @@ def run_backtest(ctx: StrategyContext, fn: WeightsFn, params: dict[str, Any],
 
 
 def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfig | None = None,
-                rf: pd.Series | None = None) -> BacktestResult:
+                rf: pd.Series | None = None, *, untraded: pd.DataFrame | None = None) -> BacktestResult:
     """Simulate the accounting in the module docstring for given target weights
-    (row ``d`` = decision at the close of ``d``; all-NaN rows = no signal)."""
+    (row ``d`` = decision at the close of ``d``; all-NaN rows = no signal).
+
+    ``untraded`` (completion task 3.8, fix round 1): a boolean frame on the SESSION index, True where a name cannot
+    trade at an execution on that session (no bar that day though the series goes on: a halt or a vendor gap).
+    At such an execution that name's target is replaced by its drifted weight, so it is neither bought nor sold;
+    the other names trade as targeted. Applied after the overlay and the leverage cap (a held weight is never
+    rescaled), one execution at a time in order, re-running the accounting from it."""
     config = config or EngineConfig()
     prices = prices.sort_index()
     if prices.isna().any().any():
@@ -356,6 +372,17 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
     ex = np.array(sorted(exec_at), dtype=np.int64)
     tw = np.vstack([exec_at[int(s)] for s in ex]) if len(ex) else np.zeros((0, n_a))
     path = kernels.backtest_weights(px, tw, ex, config.cost_bps, config.borrow_bps, rf_arr)
+    if untraded is not None and len(ex):
+        hold = untraded.reindex(index=idx, columns=prices.columns).fillna(False).to_numpy(dtype=bool)
+        for k, sess in enumerate(ex):
+            cols = np.flatnonzero(hold[sess])
+            if not len(cols):
+                continue
+            drifted = tw[k] - path.trades[sess]          # trades = w* - w~ at the execution
+            if np.array_equal(tw[k, cols], drifted[cols]):
+                continue
+            tw[k, cols] = drifted[cols]
+            path = kernels.backtest_weights(px, tw, ex, config.cost_bps, config.borrow_bps, rf_arr)
     gross, net, W = path.gross, path.net, path.weights
     turnover, trades, costs, borrow = path.turnover, path.trades, path.costs, path.borrow
     # arithmetic attribution w_{s-1,i} R_{s,i} (W[s-1] is the book carried into s)
@@ -430,26 +457,64 @@ def survivorship_gate(con: Any, universe: str, settings: Any = None) -> str:
 
 
 def members_weights(prices: pd.DataFrame, targets: pd.DataFrame, members: pd.DataFrame, *,
-                    execution_lag: int = 1) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
+                    execution_lag: int = 1) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str], pd.DataFrame]:
     """The accounting panel and the tradable targets for names that enter and leave (module docstring).
 
-    ``prices``: closes with NaN where a name has no bar. Returns ``(acc, tgt, ended)``: ``acc`` is ``prices`` with
-    each name's last close carried forward after its last bar (no return) and its first close carried back before
-    its first bar (never held there); ``tgt`` is ``targets`` with every decision's weight zeroed for a name that is
-    not a member that day or has no bar on the session it would execute (rows with no signal stay NaN); ``ended``
-    maps each name whose bars stop before the panel's last session to its last bar's date."""
+    ``prices``: closes with NaN where a name has no bar. Returns ``(acc, tgt, ended, untraded)``: ``acc`` is
+    ``prices`` with each name's last close carried forward after its last bar (no return) and over any gap, and its
+    first close carried back before its first bar (never held there); ``tgt`` is ``targets`` with every decision's
+    weight zeroed for a name that is not a member that day or whose series has ended by the session it would execute
+    (rows with no signal stay NaN); ``ended`` maps each name whose bars stop before the panel's last session to its
+    last bar's date; ``untraded`` (session index) is True where a name has no bar on a session although a later bar
+    exists -- passed to ``run_weights``, such a name is left untraded at an execution that day."""
     px = prices.sort_index()
     has_bar = px.notna()
     m = members.reindex(index=px.index, columns=px.columns).fillna(False).astype(bool)
     t = targets.reindex(index=px.index, columns=px.columns)
     signal = t.notna().any(axis=1)
-    at_exec = has_bar.shift(-execution_lag).fillna(False).astype(bool)
-    tgt = t.fillna(0.0).where(m & at_exec, 0.0)
+    pos = np.arange(len(px.index))
+    last_pos = {c: (int(np.flatnonzero(has_bar[c].to_numpy())[-1]) if has_bar[c].any() else -1) for c in px.columns}
+    # by the execution of the decision at row d (row d + lag): has the series ended (no bar then or later)?
+    gone = pd.DataFrame({c: (pos + execution_lag) > last_pos[c] for c in px.columns}, index=px.index)
+    tgt = t.fillna(0.0).where(m & ~gone, 0.0)
     tgt[~signal] = np.nan
-    last = {c: px[c].last_valid_index() for c in px.columns}
-    ended = {c: str(d.date()) for c, d in last.items() if d is not None and d < px.index[-1]}
+    untraded = pd.DataFrame({c: (~has_bar[c].to_numpy()) & (pos < last_pos[c]) for c in px.columns}, index=px.index)
+    ended = {c: str(px.index[last_pos[c]].date()) for c in px.columns
+             if 0 <= last_pos[c] < len(pos) - 1}
     acc = px.ffill().bfill()
-    return acc, tgt, ended
+    return acc, tgt, ended, untraded
+
+
+#: The price a holding is marked to in the lower bound: 1e-12 of its last print (the engine refuses a zero price;
+#: the position's value is gone to twelve digits).
+LOWER_BOUND_MARK = 1e-12
+
+
+def lower_bound_run(acc: pd.DataFrame, tgt: pd.DataFrame, ended: dict[str, str], config: EngineConfig | None = None,
+                    rf: pd.Series | None = None, *, untraded: pd.DataFrame | None = None) -> BacktestResult:
+    """The same run with every name whose series ends inside the panel marked to zero (``LOWER_BOUND_MARK`` of its
+    last print) from the first session after its last bar: a holding carried into that session loses its whole
+    value there (module docstring). With nothing ended, it is the headline run."""
+    low = acc.copy()
+    for c, d in ended.items():
+        after = low.index > pd.Timestamp(d)
+        low.loc[after, c] = float(acc.loc[pd.Timestamp(d), c]) * LOWER_BOUND_MARK
+    return run_weights(low, tgt, config, rf, untraded=untraded)
+
+
+def _total(res: BacktestResult) -> float:
+    return float(np.prod(1.0 + res.live(res.returns_net).to_numpy()) - 1.0)
+
+
+def ended_phrase(name: str, last: str, fetched_to: Any) -> str:
+    """How a result names a series that ends inside it (fix round 1, I4): a delisting only when the series stops
+    trading well before the end of what was fetched; a series fetched to a date (a name removed from the index but
+    still trading) ends at that date and is said so."""
+    if fetched_to is not None:
+        if int(np.busday_count(pd.Timestamp(last).date(), fetched_to)) <= 5:
+            return f"{name} (series ends {last}, fetched to {fetched_to})"
+        return f"{name} (stops trading {last}, before the series was fetched to {fetched_to}: a delisting)"
+    return f"{name} (series ends {last})"
 
 
 def run_members_backtest(con: Any, universe: str, fn: WeightsFn, params: dict[str, Any], start: Any, end: Any,
@@ -475,18 +540,33 @@ def run_members_backtest(con: Any, universe: str, fn: WeightsFn, params: dict[st
     ctx = StrategyContext(prices=prices, rf=rf, members=members)
     targets = fn(ctx, **params)
     audit = audit_causality(fn, ctx, params, targets, config.audit_points)
-    acc, tgt, ended = members_weights(prices, targets, members, execution_lag=config.execution_lag)
-    res = run_weights(acc, tgt, config, rf)
+    acc, tgt, ended, untraded = members_weights(prices, targets, members, execution_lag=config.execution_lag)
+    res = run_weights(acc, tgt, config, rf, untraded=untraded)
     res.audit = audit
+    low = lower_bound_run(acc, tgt, ended, config, rf, untraded=untraded)
     carried = [c for c, d in ended.items()
                if (res.weights[c].loc[res.weights.index > pd.Timestamp(d)].abs() > 1e-12).any()]
+    held_into_gap = [(c, d) for d in res.executions for c in res.weights.columns
+                     if bool(untraded.at[d, c]) and abs(float(res.weights.at[d, c])) > 1e-12]
+    fetched = readers.fetched_to(con, list(ended))
+    head, bound = _total(res), _total(low)
+    res.lower_bound = {"total_net": head, "total_net_lower_bound": bound, "ended_held": carried,
+                       "returns_net": low.returns_net}
     notes = [note]
     if absent:
         notes.append(f"{len(absent)} member(s) in the window have no bars and are left out: "
                      + ", ".join(absent[:12]) + (" ..." if len(absent) > 12 else ""))
     if carried:
-        notes.append(f"{len(carried)} holding(s) outlived their series (a delisting): each was valued at its last "
-                     "price from its last bar and sold there at the next execution: "
-                     + ", ".join(f"{c} ({ended[c]})" for c in carried[:12]))
+        notes.append(f"{len(carried)} holding(s) outlived their series: each was valued at its last print from its "
+                     "last bar and sold there at the next execution. A last print overstates the outcome of a "
+                     "failure whose last exchange print exceeds its recovery: "
+                     + ", ".join(ended_phrase(c, ended[c], fetched.get(c)) for c in carried[:12]))
+    notes.append(f"Total net return {head:+.1%} with holdings whose series ended valued at their last print; "
+                 f"{bound:+.1%} with each marked to zero at its end -- a lower bound, not an estimate"
+                 + (" (no holding's series ended inside this test, so the two are equal)." if not carried else "."))
+    if held_into_gap:
+        notes.append(f"{len(held_into_gap)} position(s) were left untraded at an execution because the name had no "
+                     "bar that session though its series goes on (a halt or a vendor gap): "
+                     + ", ".join(f"{c} {d.date()}" for c, d in held_into_gap[:12]))
     res.notes = [*notes, *res.notes, *repairs[:20]]
     return res

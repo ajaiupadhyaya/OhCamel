@@ -250,6 +250,20 @@ def warehouse_prices(settings: Settings, tickers: list[str], start: date | None,
     return (bars.prices(want, start, end, field), None) if bars is not None else (None, note)
 
 
+def _membership(con: Any) -> str:
+    """``universe_membership`` with each row's price series (completion task 3.8): ``universe, ticker, start, end,
+    series`` -- the series from ``membership_series`` (migration 006), else the ticker (a warehouse before 006, or a
+    row the previous code wrote)."""
+    has = con.execute("SELECT count(*) FROM duckdb_tables() WHERE schema_name = 'main' AND "
+                      "table_name = 'membership_series'").fetchone()[0]
+    if not has:
+        return 'SELECT universe, ticker, "start", "end", ticker AS series FROM universe_membership'
+    return ('SELECT m.universe, m.ticker, m."start", m."end", coalesce(s.series, m.ticker) AS series '
+            "FROM universe_membership m LEFT JOIN membership_series s ON s.universe = m.universe AND "
+            's.ticker = m.ticker AND s."start" IS NOT DISTINCT FROM m."start" AND '
+            's."end" IS NOT DISTINCT FROM m."end"')
+
+
 def _membership_universe(con: Any, universe: str) -> str:
     u = universe.strip().lower()
     n = con.execute("SELECT count(*) FROM universe_membership WHERE universe = ?", [u]).fetchone()[0]
@@ -273,7 +287,7 @@ def members_asof(con: Any, universe: str, asof: date) -> list[str]:
         raise DataUnavailable(f"{u}: membership before {cov.isoformat()} is not known (the changes table is "
                               "complete only from then)")
     u = _membership_universe(con, u)
-    rows = con.execute('SELECT DISTINCT coalesce(series, ticker) FROM universe_membership WHERE universe = ? AND '
+    rows = con.execute(f'SELECT DISTINCT series FROM ({_membership(con)}) WHERE universe = ? AND '
                        '("start" IS NULL OR "start" <= ?) AND ("end" IS NULL OR "end" > ?) ORDER BY 1',
                        [u, asof, asof]).fetchall()
     return [t for (t,) in rows]
@@ -294,7 +308,7 @@ def members_panel(con: Any, universe: str, index: pd.DatetimeIndex) -> pd.DataFr
     u = _membership_universe(con, u)
     if not len(idx):
         return pd.DataFrame(index=idx, dtype=bool)
-    st = con.execute('SELECT coalesce(series, ticker), "start", "end" FROM universe_membership WHERE universe = ? '
+    st = con.execute(f'SELECT series, "start", "end" FROM ({_membership(con)}) WHERE universe = ? '
                      'AND ("start" IS NULL OR "start" <= ?) AND ("end" IS NULL OR "end" > ?)',
                      [u, idx[-1].date(), idx[0].date()]).fetchall()
     names = sorted({k for k, _, _ in st})
@@ -309,16 +323,22 @@ def members_panel(con: Any, universe: str, index: pd.DatetimeIndex) -> pd.DataFr
     return out
 
 
-#: A member's exit counts as covered when its series has a bar on one of the 5 weekdays before it (the acceptance
-#: test's tolerance, completion task 3.8; a holiday among them makes it stricter, never looser).
+#: A member's exit counts as covered (completion task 3.8, fix round 1, M3) when its series has bars ACROSS the stint
+#: it ends: from the later of the stint's start and the changes table's coverage start (2011-01-01 for sp500; the
+#: stint's start for a universe without one) up to the exit. Three conditions, all on WEEKDAYS, which count the
+#: market's holidays too and so are stricter than sessions, never looser: a bar on one of the ``EXIT_SESSIONS`` (5)
+#: weekdays before the exit; the series' first bar in the stint within ``EXIT_SESSIONS`` weekdays of its start; and
+#: bars on at least ``STINT_DENSITY`` (90%) of the stint's weekdays (a year has about 9 holidays, 3.6%). Only exits
+#: on or after the coverage start count (:func:`exit_coverage`); earlier ones are not known completely.
 EXIT_SESSIONS = 5
+STINT_DENSITY = 0.90
 
 
 def membership_exits(con: Any, universe: str) -> pd.DataFrame:
     """Every exit of a company from ``universe``: ``series, start, end`` with ``end`` not NULL, the rows of one
     series that meet (a rename splits a stint into rows that touch) merged first, so a rename is not an exit."""
     u = _membership_universe(con, universe)
-    rows = con.execute('SELECT coalesce(series, ticker), "start", "end" FROM universe_membership WHERE universe = ? '
+    rows = con.execute(f'SELECT series, "start", "end" FROM ({_membership(con)}) WHERE universe = ? '
                        'ORDER BY 1, "start" NULLS FIRST', [u]).fetchall()
     merged: list[list[Any]] = []
     for k, a, b in rows:
@@ -329,9 +349,21 @@ def membership_exits(con: Any, universe: str) -> pd.DataFrame:
     return pd.DataFrame([m for m in merged if m[2] is not None], columns=["series", "start", "end"])
 
 
+def fetched_to(con: Any, series: list[str]) -> dict[str, date]:
+    """For each series ``ingest.delisted`` wrote, the last date it asked the vendor for (its latest successful run's
+    ``fetched_to``): a series whose last bar is near it was cut there, not delisted (completion task 3.8)."""
+    if not series:
+        return {}
+    rows = con.execute("SELECT key, arg_max(json_extract_string(detail, '$.fetched_to'), ran_at) FROM ingest_log "
+                       "WHERE dataset = 'delisted' AND status = 'ok' AND list_contains(?, key) "
+                       "AND json_extract_string(detail, '$.fetched_to') IS NOT NULL GROUP BY key",
+                       [list(series)]).fetchall()
+    return {k: date.fromisoformat(v) for k, v in rows if v}
+
+
 def exit_coverage(con: Any, universe: str) -> pd.DataFrame:
     """The universe's exits on or after its changes table's coverage start (:func:`membership_exits`), each with
-    ``covered``: its series has a bar in ``bars_daily`` on one of the ``EXIT_SESSIONS`` weekdays before the exit."""
+    ``covered``: its series has bars across the stint it ends (the three weekday conditions above)."""
     from .constituents import COVERAGE_START
 
     u = universe.strip().lower()
@@ -341,26 +373,43 @@ def exit_coverage(con: Any, universe: str) -> pd.DataFrame:
         exits = exits[exits["end"] >= cov]
     if exits.empty:
         return exits.assign(covered=pd.Series(dtype=bool))
-    ends = pd.to_datetime(exits["end"]).dt.date
-    frame = pd.DataFrame({"i": range(len(exits)), "series": exits["series"].to_numpy(), "end": ends.to_numpy(),
-                          "lo": [np.busday_offset(e, -EXIT_SESSIONS, roll="forward").astype(object) for e in ends]})
+    ends = pd.to_datetime(exits["end"]).dt.date.to_numpy()
+    starts = [None if pd.isna(a) else pd.Timestamp(a).date() for a in exits["start"]]
+    froms = [max([d for d in (a, cov) if d is not None]) if (a is not None or cov is not None) else None
+             for a in starts]
+    frame = pd.DataFrame({
+        "i": range(len(exits)), "series": exits["series"].to_numpy(), "end": ends,
+        "lo": [np.busday_offset(e, -EXIT_SESSIONS, roll="forward").astype(object) for e in ends],
+        "frm": [f if f is not None else e for f, e in zip(froms, ends, strict=True)]})
     con.register("exits_incoming", frame)
     try:
-        hit = {i for (i,) in con.execute(
-            "SELECT x.i FROM exits_incoming x WHERE EXISTS (SELECT 1 FROM bars_daily b WHERE b.ticker = x.series "
-            "AND b.date >= x.lo AND b.date < x.\"end\")").fetchall()}
+        got = {i: (n, first, near) for i, n, first, near in con.execute(
+            "SELECT x.i, count(b.date), min(b.date), count(b.date) FILTER (WHERE b.date >= x.lo) "
+            "FROM exits_incoming x LEFT JOIN bars_daily b ON b.ticker = x.series AND b.date >= least(x.frm, x.lo) "
+            "AND b.date < x.\"end\" GROUP BY x.i").fetchall()}
     finally:
         con.unregister("exits_incoming")
+    covered = []
+    for i in range(len(frame)):
+        n, first, near = got.get(i, (0, None, 0))
+        ok = bool(near)
+        f = froms[i]
+        if ok and f is not None and f < ends[i]:
+            span = int(np.busday_count(f, ends[i]))
+            ok = (first is not None and int(np.busday_count(f, first)) <= EXIT_SESSIONS
+                  and n >= STINT_DENSITY * span)
+        covered.append(ok)
     out = exits.reset_index(drop=True).copy()
-    out["covered"] = [i in hit for i in range(len(out))]
+    out["covered"] = covered
     return out
 
 
 def survivorship_free(con: Any, universe: str) -> tuple[bool, float]:
     """``(accepted, coverage)`` (completion task 3.8, spec R5). ``coverage``: the share of the universe's exits --
-    every company that left it, on or after its changes table's coverage start -- whose price series has a bar in
-    ``bars_daily`` on one of the ``EXIT_SESSIONS`` weekdays before the exit (:func:`exit_coverage`: the bars to their
-    end date that a backtest needs to realise what a holding was worth when it left). 1.0 when no member has left.
+    every company that left it, on or after its changes table's coverage start -- whose price series has bars in
+    ``bars_daily`` across the stint it ends, to the exit (:func:`exit_coverage`: weekday tolerances, stricter than
+    sessions; exits before the coverage start are not counted) -- the bars a backtest needs to hold the company while
+    a member and realise what it was worth when it left. 1.0 when no member has left.
     ``accepted``: a ``delisted_acceptance`` row (written only by tools/accept_delisted.py, on a pass) for the
     committed acceptance list as it is now. Refuses a universe with no dated membership."""
     import duckdb

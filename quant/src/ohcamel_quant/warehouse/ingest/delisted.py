@@ -6,10 +6,10 @@ whose switch is off) and, run by hand, refuses before it opens anything; with th
 ``EODHD_API_KEY`` it refuses too.
 
 **What it fetches** (:func:`plan`). Every exit of a universe with dated membership (sp500) on or after its changes
-table's coverage start (2011-01-01) whose series has no bar in ``bars_daily`` on one of the 5 weekdays before the
-exit -- the exits ``readers.survivorship_free`` counts as uncovered. One key per series (a company's last ticker
-across renames, ``universe_membership.series``), asked from 1990 to 31 days after its last such exit. Left out, each
-with a note: the earlier holder of a reused ticker (``TICKER@DATE``: the vendor's code for it is not known, and the
+table's coverage start (2011-01-01) whose series lacks bars across the stint to the exit -- the exits
+``readers.survivorship_free`` counts as uncovered. One key per series (a company's last ticker across renames,
+``membership_series``), asked from 1990 to 100 days after its last such exit (AFTER_EXIT_DAYS); a vendor series that
+begins after the company joined is refused (:func:`check_continuity`). Left out, each with a note: the earlier holder of a reused ticker (``TICKER@DATE``: the vendor's code for it is not known, and the
 bare ticker could be the later company), and a series another vendor already serves (a listed name is never half
 one vendor and half another).
 
@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ...data import eodhd, prices
@@ -41,12 +42,19 @@ from .base import IngestFailed, KeyState, Written, insert_frame, run_ingest, utc
 from .corp_actions import ActionsPayload, write_actions
 
 DATASET = "delisted"
-#: Calendar days fetched after a series' last uncovered exit (the next execution after an exit sells there).
-AFTER_EXIT_DAYS = 31
-RAW_INSERT = ("INSERT INTO bars_raw SELECT ticker, CAST(date AS DATE), open, high, low, close, volume, source "
-              "FROM incoming")
-DAILY_INSERT = ("INSERT INTO bars_daily SELECT ticker, CAST(date AS DATE), open, high, low, close, adj_close, volume, "
-                "source, fetched_at FROM incoming")
+#: Calendar days fetched after a series' last uncovered exit (fix round 1, I4). A name removed from the index but
+#: still trading is held until the next decision zeroes it: up to about 92 days under quarterly rebalancing, so 100
+#: days keep its price live until it is sold. Short enough that a later company re-using the freed ticker is
+#: unlikely to be reached; that case is guarded by :func:`check_continuity` (a series that begins after the company
+#: joined is another company's) and by never asking for a ``TICKER@DATE`` series.
+AFTER_EXIT_DAYS = 100
+#: Weekdays of slack between a company's first membership day and the vendor series' first bar (check_continuity).
+START_SLACK = 5
+RAW_INSERT = ("INSERT INTO bars_raw (ticker, date, open, high, low, close, volume, source) SELECT ticker, "
+              "CAST(date AS DATE), open, high, low, close, volume, source FROM incoming")
+DAILY_INSERT = ("INSERT INTO bars_daily (ticker, date, open, high, low, close, adj_close, volume, source, fetched_at) "
+                "SELECT ticker, CAST(date AS DATE), open, high, low, close, adj_close, volume, source, fetched_at "
+                "FROM incoming")
 NOTES_LISTED = 20
 
 
@@ -56,6 +64,7 @@ class Want:
     code: str
     exit: date              # the series' last exit without prices to it
     universes: tuple[str, ...]
+    first: date | None = None   # the series' first day as a member (None: before the changes table's coverage)
 
 
 @dataclass
@@ -72,19 +81,26 @@ class DelistedPayload:
     window_start: date
     reached: date
     full: bool = True
+    fetched_to: date | None = None   # the last date asked for (a series cut here was not delisted)
 
 
 def plan(con: Any, universes: list[str] | None = None) -> Plan:
     """The series to fetch (module docstring), and why any uncovered exit is left out."""
     from .. import readers
+    from ..constituents import COVERAGE_START
 
     wants: dict[str, tuple[date, set[str]]] = {}
+    firsts: dict[str, date] = {}
     for u in universes or list(CHANGES_SOURCES):
         cov = readers.exit_coverage(con, u)
         for row in cov[~cov["covered"]].itertuples(index=False):
             end = pd.Timestamp(row.end).date()
             ex, us = wants.get(row.series, (end, set()))
             wants[row.series] = (max(ex, end), us | {u})
+            start = None if pd.isna(row.start) else pd.Timestamp(row.start).date()
+            first = start or COVERAGE_START.get(u)
+            if first is not None:
+                firsts[row.series] = min(firsts.get(row.series, first), first)
     other = dict(con.execute(
         "SELECT ticker, string_agg(DISTINCT source, ', ') FROM bars_daily WHERE list_contains(?, ticker) "
         "AND source <> 'eodhd' GROUP BY ticker", [sorted(wants) or [""]]).fetchall())
@@ -101,21 +117,33 @@ def plan(con: Any, universes: list[str] | None = None) -> Plan:
         except DataUnavailable as e:
             skipped.append(f"{e}; not fetched (exit {exit_})")
             continue
-        keys.append(Want(series, code, exit_, tuple(sorted(us))))
+        keys.append(Want(series, code, exit_, tuple(sorted(us)), firsts.get(series)))
     return Plan(keys, skipped)
+
+
+def check_continuity(want: Want, raw: pd.DataFrame) -> None:
+    """Refuse a vendor series that begins after the company was already a member (``want.first``, START_SLACK
+    weekdays of slack): under that code the vendor holds another company, a later holder of the ticker."""
+    if want.first is None or raw.empty:
+        return
+    begins = raw.index[0].date()
+    if begins > want.first and int(np.busday_count(want.first, begins)) > START_SLACK:
+        raise DataUnavailable(f"{want.series}: the vendor's series under {want.code} begins {begins}, after the company "
+                              f"was already a member on {want.first}: another company under the code? Not written")
 
 
 def fetch_delisted(want: Want, settings: Any, today: date) -> DelistedPayload:
     start, end = prices.DEFAULT_START, min(today, want.exit + timedelta(days=AFTER_EXIT_DAYS))
     table = eodhd.splits(want.series, settings)
     raw = eodhd.bars(want.series, start, end, delisted=True, settings=settings, split_table=table)
+    check_continuity(want, raw)
     acts = eodhd.actions(want.series, settings, split_table=table)
     prov = Provenance.now(eodhd.SOURCE, code=want.code, url=eodhd.ENDPOINTS["eod"].format(code=want.code),
                           params={"from": start.isoformat(), "to": end.isoformat()}, delisted=True,
                           exit=want.exit.isoformat(), universes=list(want.universes),
                           convention="raw OHLC as traded; volume as traded (the vendor's split-adjusted volume "
                                      "divided back by later splits); dividends as paid on the ex-date")
-    return DelistedPayload(raw, acts, prov, start, raw.index[-1].date())
+    return DelistedPayload(raw, acts, prov, start, raw.index[-1].date(), True, end)
 
 
 def write_delisted(con: Any, key: str, state: KeyState, p: DelistedPayload) -> Written:
@@ -146,7 +174,8 @@ def write_delisted(con: Any, key: str, state: KeyState, p: DelistedPayload) -> W
     daily["fetched_at"] = utcnow()
     insert_frame(con, DAILY_INSERT, daily)
     detail = {"source": eodhd.SOURCE, "first": str(raw["date"].min().date()), "last": str(p.reached),
-              "exit": p.prov.detail.get("exit"), "bars": len(raw), "actions": acts.detail}
+              "exit": p.prov.detail.get("exit"), "bars": len(raw), "actions": acts.detail,
+              "fetched_to": p.fetched_to.isoformat() if p.fetched_to else None}
     return Written(len(raw), p.reached, detail)
 
 

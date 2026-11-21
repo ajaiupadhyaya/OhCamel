@@ -20,7 +20,7 @@ splits (ratio new per old) and cash dividends as paid on the ex-date (``unadjust
 ``ingest.delisted`` with ``source = 'eodhd'``; ``warehouse/adjust.py`` derives the adjusted series from them, and the
 committed AAPL responses reproduce EODHD's own ``adjusted_close`` returns to 2e-5 (its figure has 4 decimals).
 
-**Codes.** A warehouse series is its last ticker across renames (``universe_membership.series``): EODHD keeps a
+**Codes.** A warehouse series is its last ticker across renames (``membership_series``): EODHD keeps a
 renamed company's history under the new code, so that is the code to ask for. ``BRK.B`` is ``BRK-B.US``. A series
 keyed ``TICKER@DATE`` is the EARLIER holder of a ticker another member company took later; EODHD's code for such a
 name is not documented, and asking for the bare ticker could return the later company's prices, so it is refused.

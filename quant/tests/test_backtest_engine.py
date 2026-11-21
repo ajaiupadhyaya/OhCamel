@@ -307,8 +307,8 @@ def test_a_position_in_a_name_whose_series_ends_is_closed_at_its_last_price(px):
     p.loc[p.index > last, "XLK"] = np.nan
     members = pd.DataFrame(True, index=p.index, columns=p.columns)
     targets = pd.DataFrame(0.5, index=p.index, columns=p.columns)
-    acc, tgt, carried = members_weights(p, targets, members, execution_lag=1)
-    res = run_weights(acc, tgt, EngineConfig(rebalance="monthly", cost_bps=0.0))
+    acc, tgt, carried, untraded = members_weights(p, targets, members, execution_lag=1)
+    res = run_weights(acc, tgt, EngineConfig(rebalance="monthly", cost_bps=0.0), untraded=untraded)
     i = p.index.get_loc(last)
     w = res.weights["XLK"]
     # the March decision (last session of February) put XLK in the book; its loss to 03-16 is in the returns
@@ -322,3 +322,104 @@ def test_a_position_in_a_name_whose_series_ends_is_closed_at_its_last_price(px):
     assert carried == {"XLK": str(last.date())}
     # nothing is bought after the series ended
     assert (w.loc[nxt:] == 0).all()
+
+
+# ------------------------------------------------- fix round 1 (task 3.8): bounds, halts, boundaries
+def _cut_xlk(px, last="2020-03-16"):
+    p = px[["SPY", "XLK"]].loc["2020-01-02":"2020-06-30"].copy()
+    if last is not None:
+        p.loc[p.index > pd.Timestamp(last), "XLK"] = np.nan
+    members = pd.DataFrame(True, index=p.index, columns=p.columns)
+    targets = pd.DataFrame(0.5, index=p.index, columns=p.columns)
+    return p, members, targets
+
+
+def test_the_lower_bound_marks_an_ended_holding_to_zero_at_its_end(px):
+    """I2: the headline values a vanished name at its last print; the lower bound marks it to zero on the first
+    session it no longer trades. The two differ, that session, by exactly the weight held into it."""
+    from ohcamel_quant.backtest.engine import lower_bound_run, members_weights
+
+    p, members, targets = _cut_xlk(px)
+    acc, tgt, ended, untraded = members_weights(p, targets, members, execution_lag=1)
+    cfg = EngineConfig(rebalance="monthly", cost_bps=0.0)
+    res = run_weights(acc, tgt, cfg, untraded=untraded)
+    lb = lower_bound_run(acc, tgt, ended, cfg, untraded=untraded)
+    i = p.index.get_loc(pd.Timestamp("2020-03-16"))
+    head, low = res.returns_gross.to_numpy(), lb.returns_gross.to_numpy()
+    assert np.array_equal(head[: i + 1], low[: i + 1])                 # identical up to the last print
+    held = res.weights["XLK"].iloc[i]
+    assert held > 0.3 and head[i + 1] - low[i + 1] == pytest.approx(held, abs=1e-9)
+    assert float(np.prod(1 + low)) < float(np.prod(1 + head))
+
+
+def test_without_an_ended_holding_the_lower_bound_is_the_headline(px):
+    from ohcamel_quant.backtest.engine import lower_bound_run, members_weights
+
+    p, members, targets = _cut_xlk(px, last=None)
+    acc, tgt, ended, untraded = members_weights(p, targets, members, execution_lag=1)
+    cfg = EngineConfig(rebalance="monthly", cost_bps=0.0)
+    assert ended == {}
+    res = run_weights(acc, tgt, cfg, untraded=untraded)
+    lb = lower_bound_run(acc, tgt, ended, cfg, untraded=untraded)
+    assert np.array_equal(res.returns_net.to_numpy(), lb.returns_net.to_numpy())
+
+
+def test_a_name_with_one_missing_bar_on_an_execution_is_left_untraded(px):
+    """I3: a still-listed name with no bar on an execution session (a halt, a vendor gap) is neither sold at a
+    price that never printed nor bought: its position is left as it drifted, and traded at the next execution."""
+    from ohcamel_quant.backtest.engine import members_weights
+
+    p, members, targets = _cut_xlk(px, last=None)
+    targets.loc[:, "XLK"] = np.where(p.index < pd.Timestamp("2020-03-31"), 0.5, 0.2)   # March decision trims XLK
+    gap = pd.Timestamp("2020-04-01")                                     # the March decision's execution session
+    p.loc[gap, "XLK"] = np.nan
+    acc, tgt, ended, untraded = members_weights(p, targets, members, execution_lag=1)
+    assert ended == {} and bool(untraded.loc[gap, "XLK"]) and int(untraded.to_numpy().sum()) == 1
+    res = run_weights(acc, tgt, EngineConfig(rebalance="monthly", cost_bps=0.0), untraded=untraded)
+    assert gap in res.executions
+    assert res.trades.loc[gap, "XLK"] == pytest.approx(0.0, abs=1e-15)     # untraded at the gap
+    assert res.trades.loc[gap, "SPY"] != 0 and res.weights.loc[gap, "XLK"] > 0.4   # not trimmed, not sold
+    nxt = res.executions[res.executions > gap][0]
+    assert res.weights.loc[nxt, "XLK"] == pytest.approx(0.2, abs=1e-12)    # traded at the next execution
+
+
+def test_a_name_whose_series_has_ended_is_still_sold_at_its_last_price(px):
+    from ohcamel_quant.backtest.engine import members_weights
+
+    p, members, targets = _cut_xlk(px)
+    acc, tgt, ended, untraded = members_weights(p, targets, members, execution_lag=1)
+    assert not untraded["XLK"].loc[p.index > pd.Timestamp("2020-03-16")].any()   # ended, not halted
+    res = run_weights(acc, tgt, EngineConfig(rebalance="monthly", cost_bps=0.0), untraded=untraded)
+    nxt = res.executions[res.executions > pd.Timestamp("2020-03-16")][0]
+    assert res.weights.loc[nxt, "XLK"] == 0 and res.trades.loc[nxt, "XLK"] < 0
+
+
+def test_coverage_boundaries_94_refused_95_runs(tmp_path):
+    import survivorship_harness as H
+
+    from ohcamel_quant.backtest.engine import SingleNameRefused
+    from ohcamel_quant.warehouse import accept
+
+    low = H.warehouse(tmp_path, covered=18, uncovered=1, name="low.duckdb")      # 18/19 = 0.947
+    H.record_acceptance(low, accept.acceptance_list_sha256())
+    with pytest.raises(SingleNameRefused, match="94% of members have prices to their exit, and 95% are needed"):
+        _members_run(low, on=True)
+    edge = H.warehouse(tmp_path, covered=19, uncovered=1, name="edge.duckdb")    # 19/20 = 0.95
+    H.record_acceptance(edge, accept.acceptance_list_sha256())
+    res = _members_run(edge, on=True)
+    assert any("95% of fixture-xs members have prices to their exit" in n for n in res.notes)
+
+
+def test_a_members_result_reports_its_lower_bound_beside_the_headline(tmp_path):
+    import survivorship_harness as H
+
+    from ohcamel_quant.warehouse import accept
+
+    path = H.warehouse(tmp_path, covered=33, uncovered=1)
+    H.record_acceptance(path, accept.acceptance_list_sha256())
+    res = _members_run(path, on=True)
+    lb = res.lower_bound
+    assert lb is not None and set(lb) >= {"total_net", "total_net_lower_bound", "ended_held", "returns_net"}
+    assert lb["total_net"] == pytest.approx(lb["total_net_lower_bound"])   # nothing ended inside this window
+    note = next(n for n in res.notes if "lower bound" in n)
+    assert "not an estimate" in note and f"{lb['total_net']:+.1%}" in note

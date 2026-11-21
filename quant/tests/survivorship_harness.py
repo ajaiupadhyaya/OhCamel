@@ -39,20 +39,21 @@ def stints(covered: int, uncovered: int) -> pd.DataFrame:
     for j in range(uncovered):
         rows.append((NINE[j % len(NINE)], date(2026, 3, 2), date(2026, 9, 1)))   # exit after the bars end
     assert all(e <= date(2026, 6, 1) for _, _, e in rows[:covered])
-    return pd.DataFrame([{"universe": UNIVERSE, "ticker": t, "start": s, "end": e, "source": "test universe",
-                          "series": t} for t, s, e in rows])
+    return pd.DataFrame([{"universe": UNIVERSE, "ticker": t, "start": s, "end": e, "source": "test universe"}
+                         for t, s, e in rows])
 
 
 def warehouse(tmp_path: Path, covered: int, uncovered: int, *, name: str = "w.duckdb") -> Path:
     path = build_fixture_warehouse(tmp_path / name)
     with open_rw(path) as con:
-        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source, series) '
-                          'SELECT universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), source, series '
+        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source) '
+                          'SELECT universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), source '
                           "FROM incoming", stints(covered, uncovered))
     return path
 
 
 def record_acceptance(path: Path, list_sha256: str, passed: int = 25, total: int = 26) -> None:
     with open_rw(path) as con:
-        con.execute("INSERT INTO delisted_acceptance VALUES (?, ?, ?, ?, ?, ?)",
+        con.execute("INSERT INTO delisted_acceptance (accepted_at, source, passed, total, list_sha256, detail) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
                     [datetime.now(UTC).replace(tzinfo=None), "eodhd", passed, total, list_sha256, "{}"])

@@ -52,13 +52,14 @@ EXPECTED_COLUMNS = {
     "corp_action_revisions": [("ticker", V), ("ex_date", D), ("kind", V), ("old_ratio", F), ("old_cash", F),
                               ("new_ratio", F), ("new_cash", F), ("source", V), ("seen_at", T)],
     # 004_membership_vintages.sql (completion task 3.5): dated index membership, every published FRED vintage
-    # 006_delisted.sql (completion task 3.8) adds series to it
-    "universe_membership": [("universe", V), ("ticker", V), ("start", D), ("end", D), ("source", V), ("series", V)],
+    "universe_membership": [("universe", V), ("ticker", V), ("start", D), ("end", D), ("source", V)],
     "fred_vintages": [("series", V), ("date", D), ("realtime_start", D), ("value", F), ("source", V),
                       ("fetched_at", T)],
     # 005_exchange_calendar.sql (completion task 3.6): the exchange's sessions, from Alpaca's /v2/calendar
     "exchange_calendar": [("date", D), ("open", "TIME"), ("close", "TIME"), ("source", V), ("fetched_at", T)],
-    # 006_delisted.sql (completion task 3.8): one row per passed acceptance test of the delisted-names source
+    # 006_delisted.sql (completion task 3.8): each membership row's price series, beside the table (its columns
+    # unchanged, so the previous code still writes it), and one row per passed acceptance test
+    "membership_series": [("universe", V), ("ticker", V), ("start", D), ("end", D), ("series", V)],
     "delisted_acceptance": [("accepted_at", T), ("source", V), ("passed", INT), ("total", INT), ("list_sha256", V),
                             ("detail", V)],
 }
@@ -211,19 +212,21 @@ def test_005_on_a_version_4_warehouse_only_adds_an_empty_calendar(tmp_path):
         assert con.execute("SELECT count(*) FROM exchange_calendar").fetchone()[0] == 0
 
 
-def test_006_on_a_version_5_warehouse_adds_a_column_and_an_empty_table(tmp_path):
-    """Completion task 3.8: the live file is at version 5. 006 adds universe_membership.series (NULL on the rows
-    already there, read as the ticker) and creates delisted_acceptance; nothing else changes."""
+def test_006_on_a_version_5_warehouse_only_adds_two_empty_tables(tmp_path):
+    """Completion task 3.8: the live file is at version 5. 006 creates membership_series and delisted_acceptance;
+    no existing table changes (a membership row with no series is read as its ticker)."""
+    from datetime import date
+
     path = tmp_path / "w.duckdb"
     con = _at_version(path, 5)
     con.execute("INSERT INTO universe_membership VALUES ('sp500', 'ETSY', NULL, DATE '2024-09-23', 'x')")
     con.close()
     with open_rw(path) as con:
         assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 6
-        assert con.execute("SELECT ticker, series FROM universe_membership").fetchall() == [("ETSY", None)]
-        assert con.execute("SELECT count(*) FROM delisted_acceptance").fetchone()[0] == 0
-    from datetime import date
-
+        assert con.execute("SELECT * FROM universe_membership").fetchall() == [
+            ("sp500", "ETSY", None, date(2024, 9, 23), "x")]
+        for t in ("membership_series", "delisted_acceptance"):
+            assert con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] == 0
     from ohcamel_quant.warehouse import readers
 
     with open_ro(path) as con:

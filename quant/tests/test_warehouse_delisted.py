@@ -171,9 +171,10 @@ def test_resumable_a_series_with_bars_to_its_exit_is_not_asked_again(tmp_path):
 
     path = H.warehouse(tmp_path, covered=4, uncovered=1)
     with open_rw(path) as con:   # a test stint of the committed AAPL series, its exit the session after its last bar
-        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source, series) '
-                          "SELECT * FROM incoming", pd.DataFrame([{"universe": H.UNIVERSE, "ticker": "AAPL",
-                          "start": date(2020, 8, 3), "end": date(2020, 9, 11), "source": "t", "series": "AAPL"}]))
+        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source) '
+                          'SELECT universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), source FROM incoming',
+                     pd.DataFrame([{"universe": H.UNIVERSE, "ticker": "AAPL", "start": date(2020, 8, 3),
+                                    "end": date(2020, 9, 11), "source": "t"}]))
     with open_ro(path) as con:
         p = delisted.plan(con, universes=[H.UNIVERSE])
     assert {w.series for w in p.keys} == {"AAPL"}
@@ -271,6 +272,9 @@ def test_the_acceptance_list_is_26_sourced_known_failures():
     assert len(rows) == 26 and len({r.ticker for r in rows}) == 26
     named = {"LEH", "BSC", "WM", "SIVB", "FRC", "BBBY"}            # the spec's six
     assert named <= {r.ticker for r in rows}
+    # fix round 1 (I6): FNM and FRE went on over the counter as the same companies; replaced by two failures among
+    # the exits the ingest itself requests
+    assert not {"FNM", "FRE"} & {r.ticker for r in rows} and {"ANR", "ENDP"} <= {r.ticker for r in rows}
     assert sum(r.kind == "failure" for r in rows) >= 10 and sum(r.kind == "acquisition" for r in rows) >= 10
     for r in rows:
         assert r.source_url.startswith("https://") and r.reason and r.last_trading_date < date(2026, 11, 20)
@@ -327,3 +331,101 @@ def test_members_panel_is_members_asof_on_every_date(tmp_path):
             assert sorted(panel.columns[panel.loc[d].to_numpy()]) == readers.members_asof(con, "sp500", d.date())
         with pytest.raises(DataUnavailable, match="not known"):
             readers.members_panel(con, "sp500", pd.DatetimeIndex(["2010-12-31"]))
+
+
+
+# ------------------------------------------------------------------ fix round 1
+def test_the_replacement_acceptance_names_are_exits_the_ingest_requests(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_ro(path) as con:
+        keys = {w.series: w for w in delisted.plan(con).keys}
+    assert keys["ANR"].exit == date(2012, 10, 2) and keys["ENDP"].exit == date(2017, 3, 2)
+    rows = {r.ticker: r for r in accept.load_acceptance_list()}
+    assert rows["ANR"].kind == rows["ENDP"].kind == "failure"
+
+
+def test_a_name_removed_but_still_trading_is_fetched_100_days_past_its_exit():
+    assert delisted.AFTER_EXIT_DAYS == 100   # covers quarterly rebalancing: the next decision is within ~92 days
+
+
+def test_a_vendor_series_that_starts_after_the_company_joined_is_refused():
+    """I4's reuse guard: under a code, a vendor series that begins after the company was already a member is another
+    company's (a later holder of the ticker): refused, never written."""
+    raw = _aapl_payload().raw                                   # starts 2020-07-31
+    ok = delisted.Want("AAPL", "AAPL.US", date(2020, 9, 11), ("t",), first=date(2020, 8, 3))
+    delisted.check_continuity(ok, raw)
+    late = delisted.Want("AAPL", "AAPL.US", date(2020, 9, 11), ("t",), first=date(2019, 1, 2))
+    with pytest.raises(DataUnavailable, match="another company"):
+        delisted.check_continuity(late, raw)
+
+
+def test_the_fetch_end_is_recorded_and_read_back(tmp_path):
+    from ohcamel_quant.warehouse.ingest.base import log_row
+
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    pay = _aapl_payload()
+    pay.fetched_to = date(2020, 9, 10)
+    with open_rw(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        w = delisted.write_delisted(con, "AAPL", KeyState(), pay)
+        log_row(con, delisted.DATASET, "AAPL", "ok", w.rows, json.dumps(w.detail, default=str), w.data_asof)
+        con.execute("COMMIT")
+    with open_ro(path) as con:
+        assert readers.fetched_to(con, ["AAPL", "SPY"]) == {"AAPL": date(2020, 9, 10)}
+
+
+def test_membership_keeps_its_columns_so_the_previous_code_still_writes_it(tmp_path):
+    """I5: 006 leaves universe_membership's column list alone (the series live in membership_series), so the
+    previous commit's positional insert still works on a migrated warehouse -- a rollback keeps ingest.universes."""
+    from ohcamel_quant.warehouse.ingest.base import insert_frame
+
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    frame = pd.DataFrame([{"universe": "sp500", "ticker": "ZZZZ", "start": date(2020, 1, 2), "end": None,
+                           "source": "previous code"}])
+    with open_rw(path) as con:
+        con.execute("DELETE FROM universe_membership WHERE universe = 'sp500'")
+        insert_frame(con, 'INSERT INTO universe_membership SELECT universe, ticker, CAST("start" AS DATE), '
+                          'CAST("end" AS DATE), source FROM incoming', frame)   # 4736d8c's statement, verbatim
+    with open_ro(path) as con:
+        assert readers.members_asof(con, "sp500", date(2024, 1, 2)) == ["ZZZZ"]
+
+
+def _stint_universe(path, name, start, end):
+    from ohcamel_quant.warehouse.ingest.base import insert_frame
+
+    with open_rw(path) as con:
+        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source) SELECT '
+                          'universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), source FROM incoming',
+                     pd.DataFrame([{"universe": name, "ticker": "AAPL", "start": start, "end": end, "source": "t"}]))
+
+
+def test_coverage_needs_bars_across_the_stint_not_only_its_last_week(tmp_path):
+    """M3: the committed AAPL slice runs 2020-07-31..2020-09-10. A stint from 2020-08-03 is covered; one from 2019
+    has only its last six weeks and is not."""
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_rw(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        delisted.write_delisted(con, "AAPL", KeyState(), _aapl_payload())
+        con.execute("COMMIT")
+    _stint_universe(path, "t-short", date(2020, 8, 3), date(2020, 9, 11))
+    _stint_universe(path, "t-long", date(2019, 1, 2), date(2020, 9, 11))
+    with open_ro(path) as con:
+        assert readers.survivorship_free(con, "t-short")[1] == 1.0
+        assert readers.survivorship_free(con, "t-long")[1] == 0.0
+
+
+def test_a_pass_the_warehouse_was_too_busy_to_record_says_so(tmp_path, monkeypatch):
+    """M5: a passing run that cannot record is its own outcome (exit 3, run again), not a failure (exit 1)."""
+    from ohcamel_quant.warehouse import db as wdb
+
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+
+    def busy(*a, **k):
+        raise wdb.WarehouseUnavailable("warehouse w.duckdb: locked by the other process (writer or reader)")
+
+    monkeypatch.setattr(wdb, "open_rw", busy)
+    code, summary = accept.run_acceptance(path, _rows_dates(0), source="eodhd")
+    assert code == 3 and summary["passed"] == 26 and summary["recorded"] is False and "locked" in summary["why"]
+    monkeypatch.undo()
+    with open_ro(path) as con:
+        assert con.execute("SELECT count(*) FROM delisted_acceptance").fetchone()[0] == 0

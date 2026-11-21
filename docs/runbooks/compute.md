@@ -210,10 +210,10 @@ miss the same session -- one single stock without a session is most likely halte
 Older findings of all three are listed only. `stale_minute`, `stale_options` and `stale_fred` never gate (the
 freshness lamps carry a stale feed). Read the first night's findings before trusting a red lamp.
 
-**006 (completion task 3.8)** adds one column to `universe_membership` (`series`, about 1,300 rows) and creates one
-empty table, `delisted_acceptance`: instant, nothing moved. Run `migrate` with the same two commands, then
+**006 (completion task 3.8)** creates two empty tables, `membership_series` and `delisted_acceptance`, and changes no
+existing table, so a rollback to the code before it keeps writing `universe_membership`: instant, nothing moved. Run `migrate` with the same two commands, then
 `dc exec ohcamel-worker python -m ohcamel_quant.warehouse run ingest.universes` (seconds) so the membership is
-rewritten with the rename map and its `series` (until then `series` is NULL and is read as the ticker, which is the
+rewritten with the rename map and each row's series (until then a row has no series and is read as its ticker, the
 old behaviour). Nothing else changes: the delisted-names source stays off until the steps under "Delisted names".
 
 ## Enqueueing a backfill
@@ -387,12 +387,20 @@ It writes `alpaca_calendar_2026-11-02_2026-12-31.json` (the response body, unmod
 
 ## Delisted names (completion task 3.8, spec R5)
 
-Single-name research is refused until the warehouse carries the companies that LEFT the index, because a universe
-of today's members holds only the survivors (docs/CHARTER.md, Data). The source is EODHD, behind a switch that is
-**off by default**: with `OHCAMEL_DELISTED_SOURCE` unset, `ingest.delisted` is not scheduled and refuses to run, and
-`run_members_backtest` refuses. It lifts only when all three hold: the switch is on, the acceptance test has passed
-on your key, and at least 95% of the S&P 500's exits since 2011 have prices to the exit. Every result then says the
-coverage it got.
+A universe of today's index members holds only the survivors (docs/CHARTER.md, Data). What the code does about it:
+
+- **Backtests over dated index membership** (`run_members_backtest`: the investable set is the index's members on
+  each date) are **refused** until the warehouse carries the companies that LEFT the index. That lifts only when all
+  three hold: the switch is on, the acceptance test has passed on your key, and at least 95% of the S&P 500's exits
+  since 2011 have prices across their stint to the exit. Every such result then says the coverage it got, and
+  reports beside its headline a lower bound in which each holding whose series ended is marked to zero.
+- **Hand-picked baskets still run** (`POST /api/backtest/run` and the sweep, walk-forward and cost pages over any
+  tickers). A basket with any name that is not one of the site's universes.json instruments is LABELLED: its first
+  note, and the run's `survivorship` field, say the names are today's survivors chosen with hindsight and that the
+  result overstates what was achievable. It is not refused.
+
+The source is EODHD, behind a switch that is **off by default**: with `OHCAMEL_DELISTED_SOURCE` unset,
+`ingest.delisted` is not scheduled and refuses to run, and `run_members_backtest` refuses.
 
 **What to buy.** EODHD "EOD Historical Data — All World", about **$20 a month** in November 2026 third-party listings
 (the spec's R5). Check the live price on https://eodhd.com/pricing before paying; the plan must include delisted US
@@ -420,10 +428,18 @@ Republic, Bed Bath & Beyond and twenty more, each with its last trading date and
 requests, under a minute. A name passes when its last bar is within 5 weekdays of its last trading date and its
 series does not run on past it (another company under the code). It prints one PASS/FAIL line per name. At 24 of 26
 or better it prints ACCEPTED, records `accepted_at` in the warehouse and exits 0; otherwise NOT ACCEPTED, exit 1,
-nothing recorded.
+nothing recorded. **Exit 3, "PASSED, NOT RECORDED"**, means the names passed but the warehouse stayed busy past the
+writer's 30-second wait (an ingest was writing): it is not a failure -- run the command again, away from the 18:20-19:15
+weekday ingests and the 06:30 UTC export.
+
+A failed company usually moved to a Q-suffixed over-the-counter code after its exchange delisting (LEHMQ, WAMUQ,
+SIVBQ, BBBYQ, ENDPQ; ANRZ for Alpha Natural Resources). A vendor that files a failure's history under that code
+rather than the exchange ticker makes both this test and `ingest.delisted` miss the name -- a correct failure, since
+the warehouse asks by the exchange ticker.
 
 **If it fails:** cancel the subscription, take the `EODHD_API_KEY` line out of `/etc/ohcamel/live.env` and recreate
-the two containers. The switch stays off and nothing else changes: single names stay refused, as now.
+the two containers. The switch stays off and nothing else changes: backtests over dated membership stay refused and
+hand-picked baskets stay labelled, as now.
 
 **If it passes:** turn the switch on and backfill.
 
@@ -441,8 +457,11 @@ class's 45-minute limit; if the limit kills it, the worker's retry carries on wi
 series written is covered and not asked again). Later Sundays ask only for new exits. It writes `bars_raw`,
 `corp_actions` and the derived `bars_daily` with `source = 'eodhd'`, the whole series from one vendor: a series
 another vendor already serves is left out with a note, never mixed. Left out too, with a note: the earlier holder
-of a ticker a later member company reused (`TICKER@DATE` in `universe_membership.series`, for example Allergan Inc.,
-`AGN@2015-03-23`), because EODHD's code for it is not documented. Such names count as uncovered.
+of a ticker a later member company reused (`TICKER@DATE` in `membership_series`, for example Allergan Inc.,
+`AGN@2015-03-23`), because EODHD's code for it is not documented. Such names count as uncovered. Each series is asked
+for up to 100 days past its exit, so a name removed from the index but still trading keeps a live price until the
+next rebalance sells it; a vendor series that begins after the company joined the index is refused (another company
+under the code).
 
 `survivorship` prints the coverage. Below 95% the refusal stands and says "N% of members have prices to their exit";
 the uncovered exits are the ones `ingest.delisted`'s notes list (vendor gaps, reused tickers, another vendor's

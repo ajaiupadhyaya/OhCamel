@@ -98,8 +98,10 @@ def vendor_dates(settings: Any = None) -> Callable[[Known], list[date]]:
 
 def run_acceptance(path: Path, fetch_dates: Callable[[Known], list[date]], *, source: str,
                    progress: Callable[[str], None] = lambda m: None) -> tuple[int, dict[str, Any]]:
-    """Judge every known name and, on a pass, append the acceptance row. Returns ``(exit code, summary)``."""
-    from .db import open_rw
+    """Judge every known name and, on a pass, append the acceptance row. Returns ``(exit code, summary)``: 0 passed
+    and recorded, 1 not passed (nothing recorded), 3 passed but NOT recorded (the warehouse stayed busy past the
+    writer's wait: run it again -- this is not a failure, and it is not acceptance either)."""
+    from .db import WarehouseUnavailable, open_rw
 
     rows = load_acceptance_list()
     results = []
@@ -114,16 +116,22 @@ def run_acceptance(path: Path, fetch_dates: Callable[[Known], list[date]], *, so
     if passed < REQUIRED:
         return 1, summary
     accepted_at = datetime.now(UTC).replace(tzinfo=None)
-    with open_rw(path) as con:
-        con.execute("INSERT INTO delisted_acceptance VALUES (?, ?, ?, ?, ?, ?)",
-                    [accepted_at, source, passed, len(rows), summary["list_sha256"], json.dumps(results)])
-    summary["accepted_at"] = accepted_at.isoformat()
+    try:
+        with open_rw(path) as con:
+            con.execute("INSERT INTO delisted_acceptance (accepted_at, source, passed, total, list_sha256, detail) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        [accepted_at, source, passed, len(rows), summary["list_sha256"], json.dumps(results)])
+    except WarehouseUnavailable as e:
+        summary |= {"recorded": False, "why": str(e)}
+        return 3, summary
+    summary |= {"recorded": True, "accepted_at": accepted_at.isoformat()}
     return 0, summary
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run against the configured vendor (EODHD_API_KEY) and the configured warehouse (OHCAMEL_QUANT_WAREHOUSE_PATH).
-    Exit 0 accepted (recorded), 1 not accepted (nothing recorded), 2 not configured."""
+    Exit 0 accepted (recorded), 1 not accepted (nothing recorded), 2 not configured, 3 passed but not recorded
+    (the warehouse was busy: run it again)."""
     from ..config import get_settings
     from ..data.base import DataUnavailable
     from .db import warehouse_path
@@ -144,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     except DataUnavailable as e:
         print(f"accept-delisted: FAILED -- {e}", file=sys.stderr)
         return 1
+    if code == 3:
+        print(f"accept-delisted: PASSED, NOT RECORDED -- {summary['passed']} of {summary['total']} known names passed, "
+              f"but the warehouse was busy ({summary['why']}): run it again. This is not a failure.")
+        return code
     verdict = "ACCEPTED" if code == 0 else "NOT ACCEPTED"
     print(f"accept-delisted: {verdict} -- {summary['passed']} of {summary['total']} known names have prices up to "
           f"their last trading date (needs {REQUIRED})")
