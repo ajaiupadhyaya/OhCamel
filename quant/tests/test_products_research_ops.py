@@ -309,6 +309,7 @@ def test_old_warehouse_findings_are_listed_but_only_new_ones_fail_the_lamp(monke
     monkeypatch.setattr(DI, "warehouse_sessions", lambda con: None)
     monkeypatch.setattr(DI, "vendor_changes", lambda con, tickers: [])
     monkeypatch.setattr(DI, "stale_feeds", lambda con, now: [])
+    monkeypatch.setattr(DI, "ended_series", lambda con: set())   # task 3.8, tested in test_warehouse_delisted.py
     c2 = ctx(None, {"tickers": ["OLD", "OK"]})
     c2._warehouse = WH()
     spec = DI.run({"tickers": ["OLD", "OK"]}, c2)

@@ -99,6 +99,10 @@ FRESHNESS: dict[str, dict[str, Any]] = {
     "fred_vintages": {"rule": "age", "max_age_h": 30},
     # completion task 3.6: refreshed inside the weekday bars run (ingest/calendar.py), so aged like a session kind
     "exchange_calendar": {"rule": "age", "max_age_h": 78},
+    # completion task 3.8: ingest.delisted's own rule (weekly), kept out of DATASETS: the job runs only while
+    # OHCAMEL_DELISTED_SOURCE is on, and its rows are bars_daily's, judged there; a lamp that is never lit while the
+    # switch is off would be a lamp always red.
+    "delisted": {"rule": "age", "max_age_h": 204},
 }
 SUCCESS = ("ok", "partial")
 

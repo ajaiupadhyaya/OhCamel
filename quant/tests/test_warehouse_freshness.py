@@ -207,9 +207,10 @@ def _seconds(text):
 
 
 def test_schedules_cover_every_handler():
-    # every handler scheduled; ingest.option_snapshots twice (completion task 3.4: the 15:45 and 16:20 pulls)
+    # every handler scheduled; ingest.option_snapshots twice (completion task 3.4: the 15:45 and 16:20 pulls);
+    # ingest.delisted (task 3.8) is declared here but loaded only while its switch is on (test_warehouse_delisted.py)
     kinds = [s["kind"] for s in SCHEDULES]
-    assert set(kinds) == set(HANDLERS) and len(HANDLERS) == 9 and len(kinds) == 10
+    assert set(kinds) == set(HANDLERS) and len(HANDLERS) == 10 and len(kinds) == 11
     assert kinds.count("ingest.option_snapshots") == 2
     assert len({s["name"] for s in SCHEDULES}) == len(SCHEDULES)
     for s in SCHEDULES:

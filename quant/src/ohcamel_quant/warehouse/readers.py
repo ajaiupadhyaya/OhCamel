@@ -22,6 +22,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..config import Settings
@@ -249,11 +250,21 @@ def warehouse_prices(settings: Settings, tickers: list[str], start: date | None,
     return (bars.prices(want, start, end, field), None) if bars is not None else (None, note)
 
 
+def _membership_universe(con: Any, universe: str) -> str:
+    u = universe.strip().lower()
+    n = con.execute("SELECT count(*) FROM universe_membership WHERE universe = ?", [u]).fetchone()[0]
+    if not n:
+        raise DataUnavailable(f"{u}: no dated membership in the warehouse")
+    return u
+
+
 def members_asof(con: Any, universe: str, asof: date) -> list[str]:
-    """The index's members on ``asof`` (completion task 3.5): every ticker with a ``universe_membership`` stint
+    """The index's members on ``asof`` (completion task 3.5): every company with a ``universe_membership`` stint
     whose ``start`` is on or before ``asof`` (or unknown: before coverage) and whose ``end`` is after it (or NULL),
-    sorted. Refuses -- ``DataUnavailable`` -- a universe with no stints, and a date before the changes table's
-    coverage (``constituents.COVERAGE_START``), where the stints cannot be trusted."""
+    named by its price series (completion task 3.8: the key its bars are stored under -- its last ticker across
+    renames, ``TICKER@DATE`` for the earlier holder of a reused ticker; the ticker itself for most), sorted.
+    Refuses -- ``DataUnavailable`` -- a universe with no stints, and a date before the changes table's coverage
+    (``constituents.COVERAGE_START``), where the stints cannot be trusted."""
     from .constituents import COVERAGE_START
 
     u = universe.strip().lower()
@@ -261,13 +272,110 @@ def members_asof(con: Any, universe: str, asof: date) -> list[str]:
     if cov is not None and asof < cov:
         raise DataUnavailable(f"{u}: membership before {cov.isoformat()} is not known (the changes table is "
                               "complete only from then)")
-    n = con.execute("SELECT count(*) FROM universe_membership WHERE universe = ?", [u]).fetchone()[0]
-    if not n:
-        raise DataUnavailable(f"{u}: no dated membership in the warehouse")
-    rows = con.execute('SELECT DISTINCT ticker FROM universe_membership WHERE universe = ? AND '
-                       '("start" IS NULL OR "start" <= ?) AND ("end" IS NULL OR "end" > ?) ORDER BY ticker',
+    u = _membership_universe(con, u)
+    rows = con.execute('SELECT DISTINCT coalesce(series, ticker) FROM universe_membership WHERE universe = ? AND '
+                       '("start" IS NULL OR "start" <= ?) AND ("end" IS NULL OR "end" > ?) ORDER BY 1',
                        [u, asof, asof]).fetchall()
     return [t for (t,) in rows]
+
+
+def members_panel(con: Any, universe: str, index: pd.DatetimeIndex) -> pd.DataFrame:
+    """:func:`members_asof` on every date of ``index`` at once: a boolean frame (dates x series), True where the
+    series is a member that day. The same rule, row for row (tests/test_backtest_engine.py checks the two agree);
+    one read instead of one per date. Columns: every series with a stint overlapping the index's span, sorted."""
+    from .constituents import COVERAGE_START
+
+    u = universe.strip().lower()
+    idx = pd.DatetimeIndex(index)
+    cov = COVERAGE_START.get(u)
+    if len(idx) and cov is not None and idx[0].date() < cov:
+        raise DataUnavailable(f"{u}: membership before {cov.isoformat()} is not known (the changes table is "
+                              "complete only from then)")
+    u = _membership_universe(con, u)
+    if not len(idx):
+        return pd.DataFrame(index=idx, dtype=bool)
+    st = con.execute('SELECT coalesce(series, ticker), "start", "end" FROM universe_membership WHERE universe = ? '
+                     'AND ("start" IS NULL OR "start" <= ?) AND ("end" IS NULL OR "end" > ?)',
+                     [u, idx[-1].date(), idx[0].date()]).fetchall()
+    names = sorted({k for k, _, _ in st})
+    out = pd.DataFrame(False, index=idx, columns=pd.Index(names, name="ticker"))
+    for k, a, b in st:
+        on = np.ones(len(idx), dtype=bool)
+        if a is not None:
+            on &= idx >= pd.Timestamp(a)
+        if b is not None:
+            on &= idx < pd.Timestamp(b)
+        out[k] = out[k].to_numpy() | on
+    return out
+
+
+#: A member's exit counts as covered when its series has a bar on one of the 5 weekdays before it (the acceptance
+#: test's tolerance, completion task 3.8; a holiday among them makes it stricter, never looser).
+EXIT_SESSIONS = 5
+
+
+def membership_exits(con: Any, universe: str) -> pd.DataFrame:
+    """Every exit of a company from ``universe``: ``series, start, end`` with ``end`` not NULL, the rows of one
+    series that meet (a rename splits a stint into rows that touch) merged first, so a rename is not an exit."""
+    u = _membership_universe(con, universe)
+    rows = con.execute('SELECT coalesce(series, ticker), "start", "end" FROM universe_membership WHERE universe = ? '
+                       'ORDER BY 1, "start" NULLS FIRST', [u]).fetchall()
+    merged: list[list[Any]] = []
+    for k, a, b in rows:
+        if merged and merged[-1][0] == k and merged[-1][2] is not None and a is not None and merged[-1][2] >= a:
+            merged[-1][2] = None if b is None else max(merged[-1][2], b)
+            continue
+        merged.append([k, a, b])
+    return pd.DataFrame([m for m in merged if m[2] is not None], columns=["series", "start", "end"])
+
+
+def exit_coverage(con: Any, universe: str) -> pd.DataFrame:
+    """The universe's exits on or after its changes table's coverage start (:func:`membership_exits`), each with
+    ``covered``: its series has a bar in ``bars_daily`` on one of the ``EXIT_SESSIONS`` weekdays before the exit."""
+    from .constituents import COVERAGE_START
+
+    u = universe.strip().lower()
+    exits = membership_exits(con, u)
+    cov = COVERAGE_START.get(u)
+    if cov is not None:
+        exits = exits[exits["end"] >= cov]
+    if exits.empty:
+        return exits.assign(covered=pd.Series(dtype=bool))
+    ends = pd.to_datetime(exits["end"]).dt.date
+    frame = pd.DataFrame({"i": range(len(exits)), "series": exits["series"].to_numpy(), "end": ends.to_numpy(),
+                          "lo": [np.busday_offset(e, -EXIT_SESSIONS, roll="forward").astype(object) for e in ends]})
+    con.register("exits_incoming", frame)
+    try:
+        hit = {i for (i,) in con.execute(
+            "SELECT x.i FROM exits_incoming x WHERE EXISTS (SELECT 1 FROM bars_daily b WHERE b.ticker = x.series "
+            "AND b.date >= x.lo AND b.date < x.\"end\")").fetchall()}
+    finally:
+        con.unregister("exits_incoming")
+    out = exits.reset_index(drop=True).copy()
+    out["covered"] = [i in hit for i in range(len(out))]
+    return out
+
+
+def survivorship_free(con: Any, universe: str) -> tuple[bool, float]:
+    """``(accepted, coverage)`` (completion task 3.8, spec R5). ``coverage``: the share of the universe's exits --
+    every company that left it, on or after its changes table's coverage start -- whose price series has a bar in
+    ``bars_daily`` on one of the ``EXIT_SESSIONS`` weekdays before the exit (:func:`exit_coverage`: the bars to their
+    end date that a backtest needs to realise what a holding was worth when it left). 1.0 when no member has left.
+    ``accepted``: a ``delisted_acceptance`` row (written only by tools/accept_delisted.py, on a pass) for the
+    committed acceptance list as it is now. Refuses a universe with no dated membership."""
+    import duckdb
+
+    from .accept import acceptance_list_sha256
+
+    exits = exit_coverage(con, universe)
+    try:
+        accepted = bool(con.execute("SELECT count(*) FROM delisted_acceptance WHERE list_sha256 = ?",
+                                    [acceptance_list_sha256()]).fetchone()[0])
+    except duckdb.CatalogException:   # a warehouse before migration 006 has no acceptance table: not accepted
+        accepted = False
+    if exits.empty:
+        return accepted, 1.0
+    return accepted, float(exits["covered"].sum()) / float(len(exits))
 
 
 def fred_vintage_rows(con: Any, series: str, asof: date) -> pd.DataFrame:

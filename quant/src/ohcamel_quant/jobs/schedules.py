@@ -24,7 +24,7 @@ import yaml
 from .artifacts import latest_artifact
 from .cron import Cron, latest_due, parse_cron
 from .db import connect, iso, parse_iso
-from .kinds import REGISTRY
+from .kinds import REGISTRY, switched_on
 from .queue import MEM_CLASSES, enqueue
 
 log = logging.getLogger("ohcamel_quant.jobs.schedules")
@@ -79,7 +79,10 @@ def _entry(raw: Any) -> ScheduleEntry:
                          raw["priority"], raw["mem_class"], raw["heavy"])
 
 
-def load_schedules(path: Path = DEFAULT_PATH) -> Schedules:
+def load_schedules(path: Path = DEFAULT_PATH, *, settings: Any = None) -> Schedules:
+    """The schedules in ``path``, less the entries of a kind whose switch is off (``kinds.KindSpec.switch``,
+    completion task 3.8: ingest.delisted while OHCAMEL_DELISTED_SOURCE is unset) -- such a job is not scheduled at
+    all. Every entry is validated first, switched off or not."""
     doc = yaml.safe_load(Path(path).read_text()) or {}
     if not isinstance(doc, dict) or set(doc) - {"max_age", "schedules"}:
         raise ValueError(f"{path}: top level must be max_age and schedules")
@@ -87,6 +90,7 @@ def load_schedules(path: Path = DEFAULT_PATH) -> Schedules:
     names = [e.name for e in entries]
     if len(names) != len(set(names)):
         raise ValueError(f"{path}: duplicate schedule names")
+    entries = tuple(e for e in entries if switched_on(REGISTRY[e.kind], settings))
     max_age: dict[str, float] = {}
     for kind, dur in (doc.get("max_age") or {}).items():
         if kind not in REGISTRY:

@@ -52,11 +52,15 @@ EXPECTED_COLUMNS = {
     "corp_action_revisions": [("ticker", V), ("ex_date", D), ("kind", V), ("old_ratio", F), ("old_cash", F),
                               ("new_ratio", F), ("new_cash", F), ("source", V), ("seen_at", T)],
     # 004_membership_vintages.sql (completion task 3.5): dated index membership, every published FRED vintage
-    "universe_membership": [("universe", V), ("ticker", V), ("start", D), ("end", D), ("source", V)],
+    # 006_delisted.sql (completion task 3.8) adds series to it
+    "universe_membership": [("universe", V), ("ticker", V), ("start", D), ("end", D), ("source", V), ("series", V)],
     "fred_vintages": [("series", V), ("date", D), ("realtime_start", D), ("value", F), ("source", V),
                       ("fetched_at", T)],
     # 005_exchange_calendar.sql (completion task 3.6): the exchange's sessions, from Alpaca's /v2/calendar
     "exchange_calendar": [("date", D), ("open", "TIME"), ("close", "TIME"), ("source", V), ("fetched_at", T)],
+    # 006_delisted.sql (completion task 3.8): one row per passed acceptance test of the delisted-names source
+    "delisted_acceptance": [("accepted_at", T), ("source", V), ("passed", INT), ("total", INT), ("list_sha256", V),
+                            ("detail", V)],
 }
 EXPECTED_PKS = {
     "universe_members": ["universe", "ticker"],
@@ -108,8 +112,8 @@ def test_migrate_is_idempotent(tmp_path):
     with open_rw(path) as con:
         first = migrate(con)
         # 001_init, 002_raw_bars, 003_option_quotes, 004_membership_vintages, 005_exchange_calendar
-        assert migrate(con) == first == 5
-        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 5
+        assert migrate(con) == first == 6
+        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 6
 
 
 def test_002_on_a_version_1_warehouse_adds_tables_and_leaves_bars_daily_alone(tmp_path):
@@ -128,7 +132,7 @@ def test_002_on_a_version_1_warehouse_adds_tables_and_leaves_bars_daily_alone(tm
     before = con.execute("SELECT * FROM bars_daily").fetchall()
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 6
         assert con.execute("SELECT * FROM bars_daily").fetchall() == before
         assert con.execute("SELECT count(*) FROM bars_raw").fetchone()[0] == 0
         assert con.execute("SELECT count(*) FROM corp_actions").fetchone()[0] == 0
@@ -163,7 +167,7 @@ def test_003_on_a_version_2_warehouse_keeps_every_row_as_the_after_close_pull(tm
     con.executemany("INSERT INTO option_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", OLD_ROWS)
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 6
         got = con.execute('SELECT underlying, "asof", expiry, strike, cp, bid, ask, last, volume, open_interest, '
                           "source, spot, quote_ts, vendor_iv, pull, quote_ts_source FROM option_snapshots "
                           'ORDER BY "asof", underlying, cp').fetchall()
@@ -188,7 +192,7 @@ def test_004_on_a_version_3_warehouse_only_adds_two_empty_tables(tmp_path):
     before = {t: con.execute(f"SELECT * FROM {t} ORDER BY ALL").fetchall() for t in ("fred", "universe_members")}
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 6
         assert {t: con.execute(f"SELECT * FROM {t} ORDER BY ALL").fetchall() for t in before} == before
         for t in ("universe_membership", "fred_vintages"):
             assert con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] == 0
@@ -202,9 +206,28 @@ def test_005_on_a_version_4_warehouse_only_adds_an_empty_calendar(tmp_path):
     before = con.execute("SELECT * FROM bars_daily ORDER BY ALL").fetchall()
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 6
         assert con.execute("SELECT * FROM bars_daily ORDER BY ALL").fetchall() == before
         assert con.execute("SELECT count(*) FROM exchange_calendar").fetchone()[0] == 0
+
+
+def test_006_on_a_version_5_warehouse_adds_a_column_and_an_empty_table(tmp_path):
+    """Completion task 3.8: the live file is at version 5. 006 adds universe_membership.series (NULL on the rows
+    already there, read as the ticker) and creates delisted_acceptance; nothing else changes."""
+    path = tmp_path / "w.duckdb"
+    con = _at_version(path, 5)
+    con.execute("INSERT INTO universe_membership VALUES ('sp500', 'ETSY', NULL, DATE '2024-09-23', 'x')")
+    con.close()
+    with open_rw(path) as con:
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 6
+        assert con.execute("SELECT ticker, series FROM universe_membership").fetchall() == [("ETSY", None)]
+        assert con.execute("SELECT count(*) FROM delisted_acceptance").fetchone()[0] == 0
+    from datetime import date
+
+    from ohcamel_quant.warehouse import readers
+
+    with open_ro(path) as con:
+        assert readers.members_asof(con, "sp500", date(2024, 1, 2)) == ["ETSY"]   # NULL series is the ticker
 
 
 def test_an_interrupted_move_resumes_on_the_next_open(tmp_path):

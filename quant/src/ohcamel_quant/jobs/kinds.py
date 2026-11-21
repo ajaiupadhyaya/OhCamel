@@ -36,6 +36,9 @@ class KindSpec:
     #: Completion task 3.7 (spec R6): the kind may run on a burst machine against the nightly warehouse export and
     #: have its artifact uploaded through the burst door (jobs/burst_door.py). Only the four heavy research kinds.
     burstable: bool = False
+    #: Completion task 3.8 (spec R5): the name of a Settings field that switches the kind on. While it is falsy the
+    #: kind is not scheduled (jobs/schedules.py drops its entries) and its handler refuses. Only ingest.delisted.
+    switch: str | None = None
 
     @property
     def retries(self) -> int:
@@ -57,6 +60,17 @@ REGISTRY: dict[str, KindSpec] = {}
 #: limit is per kind, not per memory class's admission budget: S 10 min, M 45 min, L its compute budget plus 10.
 WALL_LIMIT_S = {"S": 600, "M": 2700}
 WALL_MARGIN_S = 600
+
+
+def switched_on(spec: KindSpec, settings: Any = None) -> bool:
+    """True unless the kind has a switch (``KindSpec.switch``) and that setting is off."""
+    if spec.switch is None:
+        return True
+    if settings is None:
+        from ..config import get_settings
+
+        settings = get_settings()
+    return bool(getattr(settings, spec.switch))
 
 
 def retries_for(kind: str) -> int:
@@ -143,6 +157,10 @@ for _kind, _mem, _heavy in (("ingest.universes", "S", False), ("ingest.bars_dail
                             ("ingest.holdings_13f", "S", False), ("ingest.option_snapshots", "S", False),
                             ("ingest.corp_actions", "S", False)):
     register(KindSpec(_kind, f"{_W}:{_kind.split('.', 1)[1]}", _mem, heavy=_heavy))
+# completion task 3.8 (spec R5): delisted names from the paid source, M (about 320 series a first run, 3 requests
+# each, inside the 45-minute limit; resumable per series), not heavy (it waits on the network). Switched: not
+# scheduled, and refusing, unless OHCAMEL_DELISTED_SOURCE=eodhd.
+register(KindSpec("ingest.delisted", f"{_W}:delisted", "M", heavy=False, switch="delisted_source"))
 
 # Lane M's products (compute plan M2-M8; ship plan Lane M). Private: scheduled only.
 _P = "ohcamel_quant.products"

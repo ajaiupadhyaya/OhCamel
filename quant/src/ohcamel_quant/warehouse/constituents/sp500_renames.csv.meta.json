@@ -1,0 +1,31 @@
+{
+  "source": "compiled",
+  "synthetic": false,
+  "rows": 19,
+  "compiled_utc": "2026-11-20T23:30:00Z",
+  "what": "A ticker rename map for the S&P 500 membership walk (constituents/__init__.py, completion task 3.8): old ticker, new ticker, the first session under the new ticker, the company, and the notice that states it. Each date was read from the cited notice on 2026-11-20 (web search of the issuer's, the exchange's or the SEC's own pages); 'verified' says what each notice states.",
+  "scope": "Renames of S&P 500 members whose addition the changes table records under the OLD ticker (the rows the walk could not place without a map). A rename whose addition the table already records under the new ticker needs no row and must not have one (the walk would then look for the old ticker's addition).",
+  "left_out": "WLP to ANTM (2014) and ANTM to ELV (2022): the 2014 date could not be confirmed from a notice in the time available; both fall before the change table's coverage start for the addition (WLP added 1999), so membership inside coverage is the same without them. 21st Century Fox (FOX, FOXA): not a rename; Fox Corp took both tickers on 2019-03-19 and the table records the additions without 21st Century Fox's removal.",
+  "sha256": "a9f3372dce76770a4b5e72c15c442f307b30c7cec2f9324fa10f47a6b7a0eb0e",
+  "verified": {
+    "SATS": "EchoStar press release 2026-06-22: common stock begins trading as ECHO on Nasdaq effective 2026-06-24",
+    "CDAY": "8-K dated 2024-01-31: stops trading as CDAY and trades as DAY on the NYSE effective 2024-02-01",
+    "FLT": "press release 2024-03-25: trading under CPAY on the NYSE begins that day",
+    "RE": "press release 2023-05-18: renamed Everest Group, Ltd., trades as NYSE: EG effective 2023-07-10",
+    "FB": "press release 2022-05-31: Class A shares trade as META on Nasdaq from 2022-06-09",
+    "COG": "8-K 2021-10-01: expects to trade as CTRA from the open of the NYSE on 2021-10-04",
+    "IR": "press release 2020-03-02: Ingersoll-Rand plc, renamed Trane Technologies, begins trading as TT that day; Gardner Denver is renamed Ingersoll Rand Inc.",
+    "JEC": "8-K 2019-11-24: trading under the ticker J begins 2019-12-10",
+    "HRS": "press release 2019-07-01: Harris shares, traded as HRS, begin trading as LHX that day",
+    "KORS": "press release 2018-12-31 (8-K exhibit): trades on the NYSE as CPRI from 2019-01-02",
+    "LUK": "8-K 2018-05-23: trades on the NYSE as JEF from the next trading day, 2018-05-24",
+    "PCLN": "8-K: effective 2018-02-27 the common stock trades as BKNG",
+    "DLPH": "8-K: renamed Aptiv PLC, shares trade on the NYSE as APTV from 2017-12-05 (Delphi Technologies as DLPH the same day)",
+    "TSO": "Andeavor 10-K FY2017: name change effective 2017-08-01, NYSE symbol ANDV",
+    "UA": "Under Armour 10-K FY2016: Class A listed as UA until 2016-12-06 and as UAA since 2016-12-07",
+    "UA.C": "8-K 2016-11-28: Class C ticker changes from UA.C to UA (effective 2016-12-07, the same change as Class A)",
+    "ACT": "Allergan plc 10-K FY2015: traded on the NYSE as ACT until the open on 2015-06-15, when it took the name Allergan and the symbol AGN",
+    "JOYG": "press release 2011-11-04 (8-K exhibit): transfer from Nasdaq (JOYG) to the NYSE as JOY, trading expected 2011-12-06; the completed transfer and bell ceremony on 2011-12-06 reported by E&MJ (https://www.e-mj.com/leading-developments/joy-global-executives-ring-the-bell-on-nyse/)",
+    "SBC": "Channel Futures: SBC, renamed AT&T Inc. on closing its purchase of AT&T Corp. (2005-11-18), trades on the NYSE as T from 2005-12-01"
+  }
+}

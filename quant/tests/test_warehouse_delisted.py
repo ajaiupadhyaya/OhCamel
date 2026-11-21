@@ -1,0 +1,329 @@
+"""Delisted names behind a switch (completion task 3.8, spec R5): the switch, the plan of what to fetch, one company
+across a rename and two across a reused ticker, the write path, the coverage the gate reads, and the acceptance
+list and its judge. Everything here runs on committed real data; nothing needs a vendor response."""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+import json
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import pytest
+import survivorship_harness as H
+
+from ohcamel_quant.config import Settings
+from ohcamel_quant.data import eodhd
+from ohcamel_quant.data.base import DataUnavailable, Provenance
+from ohcamel_quant.data.market import MarketData
+from ohcamel_quant.jobs.kinds import get_kind
+from ohcamel_quant.jobs.schedules import load_schedules
+from ohcamel_quant.products.data_integrity import vendor_changes
+from ohcamel_quant.warehouse import accept, readers
+from ohcamel_quant.warehouse import schedules as wh_schedules
+from ohcamel_quant.warehouse.constituents import (
+    Change,
+    load_changes,
+    load_constituents,
+    load_renames,
+    membership_intervals,
+)
+from ohcamel_quant.warehouse.db import open_ro, open_rw
+from ohcamel_quant.warehouse.fixture_db import build_fixture_warehouse
+from ohcamel_quant.warehouse.ingest import HANDLERS, delisted
+from ohcamel_quant.warehouse.ingest.base import KeyState, LocalContext
+from ohcamel_quant.warehouse.ingest.universes import membership_rows
+
+DATA = Path(__file__).parent / "data"
+ON = {"OHCAMEL_DELISTED_SOURCE": "eodhd"}
+
+
+# ------------------------------------------------------------------ the switch
+def test_the_switch_is_off_by_default_and_reads_the_specs_variable(monkeypatch):
+    monkeypatch.delenv("OHCAMEL_DELISTED_SOURCE", raising=False)
+    assert Settings().delisted_source == ""
+    monkeypatch.setenv("OHCAMEL_DELISTED_SOURCE", "eodhd")
+    monkeypatch.setenv("EODHD_API_KEY", "k3y-in-env")
+    s = Settings()
+    assert s.delisted_source == "eodhd" and s.eodhd_api_key == "k3y-in-env" and "k3y-in-env" not in repr(s)
+    monkeypatch.setenv("OHCAMEL_DELISTED_SOURCE", "yahoo")
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_switch_off_the_job_is_not_scheduled(monkeypatch):
+    monkeypatch.delenv("OHCAMEL_DELISTED_SOURCE", raising=False)
+    assert not [e for e in load_schedules().entries if e.kind == "ingest.delisted"]
+    on = [e for e in load_schedules(settings=Settings(**ON)).entries if e.kind == "ingest.delisted"]
+    assert len(on) == 1
+    e = on[0]
+    # Sunday 04:00 New York is ingest.sec_facts' minute; the nearest free quarter-hour after it (04:05 is the
+    # selftest, 04:30 the 13F ingest)
+    assert (e.cron, e.priority, e.mem_class, e.heavy) == ("15 4 * * 0", 2, "M", False)
+    assert get_kind("ingest.delisted").wall_limit_s == 2700
+
+
+def test_the_two_schedule_declarations_agree_and_share_no_minute():
+    s = load_schedules(settings=Settings(**ON))
+    want = next(w for w in wh_schedules.SCHEDULES if w["kind"] == "ingest.delisted")
+    got = next(e for e in s.entries if e.name == want["name"])
+    assert (got.cron, got.params, got.priority, got.mem_class, got.heavy) == (
+        want["cron"], want["params"], want["priority"], want["mem_class"], want["heavy"])
+    sunday = [e for e in s.entries if e.cron.split()[4] in ("0", "*") and e.kind != "ingest.delisted"]
+    assert not [e for e in sunday if e.cron.split()[:2] == ["15", "4"]]
+
+
+def test_switch_off_the_handler_refuses(tmp_path):
+    ctx = LocalContext(market=MarketData(Settings(warehouse_path=tmp_path / "w.duckdb")))
+    with pytest.raises(DataUnavailable, match="OHCAMEL_DELISTED_SOURCE"):
+        HANDLERS["ingest.delisted"]({}, ctx)
+
+
+def test_switch_on_without_a_key_the_handler_refuses(tmp_path):
+    ctx = LocalContext(market=MarketData(Settings(warehouse_path=tmp_path / "w.duckdb", EODHD_API_KEY=None, **ON)))
+    with pytest.raises(DataUnavailable, match="EODHD_API_KEY"):
+        HANDLERS["ingest.delisted"]({}, ctx)
+
+
+# ------------------------------------------------------------------ the rename map
+def test_the_rename_map_is_sourced_and_carries_a_sidecar():
+    rn = load_renames("sp500")
+    meta = json.loads((Path(rn.path).with_name(Path(rn.path).name + ".meta.json")).read_text())
+    assert meta["synthetic"] is False and meta["rows"] == len(rn.renames)
+    assert all(r.source_url.startswith("https://") for r in rn.renames)
+    assert ("FB", "META", date(2022, 6, 9)) in {(r.old, r.new, r.effective) for r in rn.renames}
+
+
+def test_one_company_across_a_rename_is_one_series():
+    frame, _ = membership_rows("sp500")
+    meta = frame[frame["series"] == "META"].sort_values("start")
+    # Facebook joined on 2013-12-23 as FB and is META from 2022-06-09: two rows, one company, one price series
+    assert list(meta["ticker"]) == ["FB", "META"]
+    assert meta["start"].iloc[0] == date(2013, 12, 23) and meta["end"].iloc[0] == date(2022, 6, 9)
+    assert meta["start"].iloc[1] == date(2022, 6, 9) and pd.isna(meta["end"].iloc[1])
+
+
+def test_a_ticker_reused_by_a_later_company_is_not_spliced(tmp_path):
+    frame, _ = membership_rows("sp500")
+    # IR: Ingersoll-Rand plc (a member from 2010, renamed Trane Technologies, TT, on 2020-03-02) and Ingersoll Rand
+    # Inc. (the former Gardner Denver, a member from 2020-03-03): two rows under IR, two price series
+    ir = frame[frame["ticker"] == "IR"].sort_values("start")
+    assert len(ir) == 2 and set(ir["series"]) == {"TT", "IR"}
+    # AGN: Allergan Inc. (left 2015-03-23) and Allergan plc (the former Actavis, AGN from 2015-06-15)
+    agn = frame[frame["ticker"] == "AGN"]
+    assert len(agn) == 2 and set(agn["series"]) == {"AGN", "AGN@2015-03-23"}
+    # the delisted ingest never asks the vendor for the earlier company under the later one's code
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_ro(path) as con:
+        p = delisted.plan(con)
+    keys = {w.series: w for w in p.keys}
+    assert "AGN" in keys and keys["AGN"].code == "AGN.US" and keys["AGN"].exit == date(2020, 5, 12)
+    assert "AGN@2015-03-23" not in keys
+    assert any(n.startswith("AGN@2015-03-23") and "reused" in n for n in p.skipped)
+
+
+def test_the_map_resolves_the_rows_the_walk_could_not_place():
+    c, ch = load_constituents("sp500"), load_changes("sp500")
+    current = [t for t, _ in c.members]
+    _, before = membership_intervals(current, c.as_of, ch.changes)
+    _, after = membership_intervals(current, c.as_of, ch.changes, load_renames("sp500").renames)
+    assert len(before) == 28 and len(after) == 9
+    late = [n for n in after if int(n.split()[2][:4]) >= 2011]
+    assert len(late) == 1 and late[0].startswith("FOX added 2015-09-18")   # 21st Century Fox: a missing removal
+
+
+def test_member_counts_with_the_map(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_ro(path) as con:
+        counts = [len(readers.members_asof(con, "sp500", date(y, 6, 30))) for y in range(2011, 2027)]
+        assert "META" not in readers.members_asof(con, "sp500", date(2013, 6, 28))   # not before FB joined
+        assert "META" in readers.members_asof(con, "sp500", date(2014, 6, 30))
+    assert all(497 <= n <= 506 for n in counts), counts
+
+
+def test_the_walk_reads_a_rename_both_ways():
+    renames = load_renames("sp500").renames
+    stints, notes = membership_intervals(["META"], date(2026, 1, 1), [Change(date(2013, 12, 23), "FB", "TER")],
+                                         [r for r in renames if r.old == "FB"])
+    assert not notes
+    got = {(s.ticker, s.start, s.end, s.series) for s in stints}
+    assert ("FB", date(2013, 12, 23), date(2022, 6, 9), "META") in got and ("META", date(2022, 6, 9), None, "META") in got
+
+
+# ------------------------------------------------------------------ the plan and the write path
+def test_the_plan_takes_exits_without_bars_to_their_exit(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_ro(path) as con:
+        p = delisted.plan(con)
+    keys = {w.series for w in p.keys}
+    # failures and acquisitions inside coverage, under the ticker whose prices the vendor keeps (META not FB)
+    assert {"SIVB", "FRC", "TWTR", "ATVI", "ANDV", "CPRI", "JOY"} <= keys
+    assert not {"FB", "DLPH", "KORS", "JOYG", "TSO"} & keys
+    assert "META" not in keys and "AAPL" not in keys   # current members are the nightly bars' business
+    for w in p.keys:
+        assert w.exit >= date(2011, 1, 1) and w.code == eodhd.code_for(w.series)
+
+
+def test_resumable_a_series_with_bars_to_its_exit_is_not_asked_again(tmp_path):
+    from ohcamel_quant.warehouse.ingest.base import insert_frame
+
+    path = H.warehouse(tmp_path, covered=4, uncovered=1)
+    with open_rw(path) as con:   # a test stint of the committed AAPL series, its exit the session after its last bar
+        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source, series) '
+                          "SELECT * FROM incoming", pd.DataFrame([{"universe": H.UNIVERSE, "ticker": "AAPL",
+                          "start": date(2020, 8, 3), "end": date(2020, 9, 11), "source": "t", "series": "AAPL"}]))
+    with open_ro(path) as con:
+        p = delisted.plan(con, universes=[H.UNIVERSE])
+    assert {w.series for w in p.keys} == {"AAPL"}
+    # SPY's exit after the committed bars stop is uncovered, but another vendor serves SPY: never mixed
+    assert len(p.skipped) == 1 and p.skipped[0].startswith("SPY: served by")
+    with open_rw(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        delisted.write_delisted(con, "AAPL", KeyState(), _aapl_payload())
+        con.execute("COMMIT")
+    with open_ro(path) as con:
+        assert delisted.plan(con, universes=[H.UNIVERSE]).keys == []   # written once, not asked again
+
+
+def _aapl_payload() -> delisted.DelistedPayload:
+    base = DATA / "eodhd_{}_AAPL.US_2020-07-31_2020-09-10.json"
+    served = eodhd.parse_eod(json.loads(Path(str(base).format("eod")).read_bytes()))
+    splits = eodhd.parse_splits(json.loads(Path(str(base).format("splits")).read_bytes()))
+    divs = eodhd.parse_dividends(json.loads(Path(str(base).format("div")).read_bytes()))
+    prov = Provenance("eodhd", "2026-11-20T00:00:00Z", detail={"fixture": True})
+    return delisted.DelistedPayload(eodhd.raw_bars(served, splits), eodhd.as_actions(splits, divs), prov,
+                                    date(1990, 1, 1), date(2020, 9, 10), True)
+
+
+def test_a_series_is_written_wholly_from_the_vendor(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_rw(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        w = delisted.write_delisted(con, "AAPL", KeyState(), _aapl_payload())
+        con.execute("COMMIT")
+    with open_ro(path) as con:
+        src = {r[0] for r in con.execute("SELECT DISTINCT source FROM bars_daily WHERE ticker = 'AAPL'").fetchall()}
+        raw = {r[0] for r in con.execute("SELECT DISTINCT source FROM bars_raw WHERE ticker = 'AAPL'").fetchall()}
+        acts = con.execute("SELECT kind, ratio, cash, source FROM corp_actions WHERE ticker = 'AAPL' "
+                           "ORDER BY ex_date").fetchall()
+        assert vendor_changes(con, ["AAPL"]) == []   # one vendor from first bar to last: no vendor_change
+        adj = readers.bars_panel(con, ["AAPL"], None, None)[0]["AAPL"]
+    assert src == raw == {"eodhd"} and w.data_asof == date(2020, 9, 10)
+    assert ("split", 4.0, None, "eodhd") in acts and any(a[0] == "dividend" and a[2] == pytest.approx(0.82) for a in acts)
+    assert adj.index[-1] == pd.Timestamp("2020-09-10") and adj.notna().all()
+
+
+def test_a_name_another_vendor_serves_is_never_mixed(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_ro(path) as con:
+        before = con.execute("SELECT count(*), min(source) FROM bars_daily WHERE ticker = 'SPY'").fetchone()
+    with open_rw(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        with pytest.raises(DataUnavailable, match="never half one vendor"):
+            delisted.write_delisted(con, "SPY", KeyState(), _aapl_payload())
+        con.execute("ROLLBACK")
+    with open_ro(path) as con:
+        assert con.execute("SELECT count(*), min(source) FROM bars_daily WHERE ticker = 'SPY'").fetchone() == before
+        assert con.execute("SELECT count(*) FROM bars_raw WHERE ticker = 'SPY' AND source = 'eodhd'").fetchone()[0] == 0
+
+
+def test_an_ended_series_is_not_called_stale(tmp_path):
+    from ohcamel_quant.products import data_integrity as DI
+
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_rw(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        delisted.write_delisted(con, "AAPL", KeyState(), _aapl_payload())
+        con.execute("COMMIT")
+    with open_ro(path) as con:
+        assert DI.ended_series(con) == {"AAPL"}
+
+
+# ------------------------------------------------------------------ coverage
+def test_coverage_comes_from_membership_and_bars(tmp_path):
+    path = H.warehouse(tmp_path, covered=4, uncovered=1)
+    with open_ro(path) as con:
+        assert readers.survivorship_free(con, H.UNIVERSE) == (False, pytest.approx(0.80))
+    H.record_acceptance(path, accept.acceptance_list_sha256())
+    with open_ro(path) as con:
+        assert readers.survivorship_free(con, H.UNIVERSE) == (True, pytest.approx(0.80))
+
+
+def test_acceptance_of_another_list_is_not_acceptance(tmp_path):
+    path = H.warehouse(tmp_path, covered=33, uncovered=1)
+    H.record_acceptance(path, "0" * 64)
+    with open_ro(path) as con:
+        accepted, cov = readers.survivorship_free(con, H.UNIVERSE)
+    assert accepted is False and cov == pytest.approx(33 / 34)
+
+
+def test_coverage_refuses_a_universe_without_dated_membership(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_ro(path) as con, pytest.raises(DataUnavailable, match="no dated membership"):
+        readers.survivorship_free(con, "ndx100")
+
+
+# ------------------------------------------------------------------ the acceptance list and its judge
+def test_the_acceptance_list_is_26_sourced_known_failures():
+    rows = accept.load_acceptance_list()
+    assert len(rows) == 26 and len({r.ticker for r in rows}) == 26
+    named = {"LEH", "BSC", "WM", "SIVB", "FRC", "BBBY"}            # the spec's six
+    assert named <= {r.ticker for r in rows}
+    assert sum(r.kind == "failure" for r in rows) >= 10 and sum(r.kind == "acquisition" for r in rows) >= 10
+    for r in rows:
+        assert r.source_url.startswith("https://") and r.reason and r.last_trading_date < date(2026, 11, 20)
+    raw = accept.ACCEPTANCE_LIST.read_bytes()
+    meta = json.loads(accept.ACCEPTANCE_LIST.with_name(accept.ACCEPTANCE_LIST.name + ".meta.json").read_text())
+    assert meta["synthetic"] is False and meta["sha256"] == hashlib.sha256(raw).hexdigest() == accept.acceptance_list_sha256()
+    with accept.ACCEPTANCE_LIST.open() as f:
+        header = next(csv.reader(line for line in f if not line.startswith("#")))
+    assert header[:4] == ["ticker", "name", "last_trading_date", "reason"]
+
+
+@pytest.mark.parametrize("dates,ok", [
+    (["2008-09-15", "2008-09-16", "2008-09-17"], True),        # stops on the day
+    (["2008-09-10", "2008-09-11"], True),                     # stops four sessions early
+    (["2008-09-02", "2008-09-03"], False),                    # stops two weeks early
+    ([], False),                                              # nothing
+    (["2008-09-16", "2008-09-17", "2008-10-15"], False),      # runs on: another company under the code
+])
+def test_the_judge(dates, ok):
+    got, why = accept.judge(date(2008, 9, 17), [date.fromisoformat(d) for d in dates])
+    assert got is ok and why
+
+
+def _rows_dates(drop: int):
+    rows = accept.load_acceptance_list()
+    gone = {r.ticker for r in rows[:drop]}
+    return lambda r: [] if r.ticker in gone else [r.last_trading_date]
+
+
+def test_acceptance_passes_at_24_of_26_and_records_it(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    code, summary = accept.run_acceptance(path, _rows_dates(2), source="eodhd")
+    assert code == 0 and summary["passed"] == 24
+    with open_ro(path) as con:
+        rows = con.execute("SELECT passed, total, list_sha256 FROM delisted_acceptance").fetchall()
+    assert rows == [(24, 26, accept.acceptance_list_sha256())]
+
+
+def test_acceptance_fails_at_23_and_records_nothing(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    code, summary = accept.run_acceptance(path, _rows_dates(3), source="eodhd")
+    assert code == 1 and summary["passed"] == 23 and len(summary["failed"]) == 3
+    with open_ro(path) as con:
+        assert con.execute("SELECT count(*) FROM delisted_acceptance").fetchone()[0] == 0
+
+
+def test_members_panel_is_members_asof_on_every_date(tmp_path):
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    days = pd.DatetimeIndex(["2011-01-03", "2013-12-20", "2013-12-23", "2015-03-23", "2020-03-02", "2020-03-03",
+                             "2022-06-08", "2022-06-09", "2026-11-19"])
+    with open_ro(path) as con:
+        panel = readers.members_panel(con, "sp500", days)
+        for d in days:
+            assert sorted(panel.columns[panel.loc[d].to_numpy()]) == readers.members_asof(con, "sp500", d.date())
+        with pytest.raises(DataUnavailable, match="not known"):
+            readers.members_panel(con, "sp500", pd.DatetimeIndex(["2010-12-31"]))

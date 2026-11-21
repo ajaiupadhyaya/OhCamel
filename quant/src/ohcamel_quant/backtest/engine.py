@@ -39,6 +39,25 @@ covariance of asset returns through ``d`` -- an ex-ante, lagged estimate --
 then gross leverage ``sum |w|`` is capped. See Moreira & Muir (2017) and
 Harvey, Hoyle, Korgaonkar, Rattray, Sargaison & Van Hemert (2018), "The Impact
 of Volatility Targeting", *Journal of Portfolio Management* 45(1).
+
+Single names over dated membership (completion task 3.8, spec R5)
+-----------------------------------------------------------------
+A universe of index members built from today's list holds only the survivors, so
+single-name backtests are REFUSED (docs/CHARTER.md, Data) unless the warehouse can
+show it carries the names that left: :func:`run_members_backtest` runs only when
+the delisted-names switch is on (``OHCAMEL_DELISTED_SOURCE=eodhd``), the acceptance
+test on known failures has passed on the vendor (``tools/accept_delisted.py``), and
+at least ``COVERAGE_REQUIRED`` (95%) of the universe's exits have prices to the
+exit (``readers.survivorship_free``). Every result's notes carry the coverage.
+
+The investable set on a decision date is ``readers.members_asof`` that day; a target
+on any other name is zeroed. A name with no bar on the EXECUTION session cannot be
+traded there: a buy is not made, and a holding is sold. A holding in a name whose
+series ENDS (a delisting: its last bar is its last trade) earns that bar's return,
+is then valued at that last price -- no return, no interest -- and is sold at it at
+the next execution, paying costs. The loss up to the last trade is in the returns;
+nothing is dropped. No delisting return beyond the last exchange print is applied
+(the vendor serves none): an over-the-counter tail after a delisting is not seen.
 """
 
 from __future__ import annotations
@@ -52,6 +71,7 @@ import numpy as np
 import pandas as pd
 
 from .. import kernels
+from ..data.base import DataUnavailable
 from .estimators import ewma_cov_at, rolling_cov_at
 
 Rebalance = Literal["daily", "weekly", "monthly", "quarterly", "signal", "never"]
@@ -72,6 +92,9 @@ class StrategyContext:
     prices: pd.DataFrame
     rf: pd.Series | None = None
     market: pd.Series | None = None
+    #: Dated membership (completion task 3.8): True where a name is an index member that day (``readers.members_panel``,
+    #: point in time). None for a fixed universe.
+    members: pd.DataFrame | None = None
 
     @property
     def returns(self) -> pd.DataFrame:
@@ -82,6 +105,7 @@ class StrategyContext:
             prices=self.prices.loc[:end],
             rf=None if self.rf is None else self.rf.loc[:end],
             market=None if self.market is None else self.market.loc[:end],
+            members=None if self.members is None else self.members.loc[:end],
         )
 
 
@@ -362,3 +386,107 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
         trades=pd.DataFrame(trades, idx, cols),
         kernel_engine=kernels.engine_of("backtest_weights"),
     )
+
+
+# ------------------------------------------------------- single names over dated membership (task 3.8, R5)
+#: The share of a universe's exits that must have prices to the exit before single names run (spec R5).
+COVERAGE_REQUIRED = 0.95
+
+
+class SingleNameRefused(DataUnavailable):
+    """A single-name backtest over index members was refused: the data cannot show it is survivorship-free."""
+
+
+def _pct(x: float) -> int:
+    """Whole percent, rounded DOWN: 94.9% never reads as 95%."""
+    return int(math.floor(x * 100.0 + 1e-9))
+
+
+def survivorship_gate(con: Any, universe: str, settings: Any = None) -> str:
+    """The note every result over ``universe`` carries, or :class:`SingleNameRefused` saying why it cannot run
+    (module docstring). Reads the switch from ``settings`` and the coverage from the warehouse."""
+    from ..warehouse import readers
+
+    if settings is None:
+        from ..config import get_settings
+
+        settings = get_settings()
+    u = universe.strip().lower()
+    if settings.delisted_source != "eodhd":
+        raise SingleNameRefused(
+            f"single-name backtests over {u} members are refused: the delisted-names source is off "
+            "(OHCAMEL_DELISTED_SOURCE is not set), so the members' prices are the survivors' (docs/CHARTER.md, Data)")
+    accepted, coverage = readers.survivorship_free(con, u)
+    said = f"{_pct(coverage)}% of members have prices to their exit"
+    if not accepted:
+        raise SingleNameRefused(
+            f"single-name backtests over {u} members are refused: the delisted-names source has not passed its "
+            f"acceptance test on known failures (tools/accept_delisted.py); {said}")
+    if coverage < COVERAGE_REQUIRED:
+        raise SingleNameRefused(
+            f"single-name backtests over {u} members are refused: {said}, and {_pct(COVERAGE_REQUIRED)}% are needed")
+    return (f"Survivorship: {_pct(coverage)}% of {u} members have prices to their exit (delisted names from "
+            f"{settings.delisted_source}, accepted on known failures); the rest are absent from this result.")
+
+
+def members_weights(prices: pd.DataFrame, targets: pd.DataFrame, members: pd.DataFrame, *,
+                    execution_lag: int = 1) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
+    """The accounting panel and the tradable targets for names that enter and leave (module docstring).
+
+    ``prices``: closes with NaN where a name has no bar. Returns ``(acc, tgt, ended)``: ``acc`` is ``prices`` with
+    each name's last close carried forward after its last bar (no return) and its first close carried back before
+    its first bar (never held there); ``tgt`` is ``targets`` with every decision's weight zeroed for a name that is
+    not a member that day or has no bar on the session it would execute (rows with no signal stay NaN); ``ended``
+    maps each name whose bars stop before the panel's last session to its last bar's date."""
+    px = prices.sort_index()
+    has_bar = px.notna()
+    m = members.reindex(index=px.index, columns=px.columns).fillna(False).astype(bool)
+    t = targets.reindex(index=px.index, columns=px.columns)
+    signal = t.notna().any(axis=1)
+    at_exec = has_bar.shift(-execution_lag).fillna(False).astype(bool)
+    tgt = t.fillna(0.0).where(m & at_exec, 0.0)
+    tgt[~signal] = np.nan
+    last = {c: px[c].last_valid_index() for c in px.columns}
+    ended = {c: str(d.date()) for c, d in last.items() if d is not None and d < px.index[-1]}
+    acc = px.ffill().bfill()
+    return acc, tgt, ended
+
+
+def run_members_backtest(con: Any, universe: str, fn: WeightsFn, params: dict[str, Any], start: Any, end: Any,
+                         config: EngineConfig | None = None, *, settings: Any = None,
+                         rf: pd.Series | None = None) -> BacktestResult:
+    """A single-name backtest whose investable set is ``readers.members_asof`` on each date (module docstring).
+    Refused (:class:`SingleNameRefused`) unless :func:`survivorship_gate` passes; the strategy sees the members'
+    adjusted closes (NaN where a name has no bar) and ``ctx.members``; the look-ahead audit runs as in
+    :func:`run_backtest`."""
+    from ..warehouse import readers
+
+    config = config or EngineConfig()
+    note = survivorship_gate(con, universe, settings)
+    days = con.execute("SELECT DISTINCT date FROM bars_daily WHERE date >= ? AND date <= ? ORDER BY date",
+                       [start, end]).fetchall()
+    index = pd.DatetimeIndex([pd.Timestamp(d) for (d,) in days]).astype("datetime64[ns]").rename("date")
+    members = readers.members_panel(con, universe, index)
+    names = [c for c in members.columns if members[c].any()]
+    prices, repairs = readers.bars_panel(con, names, start, end, field="adj_close")
+    absent = sorted(set(names) - set(prices.columns))
+    prices = prices.reindex(index)
+    members = members.reindex(columns=prices.columns)
+    ctx = StrategyContext(prices=prices, rf=rf, members=members)
+    targets = fn(ctx, **params)
+    audit = audit_causality(fn, ctx, params, targets, config.audit_points)
+    acc, tgt, ended = members_weights(prices, targets, members, execution_lag=config.execution_lag)
+    res = run_weights(acc, tgt, config, rf)
+    res.audit = audit
+    carried = [c for c, d in ended.items()
+               if (res.weights[c].loc[res.weights.index > pd.Timestamp(d)].abs() > 1e-12).any()]
+    notes = [note]
+    if absent:
+        notes.append(f"{len(absent)} member(s) in the window have no bars and are left out: "
+                     + ", ".join(absent[:12]) + (" ..." if len(absent) > 12 else ""))
+    if carried:
+        notes.append(f"{len(carried)} holding(s) outlived their series (a delisting): each was valued at its last "
+                     "price from its last bar and sold there at the next execution: "
+                     + ", ".join(f"{c} ({ended[c]})" for c in carried[:12]))
+    res.notes = [*notes, *res.notes, *repairs[:20]]
+    return res

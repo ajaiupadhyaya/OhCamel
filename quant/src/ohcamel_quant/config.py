@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -78,12 +79,24 @@ class Settings(BaseSettings):
     # which is the public site's bridge and off by default; this one only
     # records an artifact. Blank means unset, and the report then says so.
     live_engine_url: str | None = "http://ohcamel-live:8081"
+    # Delisted names (completion task 3.8, spec R5): the paid source of end-of-day bars and corporate actions for
+    # every ticker that was ever an index member, delisted ones included. OFF ("") by default; the spec's switch is
+    # OHCAMEL_DELISTED_SOURCE=eodhd. With it off, ingest.delisted is not scheduled and refuses to run, and
+    # single-name backtests over dated membership stay refused (backtest/engine.py). The key is EODHD's API token,
+    # never logged, never in a provenance record or a URL that is stored (data/eodhd.py).
+    delisted_source: Literal["", "eodhd"] = Field(default="", validation_alias="OHCAMEL_DELISTED_SOURCE")
+    eodhd_api_key: str | None = Field(default=None, repr=False, validation_alias="EODHD_API_KEY")
     # Directory of committed real-data fixtures (used offline and in tests).
     fixtures_dir: Path = Field(default=REPO_ROOT / "fixtures")
 
+    @field_validator("delisted_source", mode="before")
+    @classmethod
+    def _switch(cls, v: object) -> object:
+        return v.strip().lower() if isinstance(v, str) else v
+
     @field_validator(
         "alpaca_key_id", "alpaca_secret_key", "fred_api_key", "engine_url", "hostd_url", "warehouse_path",
-        "signals_dir", "live_engine_url", mode="before",
+        "signals_dir", "live_engine_url", "eodhd_api_key", mode="before",
     )
     @classmethod
     def _blank_is_unset(cls, v: object) -> object:

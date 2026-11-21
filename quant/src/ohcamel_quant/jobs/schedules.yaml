@@ -24,6 +24,7 @@ max_age:
   ingest.holdings_13f: 204h
   ingest.option_snapshots: 78h
   ingest.corp_actions: 78h
+  ingest.delisted: 204h
   # Lane M (products). Nightly kinds 78h like Lane C's session kinds; intraday 35m (one missed run + slack,
   # the deck's MC_MAX_AGE_S on ship/lane-f).
   risk.mc_atlas: 78h
@@ -151,6 +152,17 @@ schedules:
     params: {}
     priority: 2
     mem_class: S
+    heavy: false
+
+  # completion task 3.8 (spec R5): delisted names from the paid source, weekly. The brief's Sunday 04:00 is
+  # ingest.sec_facts' minute (04:05 is the selftest, 04:30 the 13F ingest): the nearest free quarter-hour, 04:15.
+  # Loaded only while OHCAMEL_DELISTED_SOURCE=eodhd: jobs/schedules.py drops a switched-off kind's entries.
+  - name: warehouse-delisted
+    cron: "15 4 * * 0"
+    kind: ingest.delisted
+    params: {}
+    priority: 2
+    mem_class: M
     heavy: false
 
   # Intraday (compute plan I.4 P9: "nightly and intraday"): the minute bars'

@@ -24,6 +24,7 @@ from ohcamel_quant.warehouse.constituents import (
     Change,
     load_changes,
     load_constituents,
+    load_renames,
     membership_intervals,
     parse_changes_wikitext,
     parse_constituents_wikitext,
@@ -214,8 +215,8 @@ def _membership_db(tmp_path, changes):
                           for s in stints])
     path = tmp_path / "m.duckdb"
     with open_rw(path) as con:
-        insert_frame(con, 'INSERT INTO universe_membership SELECT universe, ticker, CAST("start" AS DATE), '
-                          'CAST("end" AS DATE), source FROM incoming', frame)
+        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source) SELECT universe, '
+                          'ticker, CAST("start" AS DATE), CAST("end" AS DATE), source FROM incoming', frame)
     return path, notes
 
 
@@ -274,4 +275,5 @@ def test_run_universes_writes_dated_membership(tmp_path):
     with open_ro(tmp_path / "w.duckdb") as con:
         n1 = con.execute("SELECT count(*) FROM universe_membership").fetchone()[0]
     c = load_constituents("sp500")
-    assert n1 == len(membership_intervals([t for t, _ in c.members], c.as_of, load_changes("sp500").changes)[0])
+    assert n1 == len(membership_intervals([t for t, _ in c.members], c.as_of, load_changes("sp500").changes,
+                                          load_renames("sp500").renames)[0])

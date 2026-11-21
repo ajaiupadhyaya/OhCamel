@@ -210,6 +210,12 @@ miss the same session -- one single stock without a session is most likely halte
 Older findings of all three are listed only. `stale_minute`, `stale_options` and `stale_fred` never gate (the
 freshness lamps carry a stale feed). Read the first night's findings before trusting a red lamp.
 
+**006 (completion task 3.8)** adds one column to `universe_membership` (`series`, about 1,300 rows) and creates one
+empty table, `delisted_acceptance`: instant, nothing moved. Run `migrate` with the same two commands, then
+`dc exec ohcamel-worker python -m ohcamel_quant.warehouse run ingest.universes` (seconds) so the membership is
+rewritten with the rename map and its `series` (until then `series` is NULL and is read as the ticker, which is the
+old behaviour). Nothing else changes: the delisted-names source stays off until the steps under "Delisted names".
+
 ## Enqueueing a backfill
 
 The warehouse fills itself through its ingest schedules: each ingest is incremental from the newest stored date
@@ -378,6 +384,91 @@ uv run --frozen pytest -q tests/test_warehouse_freshness.py tests/test_warehouse
 
 It writes `alpaca_calendar_2026-11-02_2026-12-31.json` (the response body, unmodified) and its `.meta.json`
 (synthetic false, source, fetch instant in UTC, sha256); neither file names the keys. Commit both.
+
+## Delisted names (completion task 3.8, spec R5)
+
+Single-name research is refused until the warehouse carries the companies that LEFT the index, because a universe
+of today's members holds only the survivors (docs/CHARTER.md, Data). The source is EODHD, behind a switch that is
+**off by default**: with `OHCAMEL_DELISTED_SOURCE` unset, `ingest.delisted` is not scheduled and refuses to run, and
+`run_members_backtest` refuses. It lifts only when all three hold: the switch is on, the acceptance test has passed
+on your key, and at least 95% of the S&P 500's exits since 2011 have prices to the exit. Every result then says the
+coverage it got.
+
+**What to buy.** EODHD "EOD Historical Data — All World", about **$20 a month** in November 2026 third-party listings
+(the spec's R5). Check the live price on https://eodhd.com/pricing before paying; the plan must include delisted US
+tickers. Nothing is bought, subscribed or spent by the agent. The optional second item in R5 is below.
+
+**Where the key goes.** `/etc/ohcamel/live.env` (root:ohcamel 0640), next to the Alpaca and FRED keys: it is the file
+the worker and the quant containers read (`env_file` in deploy/docker-compose.yml). Not `deploy/.env`, which by its
+own header holds no secrets and is not passed to the containers. One line first, the key only:
+
+```bash
+sudoedit /etc/ohcamel/live.env          # add:  EODHD_API_KEY=<your key>
+dc up -d ohcamel-worker ohcamel-quant   # recreate both so they read it (compose sees the changed env file)
+```
+
+**The one command: the acceptance test**, with the switch still off (it needs only the key):
+
+```bash
+dc exec ohcamel-worker python -m ohcamel_quant.warehouse accept-delisted
+```
+
+It is `tools/accept_delisted.py` (the image has no `tools/` directory, so on the droplet it runs as the module). It
+asks EODHD for each of the 26 known failures and acquisitions in
+`quant/src/ohcamel_quant/warehouse/delisted_acceptance.csv` (Lehman, Bear Stearns, Washington Mutual, SVB, First
+Republic, Bed Bath & Beyond and twenty more, each with its last trading date and the notice it came from), 26
+requests, under a minute. A name passes when its last bar is within 5 weekdays of its last trading date and its
+series does not run on past it (another company under the code). It prints one PASS/FAIL line per name. At 24 of 26
+or better it prints ACCEPTED, records `accepted_at` in the warehouse and exits 0; otherwise NOT ACCEPTED, exit 1,
+nothing recorded.
+
+**If it fails:** cancel the subscription, take the `EODHD_API_KEY` line out of `/etc/ohcamel/live.env` and recreate
+the two containers. The switch stays off and nothing else changes: single names stay refused, as now.
+
+**If it passes:** turn the switch on and backfill.
+
+```bash
+sudoedit /etc/ohcamel/live.env          # add:  OHCAMEL_DELISTED_SOURCE=eodhd
+dc up -d ohcamel-worker ohcamel-quant
+dc exec ohcamel-worker python -m ohcamel_quant.jobs run-schedule warehouse-delisted
+dc exec ohcamel-worker python -m ohcamel_quant.warehouse survivorship sp500   # switch, accepted, coverage, verdict
+```
+
+`warehouse-delisted` then runs every Sunday at 04:15 New York (the brief's 04:00 is `ingest.sec_facts`' minute). The
+first run asks for every S&P 500 exit since 2011 without prices to it -- about 320 series, three requests each (bars,
+splits, dividends), well inside the plan's daily request allowance (check it on the plan page) and inside the M
+class's 45-minute limit; if the limit kills it, the worker's retry carries on with the series still missing (a
+series written is covered and not asked again). Later Sundays ask only for new exits. It writes `bars_raw`,
+`corp_actions` and the derived `bars_daily` with `source = 'eodhd'`, the whole series from one vendor: a series
+another vendor already serves is left out with a note, never mixed. Left out too, with a note: the earlier holder
+of a ticker a later member company reused (`TICKER@DATE` in `universe_membership.series`, for example Allergan Inc.,
+`AGN@2015-03-23`), because EODHD's code for it is not documented. Such names count as uncovered.
+
+`survivorship` prints the coverage. Below 95% the refusal stands and says "N% of members have prices to their exit";
+the uncovered exits are the ones `ingest.delisted`'s notes list (vendor gaps, reused tickers, another vendor's
+short history).
+
+**Record the delisted fixture (unblocks one test).** `quant/tests/test_data_eodhd.py::test_the_adapter_parses_a_delisted_response`
+skips, BLOCKED, until a real delisted-ticker response is committed (the agent had no paid key; EODHD's free
+demonstration key serves only a few listed tickers, which is how the AAPL fixture was recorded). On a machine with
+the key:
+
+```bash
+cd quant && EODHD_API_KEY=<key> uv run --frozen python -m ohcamel_quant.warehouse eodhd-slice LEH.US 2008-08-01 2008-10-31 tests/data --delisted --last-trading-date 2008-09-17
+uv run --frozen pytest -q tests/test_data_eodhd.py   # no skips
+```
+
+It writes the eod, splits and div responses unmodified, each with a `.meta.json` (synthetic false, URL and
+parameters without the key, fetch instant in UTC, sha256); no file names the key. If EODHD keeps Lehman under
+another code, use that code. Commit the six files.
+
+**Cost.** About $20 a month, nothing else: the requests are inside the plan, and the warehouse grows by the
+delisted names' daily bars (about 320 series of up to 35 years, a few million rows, tens of MB in DuckDB).
+
+**Optional, not built: whole-market minute bars.** R5's second item is Massive (formerly Polygon) Stocks Starter,
+about $29 a month, for minute bars from the whole market in place of IEX's 2-3%. Its switch would be
+`OHCAMEL_MINUTE_SOURCE=massive`. This plan documents it and does not build it: nothing reads that variable, and
+setting it changes nothing. Full SIP at $99 does not fit the budget.
 
 ## Restoring jobs.sqlite
 

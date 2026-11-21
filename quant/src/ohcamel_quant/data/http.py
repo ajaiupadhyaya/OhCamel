@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from typing import Any
@@ -34,6 +35,31 @@ from ..config import Settings
 from .base import DataUnavailable
 
 log = logging.getLogger("ohcamel_quant.data.http")
+
+#: Query parameters that carry a credential (FRED's api_key, EODHD's api_token). httpx logs every request's full URL
+#: at INFO, and the worker logs INFO (completion task 3.8): their values are replaced by *** in every such line.
+SECRET_PARAMS = ("api_token", "api_key", "apikey", "token")
+_SECRET_RE = re.compile(r"((?:" + "|".join(SECRET_PARAMS) + r")=)[^&\s\"']+", re.I)
+
+
+def scrub(text: str) -> str:
+    """``text`` with the value of every credential query parameter replaced by ``***``."""
+    return _SECRET_RE.sub(r"\1***", text)
+
+
+class _ScrubSecrets(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and record.args:   # httpx passes the URL object itself
+            record.args = tuple(scrub(a) if isinstance(a, str) else scrub(str(a)) if a.__class__.__name__ == "URL"
+                                else a for a in record.args)
+        if isinstance(record.msg, str):
+            record.msg = scrub(record.msg)
+        return True
+
+
+for _name in ("httpx", "httpcore"):
+    if not any(isinstance(f, _ScrubSecrets) for f in logging.getLogger(_name).filters):
+        logging.getLogger(_name).addFilter(_ScrubSecrets())
 
 #: Minimum seconds between request *starts* to the same host.
 HOST_MIN_INTERVAL: dict[str, float] = {

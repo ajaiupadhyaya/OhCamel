@@ -21,7 +21,9 @@ the archive under ``fixtures/archive/`` is how a repair is recorded. Checks, all
 - ``bad_print``: a high above 1.25x or a low below 0.75x the session body (open/close).
 - ``nonpositive``: a price at or below zero, or negative volume.
 - ``calendar``: duplicate or unsorted sessions.
-- ``stale``: the last bar is more than 5 business days older than the newest bar of any series checked.
+- ``stale``: the last bar is more than 5 business days older than the newest bar of any series checked. Not for a
+  series wholly from the delisted-names source (completion task 3.8, ``ended_series``): its last bar is the name's
+  last trade, an end and not a delay.
 - ``adjust_drift`` (completion task 3.2, warehouse only): the adjusted close DERIVED from ``bars_raw`` and
   ``corp_actions`` (``warehouse/adjust.py``) against the vendor's ``bars_daily.adj_close``, flagged when they
   differ by more than ``DRIFT_RTOL`` (1e-6) relative. One finding per series, dated on the LAST session beyond
@@ -236,6 +238,16 @@ def stale_feeds(con: Any, now: Any) -> list[dict[str, Any]]:
     return out
 
 
+def ended_series(con: Any) -> set[str]:
+    """Series in ``bars_daily`` wholly from the delisted-names source (``source = 'eodhd'`` on every row): written by
+    ``ingest.delisted`` up to the name's exit, so their end is not staleness (completion task 3.8)."""
+    try:
+        return {t for (t,) in con.execute("SELECT ticker FROM bars_daily GROUP BY ticker "
+                                          "HAVING bool_and(source = 'eodhd')").fetchall()}
+    except DataUnavailable:
+        return set()
+
+
 def _clip_missing(ticker: str, found: list[dict[str, Any]], recent: pd.Timestamp | None) -> list[dict[str, Any]]:
     """Every recent hole; the old ones up to MISSING_LISTED, the rest in one counted row."""
     new = [f for f in found if recent is not None and pd.Timestamp(f["date"]) >= recent]
@@ -424,7 +436,11 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                     holes[t] = found
             if i % 50 == 0:
                 ctx.progress((i + 1) / len(tickers), t)
-        rows += [{"source": "warehouse", **f} for f in stale(last)]
+        ended = ended_series(ctx.warehouse)
+        rows += [{"source": "warehouse", **f} for f in stale({t: d for t, d in last.items() if t not in ended})]
+        if ended & set(last):
+            notes.append(f"stale: {len(ended & set(last))} series from the delisted-names source end at the name's "
+                         "exit and are not checked for staleness")
     drift: list[dict[str, Any]] = []
     counts: dict[str, Any] = {}
     if last:

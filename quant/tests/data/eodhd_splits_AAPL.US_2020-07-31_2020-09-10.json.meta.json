@@ -1,0 +1,19 @@
+{
+  "source": "eodhd",
+  "synthetic": false,
+  "code": "AAPL.US",
+  "endpoint": "splits",
+  "url": "https://eodhd.com/api/splits/AAPL.US",
+  "params": {
+    "fmt": "json"
+  },
+  "params_note": "the key is not recorded: it is a credential, sent with the request only",
+  "fetched_utc": "2026-11-20T23:59:10Z",
+  "fetched_note": "the instant the response finished arriving (UTC, this machine's clock)",
+  "sha256": "323f936a0805a83bfedf17626e83c780cf8c7eddd6699ca5937cc20e43c1412e",
+  "bytes": 256,
+  "kept": "the whole response body, unmodified",
+  "delisted": false,
+  "used_by": "completion task 3.8: the EODHD adapter's tests (tests/test_data_eodhd.py, tests/test_warehouse_delisted.py)",
+  "key_note": "fetched with EODHD's public demonstration key, which its documentation offers for a few listed tickers (AAPL among them); not the owner's key, which does not exist yet"
+}

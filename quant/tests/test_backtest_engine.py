@@ -212,3 +212,113 @@ def test_per_asset_traded_notional_sums_to_turnover(px):
                        EngineConfig(rebalance="monthly"))
     per = res.trade_summary()["per_asset"]
     assert float(per["traded_notional"].sum()) == pytest.approx(float(res.live(res.turnover).sum()), rel=1e-12)
+
+
+# ------------------------------------------------- single names over dated membership (completion task 3.8, R5)
+def _members_eq(ctx: StrategyContext) -> pd.DataFrame:
+    """Equal weight over the index's members on each date that have a price that day (causal)."""
+    m = ctx.members.reindex(index=ctx.prices.index, columns=ctx.prices.columns).fillna(False).astype(bool)
+    m &= ctx.prices.notna()
+    n = m.sum(axis=1).replace(0, np.nan)
+    return m.astype(float).div(n, axis=0)
+
+
+def _gate_settings(on: bool):
+    from ohcamel_quant.config import Settings
+
+    return Settings(OHCAMEL_DELISTED_SOURCE="eodhd" if on else "")
+
+
+def _members_run(path, on: bool):
+    import survivorship_harness as H
+
+    from ohcamel_quant.backtest.engine import run_members_backtest
+    from ohcamel_quant.warehouse.db import open_ro
+
+    with open_ro(path) as con:
+        return run_members_backtest(con, H.UNIVERSE, _members_eq, {}, pd.Timestamp("2018-01-02").date(),
+                                    pd.Timestamp("2025-12-31").date(), EngineConfig(rebalance="monthly"),
+                                    settings=_gate_settings(on))
+
+
+def test_single_names_are_refused_with_the_switch_off(tmp_path):
+    import survivorship_harness as H
+
+    from ohcamel_quant.backtest.engine import SingleNameRefused
+    from ohcamel_quant.warehouse import accept
+
+    path = H.warehouse(tmp_path, covered=33, uncovered=1)
+    H.record_acceptance(path, accept.acceptance_list_sha256())
+    with pytest.raises(SingleNameRefused, match="OHCAMEL_DELISTED_SOURCE"):
+        _members_run(path, on=False)
+
+
+def test_single_names_are_refused_at_80_percent_coverage(tmp_path):
+    import survivorship_harness as H
+
+    from ohcamel_quant.backtest.engine import SingleNameRefused
+    from ohcamel_quant.warehouse import accept
+
+    path = H.warehouse(tmp_path, covered=4, uncovered=1)
+    H.record_acceptance(path, accept.acceptance_list_sha256())   # accepted: the coverage alone refuses
+    with pytest.raises(SingleNameRefused, match="80% of members have prices to their exit"):
+        _members_run(path, on=True)
+
+
+def test_single_names_are_refused_until_acceptance_is_recorded(tmp_path):
+    import survivorship_harness as H
+
+    from ohcamel_quant.backtest.engine import SingleNameRefused
+
+    path = H.warehouse(tmp_path, covered=33, uncovered=1)
+    with pytest.raises(SingleNameRefused, match="tools/accept_delisted.py"):
+        _members_run(path, on=True)
+
+
+def test_single_names_run_at_97_percent_with_acceptance_and_say_so(tmp_path):
+    import survivorship_harness as H
+
+    from ohcamel_quant.warehouse import accept, readers
+    from ohcamel_quant.warehouse.db import open_ro
+
+    path = H.warehouse(tmp_path, covered=33, uncovered=1)
+    H.record_acceptance(path, accept.acceptance_list_sha256())
+    res = _members_run(path, on=True)
+    assert any("97% of fixture-xs members have prices to their exit" in n for n in res.notes)
+    assert res.audit["passed"] and len(res.executions) > 50
+    # every book held is a subset of members_asof on the decision date that led to it
+    lag = res.config.execution_lag
+    idx = res.weights.index
+    with open_ro(path) as con:
+        for d in res.decisions[::7]:
+            held = res.weights.iloc[idx.get_loc(d) + lag]
+            held = set(held[held.abs() > 1e-12].index)
+            assert held <= set(readers.members_asof(con, H.UNIVERSE, d.date()))
+
+
+def test_a_position_in_a_name_whose_series_ends_is_closed_at_its_last_price(px):
+    """A delisted name's last bar is its last trade: the holding carries the move up to that bar, is valued at that
+    price afterwards (no return, no interest), and the next execution sells it there. Never dropped. Real SPY and
+    XLK closes; XLK's bars are cut after 2020-03-16 as a delisting would cut them."""
+    from ohcamel_quant.backtest.engine import members_weights
+
+    p = px[["SPY", "XLK"]].loc["2020-01-02":"2020-06-30"].copy()
+    last = pd.Timestamp("2020-03-16")
+    p.loc[p.index > last, "XLK"] = np.nan
+    members = pd.DataFrame(True, index=p.index, columns=p.columns)
+    targets = pd.DataFrame(0.5, index=p.index, columns=p.columns)
+    acc, tgt, carried = members_weights(p, targets, members, execution_lag=1)
+    res = run_weights(acc, tgt, EngineConfig(rebalance="monthly", cost_bps=0.0))
+    i = p.index.get_loc(last)
+    w = res.weights["XLK"]
+    # the March decision (last session of February) put XLK in the book; its loss to 03-16 is in the returns
+    assert w.iloc[i - 1] > 0.3
+    r_xlk = p["XLK"].iloc[i] / p["XLK"].iloc[i - 1] - 1.0
+    assert res.contributions["XLK"].iloc[i] == pytest.approx(w.iloc[i - 1] * r_xlk, rel=1e-12)
+    # after the last bar: no return from XLK; the weight only drifts with SPY until the next execution sells it
+    assert (res.contributions["XLK"].iloc[i + 1:] == 0).all()
+    nxt = res.executions[res.executions > last][0]
+    assert w.loc[:nxt].iloc[-2] > 0 and w.loc[nxt] == 0 and res.trades.loc[nxt, "XLK"] < 0
+    assert carried == {"XLK": str(last.date())}
+    # nothing is bought after the series ended
+    assert (w.loc[nxt:] == 0).all()

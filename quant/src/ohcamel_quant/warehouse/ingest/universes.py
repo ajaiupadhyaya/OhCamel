@@ -3,7 +3,8 @@ constituent lists (sp500, ndx100) and the site's universes.json ('site', ~45),
 names from SEC company_tickers where it lists the ticker. Each universe is
 replaced whole in one transaction. Completion task 3.5: in the same transaction, a
 universe whose changes table is committed (sp500) has its dated stints replaced in
-``universe_membership`` (``constituents.membership_intervals``)."""
+``universe_membership`` (``constituents.membership_intervals``). Completion task 3.8: the walk applies the committed
+rename map (``constituents/sp500_renames.csv``), and each row carries its company's price series (``series``)."""
 
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from ..constituents import (
     SURVIVORSHIP,
     load_changes,
     load_constituents,
+    load_renames,
     membership_intervals,
 )
 from .base import KeyState, Written, insert_frame, log_row, run_ingest
@@ -52,7 +54,7 @@ def universe_rows(universe: str, sec_names: dict[str, str] | None) -> pd.DataFra
     return pd.DataFrame(rows, columns=COLUMNS)
 
 
-MEMBERSHIP_COLUMNS = ["universe", "ticker", "start", "end", "source"]
+MEMBERSHIP_COLUMNS = ["universe", "ticker", "start", "end", "source", "series"]
 
 
 def membership_rows(universe: str) -> tuple[pd.DataFrame, list[str]]:
@@ -60,12 +62,13 @@ def membership_rows(universe: str) -> tuple[pd.DataFrame, list[str]]:
     and the walk's notes."""
     if universe not in CHANGES_SOURCES:
         return pd.DataFrame(columns=MEMBERSHIP_COLUMNS), []
-    c, ch = load_constituents(universe), load_changes(universe)
-    stints, notes = membership_intervals([t for t, _ in c.members], c.as_of, ch.changes)
-    source = (f"{ch.source}@{ch.as_of.isoformat()}+{c.source}; coverage from "
-              f"{COVERAGE_START[universe].isoformat()}; {MEMBERSHIP_SURVIVORSHIP}")
+    c, ch, rn = load_constituents(universe), load_changes(universe), load_renames(universe)
+    stints, notes = membership_intervals([t for t, _ in c.members], c.as_of, ch.changes, rn.renames)
+    source = (f"{ch.source}@{ch.as_of.isoformat()}+{c.source}"
+              + (f"+renames:{len(rn.renames)}@{rn.as_of.isoformat()}" if rn.renames else "")
+              + f"; coverage from {COVERAGE_START[universe].isoformat()}; {MEMBERSHIP_SURVIVORSHIP}")
     frame = pd.DataFrame([{"universe": universe, "ticker": s.ticker, "start": s.start, "end": s.end,
-                           "source": source} for s in stints], columns=MEMBERSHIP_COLUMNS)
+                           "source": source, "series": s.key} for s in stints], columns=MEMBERSHIP_COLUMNS)
     return frame, notes
 
 
@@ -74,8 +77,9 @@ def write_membership(con: Any, universe: str) -> tuple[int, list[str]]:
     if frame.empty:
         return 0, notes
     con.execute("DELETE FROM universe_membership WHERE universe = ?", [universe])
-    insert_frame(con, 'INSERT INTO universe_membership SELECT universe, ticker, CAST("start" AS DATE), '
-                      'CAST("end" AS DATE), source FROM incoming', frame)
+    insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source, series) SELECT '
+                      'universe, ticker, CAST("start" AS DATE), CAST("end" AS DATE), source, series FROM incoming',
+                 frame)
     as_of = load_constituents(universe).as_of
     log_row(con, "universe_membership", universe, "ok", len(frame),
             f'{{"stints": {len(frame)}, "unplaced_rows": {len(notes)}}}', as_of)
@@ -115,6 +119,6 @@ def run_universes(params: dict, ctx: Any) -> dict:
     notes = [f"universe members are {SURVIVORSHIP}"] + ([warn] if warn else [])
     notes += [f"{u}: universe_membership has dated stints from its changes table (coverage from "
               f"{COVERAGE_START[u].isoformat()}); {len(membership_rows(u)[1])} change row(s) could not be placed "
-              "(ticker changes; constituents module docstring)" for u in CHANGES_SOURCES]
+              "(constituents module docstring; the rename map places the rest)" for u in CHANGES_SOURCES]
     return run_ingest(dataset="universe_members", keys=list(UNIVERSES), ctx=ctx, read_state=read_state,
                       fetch=fetch, write=write, notes=notes, survivorship=SURVIVORSHIP)

@@ -37,3 +37,8 @@ HANDLERS["ingest.option_snapshots"] = options.run_option_snapshots
 from . import corp_actions  # noqa: E402
 
 HANDLERS["ingest.corp_actions"] = corp_actions.run_corp_actions
+
+from . import delisted  # noqa: E402
+
+# completion task 3.8 (spec R5): behind OHCAMEL_DELISTED_SOURCE, off by default; refuses to run while it is off
+HANDLERS["ingest.delisted"] = delisted.run_delisted

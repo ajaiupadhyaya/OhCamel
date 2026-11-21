@@ -27,7 +27,7 @@ KIND_DATASET = {
     "ingest.universes": "universe_members", "ingest.bars_daily": "bars_daily", "ingest.bars_minute": "bars_minute",
     "ingest.fred_warehouse": "fred", "ingest.factors": "factors", "ingest.sec_facts": "sec_facts",
     "ingest.holdings_13f": "holdings_13f", "ingest.option_snapshots": "option_snapshots",
-    "ingest.corp_actions": "corp_actions",
+    "ingest.corp_actions": "corp_actions", "ingest.delisted": "delisted",
 }
 
 SCHEDULES: list[dict] = [
@@ -57,6 +57,11 @@ SCHEDULES: list[dict] = [
     # completion task 3.2: splits and dividends before the 18:30 daily bars they are checked against
     {"name": "warehouse-corp-actions", "cron": "20 18 * * 1-5", "kind": "ingest.corp_actions", "params": {},
      "priority": 2, "mem_class": "S", "heavy": False},
+    # completion task 3.8 (spec R5): delisted names, weekly. The brief's Sunday 04:00 is ingest.sec_facts' minute;
+    # 04:05 is the selftest and 04:30 the 13F ingest, so the nearest free quarter-hour, 04:15. Only scheduled while
+    # OHCAMEL_DELISTED_SOURCE=eodhd (jobs/schedules.py drops it otherwise).
+    {"name": "warehouse-delisted", "cron": "15 4 * * 0", "kind": "ingest.delisted", "params": {},
+     "priority": 2, "mem_class": "M", "heavy": False},
 ]
 
 MAX_AGE: dict[str, str] = {
@@ -69,4 +74,5 @@ MAX_AGE: dict[str, str] = {
     "ingest.holdings_13f": "204h",
     "ingest.option_snapshots": "78h",
     "ingest.corp_actions": "78h",
+    "ingest.delisted": "204h",
 }

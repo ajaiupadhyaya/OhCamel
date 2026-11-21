@@ -32,7 +32,24 @@ each name its ``[start, end)`` stints. What the table cannot say is written down
   took the ticker AGN; likewise T on 2005-11-18 (SBC bought AT&T Corp. and took its ticker). The walk finds the
   same shape at AN and SUN (1998) and MCK (1994), all before coverage, and reads them the same way unchecked.
   It is a reading of the rows, stated here and in the note, not a date the table gives; a stint read this way
-  is a ticker's, and the company behind it may differ before and after the date.
+  is a ticker's, and the company behind it may differ before and after the date, so the earlier stint gets its own
+  price series (``TICKER@DATE``, below).
+
+**Renames and reused tickers** (completion task 3.8). ``sp500_renames.csv`` is a ticker rename map -- old ticker,
+new ticker, the first session under the new one, the company, and the notice that says so on each row -- applied by
+:func:`membership_intervals` as an event of the walk: going back past a rename, a member trading as ``new`` traded as
+``old`` before it. So a company keeps ONE price series across a rename (``Stint.series``: its last ticker, under which
+vendors keep its whole history), with one row per ticker it traded under while a member, and an addition recorded
+under the old ticker (FB in 2013) is placed. A ticker that passes from one member company to another is TWO
+companies: when the walk opens a stint for a removed ticker while another open stint already holds that series (the
+later company, renamed into the ticker: Actavis took AGN from Allergan Inc. in 2015, SBC took T from AT&T Corp. in
+2005; or the "removed while a member again right after" reading above), the earlier company's series is
+``TICKER@DATE``, its last day as a member under the ticker being the day before DATE. Two rows, two series, never one
+spliced price history. A ticker that leaves the index and comes back with no rename between is read as the same
+company (a re-join is common; a different company under a freed ticker, with no rename on record, cannot be told
+apart here and is a stated limit). The map resolves 19 of the 28 rows the walk could not place without it (10 of the
+11 on or after :data:`COVERAGE_START`); the one left inside coverage is FOX on 2015-09-18 (21st Century Fox, whose
+2019 removal, when Fox Corp took the tickers FOX and FOXA, is missing from the table).
 """
 
 from __future__ import annotations
@@ -220,39 +237,129 @@ def load_changes(name_or_path: str | Path) -> Changes:
 
 
 @dataclass(frozen=True)
+class Rename:
+    """On ``effective`` (its first session under the new ticker) the company trading as ``old`` began trading as
+    ``new``. ``source_url`` is the notice that says so."""
+
+    old: str
+    new: str
+    effective: date
+    company: str = ""
+    source_url: str = ""
+
+
+@dataclass(frozen=True)
+class Renames:
+    name: str
+    as_of: date
+    source: str
+    renames: list[Rename]
+    path: str = ""
+
+
+def load_renames(name_or_path: str | Path) -> Renames:
+    """The committed rename map of a universe (``<name>_renames.csv``); an empty map when there is none."""
+    path = Path(name_or_path)
+    if not path.suffix:
+        path = HERE / f"{name_or_path}_renames.csv"
+    if not path.is_file():
+        return Renames(name=str(name_or_path), as_of=date.min, source="", renames=[], path=str(path))
+    meta: dict[str, str] = {}
+    body: list[str] = []
+    for line in path.read_text().splitlines():
+        if line.startswith("#"):
+            k, _, v = line[1:].partition(":")
+            meta[k.strip()] = v.strip()
+        elif line.strip():
+            body.append(line)
+    out = []
+    for r in csv.DictReader(body):
+        old, new = r["old"].strip().upper(), r["new"].strip().upper()
+        for t in (old, new):
+            if not TICKER_RE.match(t):
+                raise ValueError(f"bad ticker {t!r} in the rename map {path.name}")
+        out.append(Rename(old, new, date.fromisoformat(r["effective"]), r.get("company", ""), r.get("source_url", "")))
+    return Renames(name=path.stem.removesuffix("_renames"), as_of=date.fromisoformat(meta["retrieved"]),
+                   source=meta["source"], renames=out, path=str(path))
+
+
+@dataclass(frozen=True)
 class Stint:
     ticker: str
     start: date | None   # None: a member before the table's first recorded change
     end: date | None     # None: a member on the list's as_of date; otherwise the first date NOT a member
+    series: str = ""     # the company's price series (module docstring, Renames); "" means the ticker
+
+    @property
+    def key(self) -> str:
+        return self.series or self.ticker
 
 
-def membership_intervals(current: list[str], as_of: date,
-                         changes: list[Change]) -> tuple[list[Stint], list[str]]:
+def membership_intervals(current: list[str], as_of: date, changes: list[Change],
+                         renames: list[Rename] | tuple[Rename, ...] = ()) -> tuple[list[Stint], list[str]]:
     """Walk ``changes`` backwards from the ``current`` members on ``as_of``: an addition on ``d`` opens the
-    stint at ``d``; a removal on ``d`` means the name was a member until ``d`` (exclusive). Changes after
-    ``as_of`` (announced, not yet effective) are not applied. Returns the stints, newest first per walk, and one
-    note per row the walk could not place (see the module docstring)."""
+    stint at ``d``; a removal on ``d`` means the name was a member until ``d`` (exclusive); a rename on ``d`` (with
+    ``renames``) ends the row under the new ticker at ``d`` and continues the same company, the same series, under
+    the old ticker before it. Changes and renames after ``as_of`` (announced, not yet effective) are not applied.
+    On one date the additions are read first (under the tickers in use that day), then the renames, then the
+    removals (under the tickers in use the session before). Returns the stints, newest first per walk, and one note
+    per row the walk could not place (see the module docstring)."""
     notes: list[str] = []
     later = [c for c in changes if c.effective > as_of]
     if later:
         notes.append(f"{len(later)} change(s) after {as_of.isoformat()} not applied (announced, not yet effective)")
-    open_end: dict[str, date | None] = {t: None for t in current}
+    # ticker in use at the walk's point -> (the company's series, the end of its current row)
+    open_: dict[str, tuple[str, date | None]] = {t: (t, None) for t in current}
     stints: list[Stint] = []
-    for c in sorted((c for c in changes if c.effective <= as_of), key=lambda c: c.effective, reverse=True):
-        if c.added:
-            if c.added in open_end:
-                stints.append(Stint(c.added, c.effective, open_end.pop(c.added)))
+    applied = sorted((c for c in changes if c.effective <= as_of), key=lambda c: c.effective, reverse=True)
+    by_date: dict[date, list[Change]] = {}
+    for c in applied:
+        by_date.setdefault(c.effective, []).append(c)
+    ren: dict[date, list[Rename]] = {}
+    for r in renames:
+        if r.effective <= as_of:
+            ren.setdefault(r.effective, []).append(r)
+
+    def held(series: str) -> bool:
+        return any(v[0] == series for v in open_.values())
+
+    for d in sorted(set(by_date) | set(ren), reverse=True):
+        rows = by_date.get(d, [])
+        for c in rows:
+            if not c.added:
+                continue
+            if c.added in open_:
+                ser, end = open_.pop(c.added)
+                stints.append(Stint(c.added, c.effective, end, ser))
             else:
                 notes.append(f"{c.added} added {c.effective.isoformat()} is not a later member under that ticker "
                              "(renamed, or its removal is not in the table): no stint recorded for it")
-        if c.removed:
-            if c.removed in open_end:
+        moved: list[tuple[str, str]] = []
+        for r in ren.get(d, []):
+            if r.new in open_:
+                ser, end = open_.pop(r.new)
+                stints.append(Stint(r.new, d, end, ser))
+                moved.append((r.old, ser))
+        for old, ser in moved:
+            if old in open_:
+                notes.append(f"{old} renamed on {d.isoformat()} while another member trades as {old}: the rename is "
+                             "not applied to it")
+                continue
+            open_[old] = (ser, d)
+        for c in rows:
+            if not c.removed:
+                continue
+            if c.removed in open_:
                 notes.append(f"{c.removed} removed {c.effective.isoformat()} while a member again right after it "
                              "with no addition recorded: read as the ticker passing to another member company "
                              "(module docstring), its membership unbroken")
-                stints.append(Stint(c.removed, c.effective, open_end.pop(c.removed)))
-            open_end[c.removed] = c.effective
-    stints += [Stint(t, None, e) for t, e in open_end.items()]
+                ser, end = open_.pop(c.removed)
+                stints.append(Stint(c.removed, c.effective, end, ser))
+                open_[c.removed] = (f"{c.removed}@{c.effective.isoformat()}", c.effective)
+            else:
+                ser = f"{c.removed}@{c.effective.isoformat()}" if held(c.removed) else c.removed
+                open_[c.removed] = (ser, c.effective)
+    stints += [Stint(t, None, e, ser) for t, (ser, e) in open_.items()]
     return stints, notes
 
 

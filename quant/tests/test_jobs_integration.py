@@ -72,7 +72,9 @@ def test_a_warehouse_job_returns_an_artifact_spec(tmp_path, monkeypatch):
 
 # ----------------------------------------------------------- schedules
 def test_schedules_yaml_carries_every_warehouse_entry_and_max_age():
-    s = load_schedules()
+    from ohcamel_quant.config import Settings
+
+    s = load_schedules(settings=Settings(OHCAMEL_DELISTED_SOURCE="eodhd"))   # ingest.delisted's switch on (task 3.8)
     by_name = {e.name: e for e in s.entries}
     for want in wh_schedules.SCHEDULES:
         got = by_name[want["name"]]

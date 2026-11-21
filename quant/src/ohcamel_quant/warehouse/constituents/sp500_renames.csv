@@ -1,0 +1,22 @@
+# source: compiled 2026-11-20 from the company, exchange and SEC notices cited on each row (source_url); sp500_renames.csv.meta.json
+# retrieved: 2026-11-20
+old,new,effective,company,source_url
+SATS,ECHO,2026-06-24,EchoStar Corporation,https://ir.echostar.com/node/33601
+CDAY,DAY,2024-02-01,"Ceridian HCM Holding, renamed Dayforce",https://www.sec.gov/Archives/edgar/data/1725057/000095017024009619/day-20240131.htm
+FLT,CPAY,2024-03-25,"FLEETCOR Technologies, renamed Corpay",https://www.businesswire.com/news/home/20240325638436/en/FLEETCOR-Announces-Rebranding-to-Corpay
+RE,EG,2023-07-10,"Everest Re Group, renamed Everest Group",https://www.businesswire.com/news/home/20230518005111/en/Everest-to-Rebrand-Company-Name-and-NYSE-Ticker-to-Reflect-its-Evolution-Global-Growth-and-Diversification-Strategy
+FB,META,2022-06-09,"Facebook, renamed Meta Platforms",https://investor.atmeta.com/investor-news/press-release-details/2022/Meta-Platforms-Inc.-to-Change-Ticker-Symbol-to-META-on-June-9/default.aspx
+COG,CTRA,2021-10-04,"Cabot Oil & Gas, renamed Coterra Energy",https://www.sec.gov/Archives/edgar/data/858470/000110465921122041/tm2129019d1_8k.htm
+IR,TT,2020-03-02,"Ingersoll-Rand plc, renamed Trane Technologies (the ticker IR passed to the former Gardner Denver)",https://www.businesswire.com/news/home/20200302005208/en/Trane-Technologies-Completes-Reverse-Morris-Trust-Transaction
+JEC,J,2019-12-10,Jacobs Engineering Group,https://www.sec.gov/Archives/edgar/data/52988/000005298819000066/jectickerchange8k.htm
+HRS,LHX,2019-07-01,"Harris Corporation, renamed L3Harris Technologies",https://www.sec.gov/Archives/edgar/data/202058/000114036119012139/ex99_1.htm
+KORS,CPRI,2019-01-02,"Michael Kors Holdings, renamed Capri Holdings",https://www.sec.gov/Archives/edgar/data/0001530721/000119312518362322/d653406dex991.htm
+LUK,JEF,2018-05-24,"Leucadia National, renamed Jefferies Financial Group",https://www.sec.gov/Archives/edgar/data/0000096223/000119312518172047/d578190d8k.htm
+PCLN,BKNG,2018-02-27,"The Priceline Group, renamed Booking Holdings",https://www.sec.gov/Archives/edgar/data/0001075531/000107553118000008/a8-knamechange2018.htm
+DLPH,APTV,2017-12-05,"Delphi Automotive, renamed Aptiv (the ticker DLPH passed to the spun-off Delphi Technologies)",https://www.sec.gov/Archives/edgar/data/0001521332/000119312517363912/d453817d8k.htm
+TSO,ANDV,2017-08-01,"Tesoro, renamed Andeavor",https://www.sec.gov/Archives/edgar/data/0000050104/000005010418000054/andv201710-k.htm
+UA,UAA,2016-12-07,"Under Armour, Class A shares",https://www.sec.gov/Archives/edgar/data/0001336917/000133691717000017/ua-20161231x10k.htm
+UA.C,UA,2016-12-07,"Under Armour, Class C shares",https://www.sec.gov/Archives/edgar/data/0001336917/000133691716000116/november282016form8-k.htm
+ACT,AGN,2015-06-15,"Actavis plc, renamed Allergan plc (it took the ticker of Allergan, Inc., which it had bought)",https://www.sec.gov/Archives/edgar/data/0001578845/000156459016013478/agn-10k_20151231.htm
+JOYG,JOY,2011-12-06,Joy Global (moved from Nasdaq to the NYSE),https://www.sec.gov/Archives/edgar/data/801898/000114036111051997/ex99_1.htm
+SBC,T,2005-12-01,"SBC Communications, renamed AT&T Inc. (it took the ticker of AT&T Corp., which it had bought)",https://www.channelfutures.com/unified-communications/at-t-to-trade-under-t-symbol

@@ -12,6 +12,12 @@ controller's backfill, local checks) or build the offline fixture warehouse.
   calendar                                   refresh exchange_calendar from Alpaca now (needs APCA_* keys)
   calendar-slice <start> <end> <dir>         save Alpaca's /v2/calendar for a range, with a .meta.json sidecar
                                              (the test fixture of completion task 3.6; needs APCA_* keys)
+  eodhd-slice <CODE> <start> <end> <dir> [--delisted --last-trading-date D]
+                                             save EODHD's eod, splits and div responses, with sidecars
+                                             (the fixtures of completion task 3.8; needs EODHD_API_KEY)
+  accept-delisted                            the delisted-names acceptance test against EODHD; on a pass it
+                                             records accepted_at (tools/accept_delisted.py; needs EODHD_API_KEY)
+  survivorship [<universe>]                  the single-name gate's reading: switch, acceptance, coverage of exits
 """
 
 from __future__ import annotations
@@ -64,7 +70,27 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("start")
     cs.add_argument("end")
     cs.add_argument("dir")
+    es = sub.add_parser("eodhd-slice", help="save EODHD's eod, splits and div responses for a code, unmodified, with "
+                                             ".meta.json sidecars (test fixtures); needs EODHD_API_KEY")
+    es.add_argument("code", help="EODHD code, e.g. LEH.US")
+    es.add_argument("start")
+    es.add_argument("end")
+    es.add_argument("dir")
+    es.add_argument("--delisted", action="store_true", help="the name stopped trading (its sidecar says so)")
+    es.add_argument("--last-trading-date", default=None, help="the name's last trading date, for the sidecar")
+    sub.add_parser("accept-delisted", help="run the delisted-names acceptance test against EODHD (the same code as "
+                                           "tools/accept_delisted.py); exit 0 and record accepted_at on a pass")
+    sv = sub.add_parser("survivorship", help="print the single-name gate's reading for a universe (read-only)")
+    sv.add_argument("universe", nargs="?", default="sp500")
     a = p.parse_args(argv)
+    if a.cmd == "survivorship":
+        return _survivorship(a)
+    if a.cmd == "eodhd-slice":
+        return _eodhd_slice(a)
+    if a.cmd == "accept-delisted":
+        from .accept import main as accept_main
+
+        return accept_main([])
     if a.cmd == "calendar-slice":
         return _calendar_slice(a)
     if a.cmd == "calendar":
@@ -156,6 +182,47 @@ def _calendar_slice(a: argparse.Namespace) -> int:
                        "(tests/test_warehouse_freshness.py)"}
     out.with_name(out.name + ".meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(f"calendar-slice: {out} -- {len(frame)} sessions, sha256 {meta['sha256']}")
+    return 0
+
+
+def _survivorship(a: argparse.Namespace) -> int:
+    """The gate's inputs as the engine reads them (backtest/engine.py ``survivorship_gate``), read-only."""
+    from ..backtest.engine import COVERAGE_REQUIRED, SingleNameRefused, survivorship_gate
+    from ..config import get_settings
+    from . import readers
+    from .db import open_ro
+
+    with open_ro() as con:
+        exits = readers.exit_coverage(con, a.universe)
+        accepted, coverage = readers.survivorship_free(con, a.universe)
+        try:
+            verdict = survivorship_gate(con, a.universe, get_settings())
+        except SingleNameRefused as e:
+            verdict = f"REFUSED: {e}"
+    print(json.dumps({"universe": a.universe, "switch": get_settings().delisted_source or "off",
+                      "accepted": accepted, "coverage": round(coverage, 4), "required": COVERAGE_REQUIRED,
+                      "exits": len(exits), "uncovered": int((~exits["covered"]).sum()) if len(exits) else 0,
+                      "verdict": verdict}, indent=2))
+    return 0
+
+
+def _eodhd_slice(a: argparse.Namespace) -> int:
+    """EODHD's responses byte for byte, with sidecars (data/eodhd.py ``record_slice``). The key goes in the request
+    only: no file names it."""
+    from datetime import date
+
+    from ..data import eodhd
+    from ..data.base import DataUnavailable
+
+    try:
+        paths = eodhd.record_slice(a.code.upper(), date.fromisoformat(a.start), date.fromisoformat(a.end), Path(a.dir),
+                                   delisted=a.delisted, last_trading_date=date.fromisoformat(a.last_trading_date)
+                                   if a.last_trading_date else None)
+    except DataUnavailable as e:
+        print(f"eodhd-slice: FAILED -- {e}", file=sys.stderr)
+        return 1
+    for path in paths:
+        print(f"eodhd-slice: {path}")
     return 0
 
 

@@ -80,7 +80,10 @@ with a provenance sidecar. A file without a sidecar, or with
 `synthetic: true`, is refused by the replay feed. Delisted names are absent
 from this data source; the universe is therefore a fixed list of ETFs that
 existed throughout the window, and single-name cross-sectional claims are out
-of scope until a survivorship-free source is in.
+of scope until the delisted-names source (EODHD, off by default behind
+`OHCAMEL_DELISTED_SOURCE`) has passed its acceptance test on known failures
+and at least 95% of the index's exits have prices to the exit; a single-name
+result over dated membership then states the coverage it got.
 
 ## Failure modes checked by default
 
