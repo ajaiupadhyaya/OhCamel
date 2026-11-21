@@ -9,7 +9,9 @@ whose switch is off) and, run by hand, refuses before it opens anything; with th
 table's coverage start (2011-01-01) whose series lacks bars across the stint to the exit -- the exits
 ``readers.survivorship_free`` counts as uncovered. One key per series (a company's last ticker across renames,
 ``membership_series``), asked from 1990 to 100 days after its last such exit (AFTER_EXIT_DAYS); a vendor series that
-begins after the company joined is refused (:func:`check_continuity`). Left out, each with a note: the earlier holder of a reused ticker (``TICKER@DATE``: the vendor's code for it is not known, and the
+begins after the company joined is refused (:func:`check_continuity`), and one is cut at the first gap of more than 5
+weekdays on or after the exit (:func:`cut_at_gap`: past it the code may be another company's). Left out, each with a
+note: the earlier holder of a reused ticker (``TICKER@DATE``: the vendor's code for it is not known, and the
 bare ticker could be the later company), and a series another vendor already serves (a listed name is never half
 one vendor and half another).
 
@@ -132,18 +134,39 @@ def check_continuity(want: Want, raw: pd.DataFrame) -> None:
                               f"was already a member on {want.first}: another company under the code? Not written")
 
 
+def cut_at_gap(raw: pd.DataFrame, exit_: date) -> tuple[pd.DataFrame, date | None]:
+    """``raw`` cut at the last bar before the first gap of more than ``START_SLACK`` (5) weekdays that ends on or after
+    the exit, and that bar's date (None: no such gap, ``raw`` unchanged). A vendor's code can only change company
+    across such a gap -- a ticker freed at a delisting and re-listed by another company inside the 100-day window
+    -- so nothing after it is written as this company's (fix round 2). A same-company halt that long after the exit
+    is cut too: the cost is a shorter series, never another company's prices."""
+    if len(raw) < 2:
+        return raw, None
+    days = [d.date() for d in raw.index]
+    for a, b in zip(days[:-1], days[1:], strict=True):
+        if b >= exit_ and int(np.busday_count(a, b)) > START_SLACK:
+            return raw[raw.index <= pd.Timestamp(a)], a
+    return raw, None
+
+
 def fetch_delisted(want: Want, settings: Any, today: date) -> DelistedPayload:
     start, end = prices.DEFAULT_START, min(today, want.exit + timedelta(days=AFTER_EXIT_DAYS))
     table = eodhd.splits(want.series, settings)
     raw = eodhd.bars(want.series, start, end, delisted=True, settings=settings, split_table=table)
     check_continuity(want, raw)
+    raw, cut = cut_at_gap(raw, want.exit)
     acts = eodhd.actions(want.series, settings, split_table=table)
+    if cut is not None:
+        acts = acts[acts["ex_date"] <= pd.Timestamp(cut)]   # an action after the gap may be the other company's
     prov = Provenance.now(eodhd.SOURCE, code=want.code, url=eodhd.ENDPOINTS["eod"].format(code=want.code),
                           params={"from": start.isoformat(), "to": end.isoformat()}, delisted=True,
                           exit=want.exit.isoformat(), universes=list(want.universes),
                           convention="raw OHLC as traded; volume as traded (the vendor's split-adjusted volume "
-                                     "divided back by later splits); dividends as paid on the ex-date")
-    return DelistedPayload(raw, acts, prov, start, raw.index[-1].date(), True, end)
+                                     "divided back by later splits); dividends as paid on the ex-date",
+                          truncated=(f"cut at {cut}: the next bar follows a gap of more than {START_SLACK} weekdays "
+                                     "on or after the exit (possibly another company under the code)") if cut else None)
+    # a cut series ends at the cut, not because it stopped trading: recorded as fetched to there
+    return DelistedPayload(raw, acts, prov, start, raw.index[-1].date(), True, cut or end)
 
 
 def write_delisted(con: Any, key: str, state: KeyState, p: DelistedPayload) -> Written:
@@ -175,7 +198,8 @@ def write_delisted(con: Any, key: str, state: KeyState, p: DelistedPayload) -> W
     insert_frame(con, DAILY_INSERT, daily)
     detail = {"source": eodhd.SOURCE, "first": str(raw["date"].min().date()), "last": str(p.reached),
               "exit": p.prov.detail.get("exit"), "bars": len(raw), "actions": acts.detail,
-              "fetched_to": p.fetched_to.isoformat() if p.fetched_to else None}
+              "fetched_to": p.fetched_to.isoformat() if p.fetched_to else None,
+              "truncated": p.prov.detail.get("truncated")}
     return Written(len(raw), p.reached, detail)
 
 

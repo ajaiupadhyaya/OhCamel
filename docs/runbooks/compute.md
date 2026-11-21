@@ -425,8 +425,10 @@ It is `tools/accept_delisted.py` (the image has no `tools/` directory, so on the
 asks EODHD for each of the 26 known failures and acquisitions in
 `quant/src/ohcamel_quant/warehouse/delisted_acceptance.csv` (Lehman, Bear Stearns, Washington Mutual, SVB, First
 Republic, Bed Bath & Beyond and twenty more, each with its last trading date and the notice it came from), 26
-requests, under a minute. A name passes when its last bar is within 5 weekdays of its last trading date and its
-series does not run on past it (another company under the code). It prints one PASS/FAIL line per name. At 24 of 26
+requests, under a minute. A name passes when it has a bar within 5 weekdays of its last trading date. Prints after
+the date are fine when they continue without a gap -- the same company carrying on, as when the vendor stitches the
+over-the-counter continuation onto the exchange code (the verdict says it ran on) -- and fail when they resume after
+a gap of more than 5 weekdays (another company under the code). It prints one PASS/FAIL line per name. At 24 of 26
 or better it prints ACCEPTED, records `accepted_at` in the warehouse and exits 0; otherwise NOT ACCEPTED, exit 1,
 nothing recorded. **Exit 3, "PASSED, NOT RECORDED"**, means the names passed but the warehouse stayed busy past the
 writer's 30-second wait (an ingest was writing): it is not a failure -- run the command again, away from the 18:20-19:15
@@ -461,7 +463,8 @@ of a ticker a later member company reused (`TICKER@DATE` in `membership_series`,
 `AGN@2015-03-23`), because EODHD's code for it is not documented. Such names count as uncovered. Each series is asked
 for up to 100 days past its exit, so a name removed from the index but still trading keeps a live price until the
 next rebalance sells it; a vendor series that begins after the company joined the index is refused (another company
-under the code).
+under the code), and one is cut at the first gap of more than 5 weekdays on or after the exit (past it the code may
+be another company's; the cut is in the key's `ingest_log` detail as `truncated`).
 
 `survivorship` prints the coverage. Below 95% the refusal stands and says "N% of members have prices to their exit";
 the uncovered exits are the ones `ingest.delisted`'s notes list (vendor gaps, reused tickers, another vendor's

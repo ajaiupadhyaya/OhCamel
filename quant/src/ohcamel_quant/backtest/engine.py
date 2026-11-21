@@ -61,9 +61,11 @@ that execution, never sold at a price that did not print (``run_weights(untraded
 The last print OVERSTATES the outcome of a failure whose last exchange print exceeds
 its recovery (SVB last printed about $106 on Nasdaq; its shareholders got nearly
 nothing), so every such result also carries a LOWER BOUND (:func:`lower_bound_run`):
-the same run with each holding whose series ends inside the test marked to zero on the
-first session it no longer trades. Both totals are reported side by side; the headline
-stays the last-print run, and the bound is a bound, not an estimate. No delisting-
+the same run with each LONG holding whose series ends inside the test marked to zero on
+the first session it no longer trades. Both totals are reported side by side; the headline
+stays the last-print run, and the bound is a bound, not an estimate. A SHORT in a name
+whose series ends keeps its last print: its loss has no upper limit, so no bound covers
+it, and the note names it. No delisting-
 return model is applied (the vendor serves none).
 """
 
@@ -491,15 +493,31 @@ LOWER_BOUND_MARK = 1e-12
 
 
 def lower_bound_run(acc: pd.DataFrame, tgt: pd.DataFrame, ended: dict[str, str], config: EngineConfig | None = None,
-                    rf: pd.Series | None = None, *, untraded: pd.DataFrame | None = None) -> BacktestResult:
-    """The same run with every name whose series ends inside the panel marked to zero (``LOWER_BOUND_MARK`` of its
-    last print) from the first session after its last bar: a holding carried into that session loses its whole
-    value there (module docstring). With nothing ended, it is the headline run."""
+                    rf: pd.Series | None = None, *, untraded: pd.DataFrame | None = None,
+                    weights: pd.DataFrame | None = None) -> BacktestResult:
+    """The same run with every LONG holding carried past its series' last bar marked to zero (``LOWER_BOUND_MARK`` of
+    its last print) from the first session after that bar: it loses its whole value there (module docstring). A
+    SHORT carried past the end keeps its last print: marking it to zero would credit it the whole position and lift
+    the bound above the headline, and a short in a vanished name has no upper limit on its loss, so no bound covers
+    it (fix round 2). ``weights``: the headline run's post-trade weights (the two runs agree up to each last bar);
+    computed when not given. ``result.lower_bound`` carries ``longs`` and ``shorts``: the ended series held each way
+    when their bars stopped. With nothing ended or nothing long, it is the headline run."""
+    if weights is None:
+        weights = run_weights(acc, tgt, config, rf, untraded=untraded).weights
     low = acc.copy()
+    longs: list[str] = []
+    shorts: list[str] = []
     for c, d in ended.items():
-        after = low.index > pd.Timestamp(d)
-        low.loc[after, c] = float(acc.loc[pd.Timestamp(d), c]) * LOWER_BOUND_MARK
-    return run_weights(low, tgt, config, rf, untraded=untraded)
+        held = float(weights.at[pd.Timestamp(d), c]) if c in weights.columns else 0.0
+        if held < -1e-12:
+            shorts.append(c)
+            continue
+        if held > 1e-12:
+            longs.append(c)
+            low.loc[low.index > pd.Timestamp(d), c] = float(acc.loc[pd.Timestamp(d), c]) * LOWER_BOUND_MARK
+    out = run_weights(low, tgt, config, rf, untraded=untraded)
+    out.lower_bound = {"longs": longs, "shorts": shorts}
+    return out
 
 
 def _total(res: BacktestResult) -> float:
@@ -543,14 +561,16 @@ def run_members_backtest(con: Any, universe: str, fn: WeightsFn, params: dict[st
     acc, tgt, ended, untraded = members_weights(prices, targets, members, execution_lag=config.execution_lag)
     res = run_weights(acc, tgt, config, rf, untraded=untraded)
     res.audit = audit
-    low = lower_bound_run(acc, tgt, ended, config, rf, untraded=untraded)
+    low = lower_bound_run(acc, tgt, ended, config, rf, untraded=untraded, weights=res.weights)
     carried = [c for c, d in ended.items()
                if (res.weights[c].loc[res.weights.index > pd.Timestamp(d)].abs() > 1e-12).any()]
     held_into_gap = [(c, d) for d in res.executions for c in res.weights.columns
                      if bool(untraded.at[d, c]) and abs(float(res.weights.at[d, c])) > 1e-12]
     fetched = readers.fetched_to(con, list(ended))
     head, bound = _total(res), _total(low)
+    shorts = (low.lower_bound or {}).get("shorts", [])
     res.lower_bound = {"total_net": head, "total_net_lower_bound": bound, "ended_held": carried,
+                       "longs": (low.lower_bound or {}).get("longs", []), "shorts": shorts,
                        "returns_net": low.returns_net}
     notes = [note]
     if absent:
@@ -562,11 +582,16 @@ def run_members_backtest(con: Any, universe: str, fn: WeightsFn, params: dict[st
                      "failure whose last exchange print exceeds its recovery: "
                      + ", ".join(ended_phrase(c, ended[c], fetched.get(c)) for c in carried[:12]))
     notes.append(f"Total net return {head:+.1%} with holdings whose series ended valued at their last print; "
-                 f"{bound:+.1%} with each marked to zero at its end -- a lower bound, not an estimate"
-                 + (" (no holding's series ended inside this test, so the two are equal)." if not carried else "."))
+                 f"{bound:+.1%} with each long one marked to zero at its end -- a lower bound for long holdings, not "
+                 "an estimate"
+                 + (" (no holding's series ended inside this test, so the two are equal)." if not carried else ".")
+                 + (f" The bound covers long holdings only: a short in a vanished name has no upper limit on its loss, "
+                    f"and {', '.join(shorts[:12])} {'was' if len(shorts) == 1 else 'were'} short when the series "
+                    "ended (kept at the last print in both figures)." if shorts else ""))
     if held_into_gap:
         notes.append(f"{len(held_into_gap)} position(s) were left untraded at an execution because the name had no "
-                     "bar that session though its series goes on (a halt or a vendor gap): "
+                     "bar that session though its series goes on (a halt or a vendor gap); because such a name cannot "
+                     "trade, gross exposure can exceed the leverage cap on that session: "
                      + ", ".join(f"{c} {d.date()}" for c, d in held_into_gap[:12]))
     res.notes = [*notes, *res.notes, *repairs[:20]]
     return res

@@ -11,9 +11,10 @@ tested on.
 
 **The test.** For each name, ask the vendor for its bars from 30 calendar days before its last trading date to 30
 after, under its ticker (:func:`judge`): it passes when there is a bar within ``TOLERANCE`` (5) weekdays of the last
-trading date and none later than that. A series that runs on past the date is another company under the same
-code, which is exactly the splice the test exists to catch, so it fails. The run passes when at least ``REQUIRED``
-(24) of the 26 pass. On a pass it appends one ``delisted_acceptance`` row (``accepted_at``, the vendor, the counts,
+trading date. Prints after the date pass when they continue without a gap (the same company carrying on, e.g. an
+over-the-counter continuation the vendor stitched onto the code); prints that resume after a gap of more than 5
+weekdays are another company under the same code, the splice the test exists to catch, and fail. The run passes
+when at least ``REQUIRED`` (24) of the 26 pass. On a pass it appends one ``delisted_acceptance`` row (``accepted_at``, the vendor, the counts,
 the sha256 of the list, every name's result) and exits 0; otherwise it writes nothing and exits 1. That row is what
 ``readers.survivorship_free`` reads, and nothing else in the package writes it.
 
@@ -66,14 +67,31 @@ def acceptance_list_sha256(path: Path = ACCEPTANCE_LIST) -> str:
 
 
 def judge(last_trading_date: date, dates: list[date]) -> tuple[bool, str]:
-    """Pass when the vendor's last bar in the window is within ``TOLERANCE`` weekdays of the last trading date,
-    on either side (module docstring). Returns the verdict and why."""
+    """The verdict on one name's bars around its last trading date ``L`` (module docstring), and why.
+
+    * Bars ending on or before ``L``: pass when the last is within ``TOLERANCE`` weekdays of ``L``.
+    * Bars after ``L``: look at the first print after ``L`` and the bar before it (``L`` itself when there is none).
+      A gap of more than ``TOLERANCE`` weekdays between them is another company under the code (a reused ticker):
+      fail. Otherwise the run past ``L`` is continuous -- the same company carrying on, as when a vendor stitches the
+      over-the-counter continuation (ENDPQ, LEHMQ, SIVBQ) onto the exchange code, which is the right behaviour --
+      and it passes, the verdict saying it ran on (fix round 2)."""
     if not dates:
         return False, "no bars around the last trading date"
-    last = max(dates)
-    gap = int(np.busday_count(min(last, last_trading_date), max(last, last_trading_date)))
-    if last > last_trading_date and gap > TOLERANCE:
-        return False, f"bars run on to {last}, {gap} weekdays past the last trading date: another company's series?"
+    ds = sorted(set(dates))
+    after = [d for d in ds if d > last_trading_date]
+    if after:
+        before = [d for d in ds if d <= last_trading_date]
+        prev = before[-1] if before else last_trading_date
+        gap = int(np.busday_count(prev, after[0]))
+        if gap > TOLERANCE:
+            return False, (f"prints resume {after[0]} after a gap of {gap} weekdays from {prev}, past the last "
+                           "trading date: another company under the code?")
+        if before and int(np.busday_count(before[-1], last_trading_date)) > TOLERANCE:
+            return False, f"no bar within {TOLERANCE} weekdays before the last trading date (last {before[-1]})"
+        return True, (f"ran on to {ds[-1]} without a gap past the last trading date {last_trading_date}: the same "
+                      "company carrying on (an over-the-counter continuation)")
+    last = ds[-1]
+    gap = int(np.busday_count(last, last_trading_date))
     if gap > TOLERANCE:
         return False, f"last bar {last}, {gap} weekdays before the last trading date"
     return True, f"last bar {last} ({gap} weekday(s) from {last_trading_date})"

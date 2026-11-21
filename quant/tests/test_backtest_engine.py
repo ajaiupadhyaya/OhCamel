@@ -423,3 +423,73 @@ def test_a_members_result_reports_its_lower_bound_beside_the_headline(tmp_path):
     assert lb["total_net"] == pytest.approx(lb["total_net_lower_bound"])   # nothing ended inside this window
     note = next(n for n in res.notes if "lower bound" in n)
     assert "not an estimate" in note and f"{lb['total_net']:+.1%}" in note
+
+
+
+# ------------------------------------------------- fix round 2 (task 3.8): the bound covers long holdings only
+def test_a_short_in_a_name_whose_series_ends_is_not_marked_to_zero_in_the_bound(px):
+    """N1: marking a SHORT to zero would credit it the whole position and lift the 'lower bound' above the headline.
+    Only long holdings carried past the last bar are marked to zero; a short keeps its last print."""
+    from ohcamel_quant.backtest.engine import lower_bound_run, members_weights
+
+    p, members, targets = _cut_xlk(px)
+    targets.loc[:, "XLK"] = -0.3
+    acc, tgt, ended, untraded = members_weights(p, targets, members, execution_lag=1)
+    cfg = EngineConfig(rebalance="monthly", cost_bps=0.0)
+    res = run_weights(acc, tgt, cfg, untraded=untraded)
+    assert res.weights["XLK"].iloc[p.index.get_loc(pd.Timestamp("2020-03-16"))] < -0.2
+    lb = lower_bound_run(acc, tgt, ended, cfg, untraded=untraded, weights=res.weights)
+    assert float(np.prod(1 + lb.returns_net)) <= float(np.prod(1 + res.returns_net)) + 1e-15
+    assert lb.lower_bound["shorts"] == ["XLK"] and lb.lower_bound["longs"] == []
+
+
+def test_a_members_result_says_the_bound_does_not_cover_a_short(tmp_path):
+    """N1 through run_members_backtest: a test universe of SPY and the committed AAPL slice (written as an ended
+    series, 2020-07-31..2020-09-10), the strategy short AAPL. The bound is not above the headline and the note
+    names AAPL as a short whose loss has no upper limit."""
+    import survivorship_harness as H
+
+    from ohcamel_quant.backtest.engine import run_members_backtest
+    from ohcamel_quant.data import eodhd
+    from ohcamel_quant.data.base import Provenance
+    from ohcamel_quant.warehouse import accept
+    from ohcamel_quant.warehouse.db import open_ro, open_rw
+    from ohcamel_quant.warehouse.fixture_db import build_fixture_warehouse
+    from ohcamel_quant.warehouse.ingest import delisted
+    from ohcamel_quant.warehouse.ingest.base import KeyState, insert_frame
+
+    data = __import__("pathlib").Path(__file__).parent / "data"
+    load = lambda e: __import__("json").loads((data / f"eodhd_{e}_AAPL.US_2020-07-31_2020-09-10.json").read_bytes())  # noqa: E731
+    splits, divs = eodhd.parse_splits(load("splits")), eodhd.parse_dividends(load("div"))
+    pay = delisted.DelistedPayload(eodhd.raw_bars(eodhd.parse_eod(load("eod")), splits), eodhd.as_actions(splits, divs),
+                                   Provenance("eodhd", "2026-11-20T00:00:00Z"), pd.Timestamp("1990-01-01").date(),
+                                   pd.Timestamp("2020-09-10").date())
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    with open_rw(path) as con:
+        con.execute("BEGIN TRANSACTION")
+        delisted.write_delisted(con, "AAPL", KeyState(), pay)
+        con.execute("COMMIT")
+        insert_frame(con, 'INSERT INTO universe_membership (universe, ticker, "start", "end", source) SELECT universe, '
+                          'ticker, CAST("start" AS DATE), CAST("end" AS DATE), source FROM incoming', pd.DataFrame([
+                              {"universe": "t-short", "ticker": "AAPL", "start": "2020-08-03", "end": "2020-09-11",
+                               "source": "t"},
+                              {"universe": "t-short", "ticker": "SPY", "start": "2016-06-01", "end": None,
+                               "source": "t"}]))
+    H.record_acceptance(path, accept.acceptance_list_sha256())
+
+    def short_aapl(ctx: StrategyContext) -> pd.DataFrame:
+        m = ctx.members.reindex(index=ctx.prices.index, columns=ctx.prices.columns).fillna(False).astype(bool)
+        w = pd.DataFrame(0.0, index=ctx.prices.index, columns=ctx.prices.columns)
+        w["SPY"] = 0.5
+        if "AAPL" in w:
+            w["AAPL"] = np.where(m["AAPL"] & ctx.prices["AAPL"].notna(), -0.3, 0.0)
+        return w
+
+    with open_ro(path) as con:
+        res = run_members_backtest(con, "t-short", short_aapl, {}, pd.Timestamp("2020-08-03").date(),
+                                   pd.Timestamp("2020-12-31").date(), EngineConfig(rebalance="monthly"),
+                                   settings=_gate_settings(True))
+    lb = res.lower_bound
+    assert lb["shorts"] == ["AAPL"] and lb["total_net_lower_bound"] <= lb["total_net"] + 1e-12
+    note = next(n for n in res.notes if "lower bound" in n)
+    assert "long holdings" in note and "AAPL" in note and "no upper limit" in note

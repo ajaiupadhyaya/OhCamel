@@ -429,3 +429,31 @@ def test_a_pass_the_warehouse_was_too_busy_to_record_says_so(tmp_path, monkeypat
     monkeypatch.undo()
     with open_ro(path) as con:
         assert con.execute("SELECT count(*) FROM delisted_acceptance").fetchone()[0] == 0
+
+
+
+# ------------------------------------------------------------------ fix round 2
+def test_a_continuous_run_past_the_date_is_the_same_company_and_passes():
+    """N3: a vendor that stitches the company's over-the-counter continuation onto the exchange code (ENDPQ onto
+    ENDP) serves it correctly: a continuous run past the date passes, and the verdict says it ran on."""
+    days = [d.date() for d in pd.bdate_range("2008-09-02", "2008-10-15")]
+    ok, why = accept.judge(date(2008, 9, 17), days)
+    assert ok is True and "ran on" in why and "2008-10-15" in why
+    # prints after a gap of more than 5 weekdays are another company under the code
+    gapped = [d for d in days if d <= date(2008, 9, 17) or d >= date(2008, 10, 1)]
+    ok, why = accept.judge(date(2008, 9, 17), gapped)
+    assert ok is False and "gap" in why
+
+
+def test_a_reuser_inside_the_window_is_cut_off_at_the_gap():
+    """N2: across a gap of more than 5 weekdays on or after the exit the vendor's code may belong to another company;
+    the series is cut at the last bar before the gap. The committed AAPL slice, with 2020-08-21..2020-09-03 removed
+    as a delisting and re-listing would remove them."""
+    raw = _aapl_payload().raw
+    gapped = raw[(raw.index <= "2020-08-20") | (raw.index >= "2020-09-04")]
+    cut, at = delisted.cut_at_gap(gapped, date(2020, 8, 21))
+    assert at == date(2020, 8, 20) and cut.index[-1] == pd.Timestamp("2020-08-20")
+    same, none = delisted.cut_at_gap(raw, date(2020, 8, 21))      # no gap: unchanged
+    assert none is None and same.equals(raw)
+    early, none = delisted.cut_at_gap(gapped, date(2020, 9, 8))  # the gap ends before the exit: not this one
+    assert none is None and early.equals(gapped)
