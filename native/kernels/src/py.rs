@@ -221,10 +221,12 @@ fn backtest_weights<'py>(
     prices: PyReadonlyArray2<'py, f64>,
     target_w: PyReadonlyArray2<'py, f64>,
     decision_idx: PyReadonlyArray1<'py, i64>,
-    cost_bps: f64,
+    cost_bps: PyReadonlyArray1<'py, f64>,
     borrow_bps: f64,
+    fin_bps: f64,
     rf: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<(
+    Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<f64>>,
@@ -240,9 +242,10 @@ fn backtest_weights<'py>(
         .as_slice()
         .map_err(|_| err("decision_idx must be a C-contiguous int64 array".into()))?;
     let rfs = s1(&rf, "rf")?;
+    let costs = s1(&cost_bps, "cost_bps")?;
     let p = py
         .detach(|| {
-            crate::backtest::backtest_weights(px, nt, na, tw, idx, cost_bps, borrow_bps, rfs)
+            crate::backtest::backtest_weights(px, nt, na, tw, idx, costs, borrow_bps, fin_bps, rfs)
         })
         .map_err(err)?;
     Ok((
@@ -253,6 +256,7 @@ fn backtest_weights<'py>(
         p.trades.into_pyarray(py),
         p.costs.into_pyarray(py),
         p.borrow.into_pyarray(py),
+        p.financing.into_pyarray(py),
         p.ruined,
     ))
 }

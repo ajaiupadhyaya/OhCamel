@@ -1,11 +1,13 @@
 //! The engine's accounting loop (contract II.4 `backtest_weights`): the inner
 //! loop of backtest/engine.run_weights, verbatim. For session s with returns R_s
 //! and post-trade weights w carried from s - 1:
-//!   gross_s  = sum(w R_s) + (1 - sum w) rf_s
-//!   borrow_s = b/1e4/252 x (sum|w| - sum w)/2
-//!   g_s = gross_s - borrow_s;  w <- (w + w R_s) / (1 + g_s)   (drift)
-//! and at an execution session with target w*:
-//!   turnover_s = sum|w* - w|;  cost_s = c/1e4 x turnover_s;
+//!   gross_s     = sum(w R_s) + (1 - sum w) rf_s
+//!   borrow_s    = b/1e4/252 x (sum|w| - sum w)/2
+//!   financing_s = f/1e4/252 x max(sum|w| - 1, 0)    (completion task 2.3)
+//!   g_s = gross_s - borrow_s - financing_s;  w <- (w + w R_s) / (1 + g_s)   (drift)
+//! and at an execution session with target w*, with c_i name i's half-spread
+//! (bps, one per name; research/config/costs.yaml's tier in the engine):
+//!   turnover_s = sum|w* - w|;  cost_s = sum_i c_i/1e4 x |w*_i - w_i|;
 //!   1 + net_s = (1 + g_s)(1 - cost_s);  w <- w*.
 //! Before the first execution the book is cash and net = gross = rf. A session
 //! with 1 + g_s <= 0 wipes the book out: net = -1 and the loop stops (later rows
@@ -19,6 +21,7 @@ pub struct Path {
     pub trades: Vec<f64>,
     pub costs: Vec<f64>,
     pub borrow: Vec<f64>,
+    pub financing: Vec<f64>,
     pub ruined: bool,
 }
 
@@ -28,8 +31,9 @@ pub fn backtest_weights(
     na: usize,
     target: &[f64],
     exec_idx: &[i64],
-    cost_bps: f64,
+    cost_bps: &[f64],
     borrow_bps: f64,
+    fin_bps: f64,
     rf: &[f64],
 ) -> Result<Path, String> {
     if nt < 2 || na == 0 || px.len() != nt * na {
@@ -47,7 +51,15 @@ pub fn backtest_weights(
     if rf.len() != nt || rf.iter().any(|v| !v.is_finite()) {
         return Err(format!("rf must be {nt} finite values"));
     }
-    if !(cost_bps.is_finite() && cost_bps >= 0.0 && borrow_bps.is_finite() && borrow_bps >= 0.0) {
+    if cost_bps.len() != na {
+        return Err(format!(
+            "cost_bps must hold one cost per name: {} for {na}",
+            cost_bps.len()
+        ));
+    }
+    if cost_bps.iter().any(|c| !(c.is_finite() && *c >= 0.0))
+        || !(borrow_bps.is_finite() && borrow_bps >= 0.0 && fin_bps.is_finite() && fin_bps >= 0.0)
+    {
         return Err("costs must be finite and non-negative".into());
     }
     for (j, &s) in exec_idx.iter().enumerate() {
@@ -63,13 +75,15 @@ pub fn backtest_weights(
         trades: vec![0.0; nt * na],
         costs: vec![0.0; nt],
         borrow: vec![0.0; nt],
+        financing: vec![0.0; nt],
         ruined: false,
     };
     let first = exec_idx.first().map(|&s| s as usize).unwrap_or(nt);
     p.gross[1..first].copy_from_slice(&rf[1..first]);
     p.net[1..first].copy_from_slice(&rf[1..first]);
-    let c = cost_bps / 1e4;
+    let c: Vec<f64> = cost_bps.iter().map(|x| x / 1e4).collect();
     let b = borrow_bps / 1e4 / 252.0;
+    let f = fin_bps / 1e4 / 252.0;
     let mut w = vec![0.0; na];
     let mut wr = vec![0.0; na];
     let mut e = 0usize;
@@ -88,9 +102,15 @@ pub fn backtest_weights(
         } else {
             0.0
         };
+        let fs = if f != 0.0 && wabs > 1.0 {
+            f * (wabs - 1.0)
+        } else {
+            0.0
+        };
         p.gross[s] = gs;
         p.borrow[s] = bs;
-        let g = gs - bs;
+        p.financing[s] = fs;
+        let g = gs - bs - fs;
         if 1.0 + g <= 0.0 {
             p.net[s] = -1.0;
             p.ruined = true;
@@ -102,14 +122,15 @@ pub fn backtest_weights(
         p.net[s] = g;
         if e < exec_idx.len() && exec_idx[e] as usize == s {
             let tw = &target[e * na..(e + 1) * na];
-            let mut to = 0.0;
+            let (mut to, mut cost) = (0.0, 0.0);
             for i in 0..na {
                 let dw = tw[i] - w[i];
                 p.trades[s * na + i] = dw;
                 to += dw.abs();
+                cost += c[i] * dw.abs();
             }
             p.turnover[s] = to;
-            p.costs[s] = c * to;
+            p.costs[s] = cost;
             p.net[s] = (1.0 + p.net[s]) * (1.0 - p.costs[s]) - 1.0;
             w.copy_from_slice(tw);
             e += 1;
@@ -134,7 +155,8 @@ mod tests {
             1,
             &[1.0],
             &[1],
-            10.0,
+            &[10.0],
+            0.0,
             0.0,
             &[0.0; 3],
         )
@@ -156,8 +178,9 @@ mod tests {
             1,
             &[-1.0],
             &[1],
-            0.0,
+            &[0.0],
             252.0,
+            0.0,
             &[0.0; 3],
         )
         .unwrap();
@@ -174,6 +197,7 @@ mod tests {
             1,
             &[1.0],
             &[3],
+            &[0.0],
             0.0,
             0.0,
             &[0.0, 0.01, 0.02, 0.03],
@@ -195,7 +219,8 @@ mod tests {
             1,
             &[0.5, 0.5],
             &[1, 2],
-            10.0,
+            &[10.0],
+            0.0,
             0.0,
             &[0.0; 3],
         )
@@ -220,8 +245,9 @@ mod tests {
             2,
             &[1.0, -0.5],
             &[1],
-            0.0,
+            &[0.0; 2],
             252.0,
+            0.0,
             &[0.0; 3],
         )
         .unwrap();
@@ -238,6 +264,7 @@ mod tests {
             1,
             &[2.0],
             &[1],
+            &[0.0],
             0.0,
             0.0,
             &[0.0; 4],
@@ -249,14 +276,76 @@ mod tests {
     }
 
     #[test]
+    fn per_asset_cost_and_financing_hand() {
+        // Completion task 2.3. Two names at 100, rf 0; buy 1.0 of each at session 1 (gross 2)
+        // with half-spreads 1 and 8 bp: cost = 1e-4 + 8e-4 = 9e-4, net[1] = -9e-4.
+        // s = 2, no move: financing 50 bp/yr on the one unit above 1, f = 50e-4/252;
+        // g = -f, net[2] = -f, and each weight drifts to 1/(1 - f) as the fee shrinks NAV.
+        let p = backtest_weights(
+            &[100.0; 6],
+            3,
+            2,
+            &[1.0, 1.0],
+            &[1],
+            &[1.0, 8.0],
+            0.0,
+            50.0,
+            &[0.0; 3],
+        )
+        .unwrap();
+        let f = 50e-4 / 252.0;
+        assert!((p.costs[1] - 9e-4).abs() < 1e-18, "{}", p.costs[1]);
+        assert!((p.net[1] + 9e-4).abs() < 1e-15);
+        assert!((p.financing[2] - f).abs() < 1e-18, "{}", p.financing[2]);
+        assert!(p.financing[1] == 0.0 && p.borrow[2] == 0.0);
+        assert!((p.net[2] + f).abs() < 1e-15);
+        assert!((p.weights[4] - 1.0 / (1.0 - f)).abs() < 1e-15);
+    }
+
+    #[test]
+    fn gross_at_or_below_one_pays_no_financing() {
+        // 0.6 long A, 0.4 short B: gross 1.0, nothing above 1 to finance (borrow still due on B).
+        let p = backtest_weights(
+            &[100.0; 6],
+            3,
+            2,
+            &[0.6, -0.4],
+            &[1],
+            &[0.0; 2],
+            252.0,
+            50.0,
+            &[0.0; 3],
+        )
+        .unwrap();
+        assert_eq!(p.financing, vec![0.0; 3]);
+        assert!((p.borrow[2] - 0.4e-4).abs() < 1e-18);
+    }
+
+    #[test]
     fn rejects_bad_input() {
         let px = [100.0, 101.0, 102.0];
-        assert!(backtest_weights(&px, 3, 1, &[1.0], &[0], 0.0, 0.0, &[0.0; 3]).is_err()); // execution needs a prior close
-        assert!(backtest_weights(&px, 3, 1, &[1.0], &[3], 0.0, 0.0, &[0.0; 3]).is_err()); // past the end
-        assert!(backtest_weights(&px, 3, 1, &[1.0, 1.0], &[2, 1], 0.0, 0.0, &[0.0; 3]).is_err()); // not increasing
+        assert!(backtest_weights(&px, 3, 1, &[1.0], &[0], &[0.0], 0.0, 0.0, &[0.0; 3]).is_err()); // execution needs a prior close
+        assert!(backtest_weights(&px, 3, 1, &[1.0], &[3], &[0.0], 0.0, 0.0, &[0.0; 3]).is_err()); // past the end
         assert!(
-            backtest_weights(&[100.0, -1.0, 2.0], 3, 1, &[1.0], &[1], 0.0, 0.0, &[0.0; 3]).is_err()
-        );
-        assert!(backtest_weights(&px, 3, 1, &[1.0], &[1], -1.0, 0.0, &[0.0; 3]).is_err());
+            backtest_weights(&px, 3, 1, &[1.0, 1.0], &[2, 1], &[0.0], 0.0, 0.0, &[0.0; 3]).is_err()
+        ); // not increasing
+        assert!(backtest_weights(
+            &[100.0, -1.0, 2.0],
+            3,
+            1,
+            &[1.0],
+            &[1],
+            &[0.0],
+            0.0,
+            0.0,
+            &[0.0; 3]
+        )
+        .is_err());
+        assert!(backtest_weights(&px, 3, 1, &[1.0], &[1], &[-1.0], 0.0, 0.0, &[0.0; 3]).is_err());
+        assert!(
+            backtest_weights(&px, 3, 1, &[1.0], &[1], &[0.0, 0.0], 0.0, 0.0, &[0.0; 3]).is_err()
+        ); // one cost per name
+        assert!(backtest_weights(&px, 3, 1, &[1.0], &[1], &[0.0], 0.0, -1.0, &[0.0; 3]).is_err());
+        // negative financing
     }
 }

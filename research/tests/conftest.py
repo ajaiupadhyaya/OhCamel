@@ -101,6 +101,7 @@ seed: 42
 
 _COPIED = (
     "research/config/friction_v1.yaml",
+    "research/config/costs.yaml",
     "research/uv.lock",
     "fixtures/macro/macro.parquet",
     "fixtures/macro/macro.parquet.meta.json",

@@ -14,11 +14,15 @@ holdout series alone.
 
 `capacity` additionally assumes a fixed 1% ADV participation cap
 (`MAX_ADV_PARTICIPATION` below), the same default the desk itself holds for
-live trading (`Desk_spec.max_adv_participation`, `lib/config.ml`). That is
-this research module's own copy of the assumption, held separately from the
-desk's: a book.sexp can override the desk's live copy per book, and doing so
-does not move this one. `capacity` reports what 1% headroom looks like, not
-whatever a book currently sets.
+live trading (`Desk_spec.max_adv_participation`, `lib/config.ml`). Since
+completion task 2.3 it is read from the one cost file,
+`research/config/costs.yaml` (`capacity.participation`), the file the quant
+backtest, the farm and the desk's daily signals read their costs and capacity
+from -- not a copy held here. It is still held separately from the desk's live
+copy: a book.sexp can override that per book, and doing so does not move this
+one. `capacity` reports what 1% headroom looks like, not whatever a book
+currently sets. The manifest hashes the cost file (`manifest.COSTS_REL`), so
+editing it stales the evidence like editing this module.
 """
 
 from __future__ import annotations
@@ -26,10 +30,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import yaml
 from fdq.validation.dsr import deflated_sharpe, probabilistic_sharpe
 from fdq.validation.metrics import sharpe
 
@@ -64,10 +70,15 @@ THRESHOLDS = Thresholds()
 # The desk's own live participation cap defaults to 1% of a symbol's 20-day
 # ADV (`Desk_spec.max_adv_participation`, `lib/config.ml` around line 185 in
 # the main OhCamel checkout), and a book.sexp can override that copy per
-# book. This is the research layer's own, separately held assumption for
-# `capacity`'s headroom estimate: it is read from nowhere but here, and it
-# does not track whatever a book currently sets for the desk.
-MAX_ADV_PARTICIPATION = 0.01
+# book. The research layer's assumption for `capacity`'s headroom estimate is
+# read from the one cost file (completion task 2.3) -- the path is resolved
+# from this file's own location, because nothing under battery/ may import
+# the package root (tests/test_battery_boundary.py) -- and does not track
+# whatever a book currently sets for the desk.
+COSTS_PATH = Path(__file__).resolve().parents[4] / "research" / "config" / "costs.yaml"
+MAX_ADV_PARTICIPATION = float(
+    yaml.safe_load(COSTS_PATH.read_text(encoding="utf-8"))["capacity"]["participation"]
+)
 
 REGIMES: dict[str, tuple[date, date]] = {
     "2018_q4_selloff": (date(2018, 10, 1), date(2018, 12, 31)),

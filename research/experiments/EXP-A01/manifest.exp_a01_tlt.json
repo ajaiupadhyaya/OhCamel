@@ -240,12 +240,13 @@
     "fixtures/history/TLT.parquet.meta.json": "sha256:e9bf893212b42024a2c59506cf6b2ab0151aaa3f25f0d06796cf814b80c9436c",
     "fixtures/macro/macro.parquet": "sha256:4b05a2b74d89c6f987754ea9112aa9f69fad96d93feab18590f0753c78416cf0",
     "fixtures/macro/macro.parquet.meta.json": "sha256:f8d591f35fd7346bf5578a1f784017edf9a155e69495d32e9034c8a37a1c40d9",
+    "research/config/costs.yaml": "sha256:1ef44dd237b1dfca5fcab9cbddb926fc96bf1cc83968ad7c99dc11d41610bce0",
     "research/config/friction_v1.yaml": "sha256:1c09f884a55487ca7bc228efc285b69a865d1df59ee4ea367d9b4c09dc1d4cc9",
     "research/experiments/EXP-A01/config.yaml": "sha256:1e3c52bbaae5576f01e555195c266ebfc62f57320fcac4433b8bece79d9c5b0a",
     "research/src/ohcamel_research/battery/__init__.py": "sha256:2b0d5667f50e223d29954344e677755420db1ef23b8d444f8ddc0e7af02a8216",
     "research/src/ohcamel_research/battery/config.py": "sha256:2e452f75d56dc48f50a757199553a4ecd5dd1c3912c90fe44f0338094fd8e6a1",
     "research/src/ohcamel_research/battery/data.py": "sha256:dbce0c249012dc62ddfd1979cd3d28477a881816bf7c400a6630234f7c6db6f7",
-    "research/src/ohcamel_research/battery/gates.py": "sha256:f224ca8574bb4c7fc8f32c858ffa950b0386d51789f1c96adc617d182965553f",
+    "research/src/ohcamel_research/battery/gates.py": "sha256:11bf7e5076889517cb950a53a6f67dc737ce1072eea1be1e1336eefafcb34f83",
     "research/src/ohcamel_research/battery/pbo.py": "sha256:ccab3973ddcb2b1a87d4300c50762c9da99342ba1ce70d07f7545558acb74d24",
     "research/src/ohcamel_research/battery/run.py": "sha256:c0578a8e8624421a1a26f3b960e36bc70b225ebfbb7f859c49d0676ca80a8e07",
     "research/uv.lock": "sha256:83d4802a6c029197f776f7865ea755a89a1d9faf6c2fd9b5f089622384dd8b21"
@@ -267,7 +268,7 @@
   "pbo": 0.9813519813519813,
   "psr": 0.23385235491306616,
   "python_version": "3.13.12",
-  "ran_at": "2026-10-19T21:44:47Z",
+  "ran_at": "2026-11-23T15:01:56Z",
   "selected_params": {
     "fast": 1,
     "slow": 200,

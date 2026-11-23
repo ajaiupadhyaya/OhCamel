@@ -52,6 +52,7 @@ from ohcamel_research.cli import cli
 from ohcamel_research.contract import check, data_hash
 from ohcamel_research.manifest import (
     BATTERY_REL,
+    COSTS_REL,
     UV_LOCK_REL,
     DsrRecord,
     Manifest,
@@ -131,6 +132,7 @@ def _build_repo(root: Path) -> dict[str, Path]:
 
     uv_lock_path = root / UV_LOCK_REL
     _write(uv_lock_path, b"lockfile v1")
+    _write(root / COSTS_REL, b"capacity: {participation: 0.01}\n")  # task 2.3: hashed evidence
 
     return {
         "root": root,

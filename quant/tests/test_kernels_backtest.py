@@ -30,6 +30,26 @@ def test_long_one_asset_hand():
     assert p.turnover.tolist() == [0.0, 1.0, 0.0] and p.weights.shape == (3, 1) and not p.ruined
 
 
+def test_per_asset_cost_and_financing_hand():
+    """Completion task 2.3: a half-spread per name and a financing spread on gross above 1 (derivation in backtest.rs).
+    Two names at 100, rf 0; buy 1.0 of each at session 1 (gross 2) with half-spreads 1 and 8 bp:
+    cost = 1e-4 + 8e-4 = 9e-4. Session 2, no move: financing 50 bp/yr on the one unit above 1 = 50e-4/252."""
+    p = kernels.backtest_weights(np.full((3, 2), 100.0), [[1.0, 1.0]], [1], [1.0, 8.0], 0.0, np.zeros(3), 50.0)
+    fin = 50e-4 / 252
+    np.testing.assert_allclose(p.costs, [0.0, 9e-4, 0.0], atol=1e-18)
+    np.testing.assert_allclose(p.financing, [0.0, 0.0, fin], atol=1e-18)
+    np.testing.assert_allclose(p.net, [0.0, -9e-4, -fin], atol=1e-15)
+    np.testing.assert_allclose(p.weights[2], [1.0 / (1.0 - fin)] * 2, rtol=1e-15)   # fees shrink NAV: weights grow
+    scalar = kernels.backtest_weights(np.full((3, 2), 100.0), [[1.0, 1.0]], [1], 4.5, 0.0, np.zeros(3))
+    assert scalar.costs[1] == pytest.approx(9e-4, rel=1e-15) and not scalar.financing.any()
+    with pytest.raises(ValueError, match="cost"):
+        kernels.backtest_weights(np.full((3, 2), 100.0), [[1.0, 1.0]], [1], [1.0], 0.0, np.zeros(3))
+    with pytest.raises(ValueError, match="cost"):
+        kernels.backtest_weights(np.full((3, 2), 100.0), [[1.0, 1.0]], [1], [1.0, -8.0], 0.0, np.zeros(3))
+    with pytest.raises(ValueError, match="cost"):
+        kernels.backtest_weights(np.full((3, 2), 100.0), [[1.0, 1.0]], [1], 1.0, 0.0, np.zeros(3), -1.0)
+
+
 def test_no_executions_is_all_cash():
     p = kernels.backtest_weights(np.full((4, 2), 100.0), np.zeros((0, 2)), [], 5.0, 0.0, [0.0, 0.01, 0.0, 0.02])
     assert p.net.tolist() == [0.0, 0.01, 0.0, 0.02] and not p.weights.any()

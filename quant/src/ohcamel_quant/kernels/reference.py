@@ -310,9 +310,10 @@ def garch_fit(r: np.ndarray, kind: str, x0: np.ndarray | None):
 
 
 # ------------------------------------------------------------------ A6: backtest
-def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.ndarray, cost_bps: float,
-                     borrow_bps: float, rf: np.ndarray):
-    """backtest/engine.run_weights's accounting loop at 0b87dec, moved here unchanged."""
+def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.ndarray, cost_bps: np.ndarray,
+                     borrow_bps: float, rf: np.ndarray, financing_bps: float = 0.0):
+    """backtest/engine.run_weights's accounting loop at 0b87dec, moved here unchanged; completion task 2.3 made the
+    cost one half-spread per name (``cost_bps``, length n_a) and added the financing spread on gross above 1."""
     from .types import BacktestPath
 
     n_t, n_a = prices.shape
@@ -327,8 +328,10 @@ def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.
     trades = np.zeros((n_t, n_a))
     costs = np.zeros(n_t)
     borrow = np.zeros(n_t)
-    c = cost_bps / 1e4
+    financing = np.zeros(n_t)
+    c = np.asarray(cost_bps, dtype=float) / 1e4
     b = borrow_bps / 1e4 / 252
+    f = financing_bps / 1e4 / 252
     ruined = False
     first = min(exec_at) if exec_at else n_t
     gross[1:first] = rf[1:first]
@@ -339,11 +342,14 @@ def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.
             r = rets[s]
             wr = w * r
             wsum = float(w.sum())
+            wabs = float(np.abs(w).sum())
             gs = float(wr.sum()) + (1.0 - wsum) * rf_l[s]
-            bs = b * 0.5 * (float(np.abs(w).sum()) - wsum) if b else 0.0
+            bs = b * 0.5 * (wabs - wsum) if b else 0.0
+            fs = f * (wabs - 1.0) if f and wabs > 1.0 else 0.0
             gross[s] = gs
             borrow[s] = bs
-            g = gs - bs
+            financing[s] = fs
+            g = gs - bs - fs
             if 1.0 + g <= 0:
                 net[s] = -1.0
                 ruined = True
@@ -357,11 +363,11 @@ def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.
             trades[s] = dw
             to = float(np.abs(dw).sum())
             turnover[s] = to
-            costs[s] = c * to
+            costs[s] = float((c * np.abs(dw)).sum())
             net[s] = (1.0 + net[s]) * (1.0 - costs[s]) - 1.0
             w = tw.copy()
         W[s] = w
-    return BacktestPath(gross, net, W, turnover, trades, costs, borrow, ruined)
+    return BacktestPath(gross, net, W, turnover, trades, costs, borrow, ruined, financing)
 
 
 # ------------------------------------------------------------------ A7: options

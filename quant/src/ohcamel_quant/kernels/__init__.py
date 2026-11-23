@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 
 ENV = "OHCAMEL_QUANT_KERNELS"
 #: The wheel API this dispatcher speaks (native/kernels/src/lib.rs API_VERSION).
-API_VERSION = 3
+API_VERSION = 4
 #: Contract II.4's functions, in its order.
 API: tuple[str, ...] = (
     "fhs_paths", "copula_t_paths", "var_es_from_pnl", "stationary_bootstrap_means", "cscv_pbo",
@@ -313,12 +313,14 @@ def garch_fit(r: Any, kind: str, x0: Any | None) -> GarchFitResult:
     return reference.garch_fit(y, kind, x)
 
 
-def backtest_weights(prices: Any, target_w: Any, decision_idx: Any, cost_bps: float, borrow_bps: float,
-                     rf: Any) -> BacktestPath:
+def backtest_weights(prices: Any, target_w: Any, decision_idx: Any, cost_bps: Any, borrow_bps: float,
+                     rf: Any, financing_bps: float = 0.0) -> BacktestPath:
     """The engine's accounting loop (backtest/engine.py docstring): ``prices`` n_t x n_a
     adjusted closes, ``target_w`` one row per execution, ``decision_idx[j]`` the
     session at whose close row j is executed (decision + execution lag), costs in
-    bps, ``rf`` daily decimal cash returns."""
+    bps -- ``cost_bps`` one half-spread per name (a number applies to every name),
+    ``borrow_bps`` a year on short notional, ``financing_bps`` a year on gross above 1
+    (completion task 2.3) -- and ``rf`` daily decimal cash returns."""
     px = _arr(prices, "prices", 2)
     n_t, n_a = px.shape
     tw = np.ascontiguousarray(np.asarray(target_w, dtype=np.float64).reshape(-1, n_a))
@@ -333,14 +335,20 @@ def backtest_weights(prices: Any, target_w: Any, decision_idx: Any, cost_bps: fl
                          "(an execution needs a prior close)")
     if not np.all(np.isfinite(px)) or np.any(px <= 0):
         raise ValueError("prices must be finite and positive")
-    cost, borrow = float(cost_bps), float(borrow_bps)
-    if not (cost >= 0 and borrow >= 0 and math.isfinite(cost) and math.isfinite(borrow)):
+    raw = np.asarray(cost_bps, dtype=np.float64)
+    cost = np.ascontiguousarray(np.full(n_a, float(raw)) if raw.ndim == 0 else raw.reshape(-1))
+    if cost.size != n_a:
+        raise ValueError(f"cost_bps holds {cost.size} costs for {n_a} names (one per name)")
+    borrow, fin = float(borrow_bps), float(financing_bps)
+    if not (np.all(np.isfinite(cost)) and np.all(cost >= 0) and borrow >= 0 and fin >= 0
+            and math.isfinite(borrow) and math.isfinite(fin)):
         raise ValueError("costs must be finite and non-negative")
     if engine_of("backtest_weights") == "rust":
-        g, net, w, to, tr, c, b, ruined = _RUST.backtest_weights(px, tw, idx, cost, borrow, rfa)
+        g, net, w, to, tr, c, b, f, ruined = _RUST.backtest_weights(px, tw, idx, cost, borrow, fin, rfa)
         return BacktestPath(np.asarray(g), np.asarray(net), np.asarray(w).reshape(n_t, n_a), np.asarray(to),
-                            np.asarray(tr).reshape(n_t, n_a), np.asarray(c), np.asarray(b), bool(ruined))
-    return reference.backtest_weights(px, tw, idx, cost, borrow, rfa)
+                            np.asarray(tr).reshape(n_t, n_a), np.asarray(c), np.asarray(b), bool(ruined),
+                            np.asarray(f))
+    return reference.backtest_weights(px, tw, idx, cost, borrow, rfa, fin)
 
 
 def svi_fit(k: Any, w: Any, weights: Any) -> SviFitResult:

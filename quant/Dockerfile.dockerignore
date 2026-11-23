@@ -24,6 +24,8 @@
 !docs/perf/propagation.json
 # EXP-Q01/Q02's frozen configs (Lane M, M6/M7: COPY research/experiments/ in the runtime stage)
 !research/experiments/
+# The one cost file the engine, the farm and signals.daily read (completion task 2.3)
+!research/config/costs.yaml
 !research/kronos/pyproject.toml
 !research/kronos/uv.lock
 !research/kronos/README.md

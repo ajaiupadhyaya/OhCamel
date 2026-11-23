@@ -23,6 +23,7 @@ import pytest
 
 from ohcamel_research.manifest import (
     BATTERY_REL,
+    COSTS_REL,
     UV_LOCK_REL,
     DsrRecord,
     Manifest,
@@ -79,7 +80,11 @@ def _build_repo(root: Path) -> dict[str, Path]:
     uv_lock_path = root / UV_LOCK_REL
     _write(uv_lock_path, b"lockfile v1")
 
+    costs_path = root / COSTS_REL
+    _write(costs_path, b"capacity: {participation: 0.01}\n")
+
     return {
+        "costs": costs_path,
         "root": root,
         "battery": battery,
         "config": config_path,
@@ -318,6 +323,26 @@ def test_stale_without_friction_key(tmp_path: Path):
     m = _make_manifest(paths, hashes=hashes)
     reasons = is_stale(m, paths["root"])
     assert any("friction file" in r and "required key missing" in r for r in reasons)
+
+
+def test_the_cost_file_is_hashed_and_an_edit_stales_the_manifest(tmp_path: Path):
+    # completion task 2.3: battery/gates.py reads capacity's participation from
+    # research/config/costs.yaml, so the file is evidence like the battery itself.
+    paths = _build_repo(tmp_path)
+    m = _make_manifest(paths)
+    assert COSTS_REL.as_posix() in m.hashes
+    paths["costs"].write_bytes(b"capacity: {participation: 0.02}\n")
+    reasons = is_stale(m, paths["root"])
+    assert any("costs.yaml" in r and "no longer matches" in r for r in reasons)
+
+
+def test_stale_without_costs_key(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    hashes = dict(compute_hashes(paths["root"], paths["config"], read_fixtures=[paths["fixture"]]))
+    del hashes[COSTS_REL.as_posix()]
+    m = _make_manifest(paths, hashes=hashes)
+    reasons = is_stale(m, paths["root"])
+    assert any("costs.yaml" in r and "required key missing" in r for r in reasons)
 
 
 def test_stale_without_macro_key(tmp_path: Path):

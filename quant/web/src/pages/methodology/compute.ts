@@ -177,10 +177,10 @@ export const KERNELS: Entry[] = [
   {
     id: "kernel-backtest_weights",
     name: "backtest_weights — the backtester's accounting loop",
-    summary: "The inner loop of every weights backtest: daily drift of the held weights, borrow on short notional, and proportional costs on turnover at each execution session.",
+    summary: "The inner loop of every weights backtest: daily drift of the held weights, borrow on short notional, financing on gross above 1, and each name's half-spread on what it trades at each execution session.",
     formulas: [
-      { tex: T`g_s = w^\top R_s + (1 - \textstyle\sum w)\,rf_s - \tfrac{b}{10^4 \cdot 252}\cdot\tfrac{\sum|w| - \sum w}{2},\qquad w \leftarrow \frac{w + w \odot R_s}{1 + g_s}`, caption: "gross return net of borrow, then drift" },
-      { tex: T`1 + \text{net}_s = (1 + g_s)\big(1 - \tfrac{c}{10^4}\lVert w^\ast - w\rVert_1\big),\quad w \leftarrow w^\ast`, caption: "at an execution session" },
+      { tex: T`g_s = w^\top R_s + (1 - \textstyle\sum w)\,rf_s - \tfrac{b}{10^4 \cdot 252}\cdot\tfrac{\sum|w| - \sum w}{2} - \tfrac{f}{10^4 \cdot 252}\max\!\big(\textstyle\sum|w| - 1, 0\big),\qquad w \leftarrow \frac{w + w \odot R_s}{1 + g_s}`, caption: "gross return net of borrow and financing, then drift" },
+      { tex: T`1 + \text{net}_s = (1 + g_s)\big(1 - \textstyle\sum_i \tfrac{c_i}{10^4}\,|w^\ast_i - w_i|\big),\quad w \leftarrow w^\ast`, caption: "at an execution session; c_i is name i's half-spread (research/config/costs.yaml)" },
     ],
     assumptions: ["Before the first execution the book is cash and earns rf.", "A session with 1 + g ≤ 0 wipes the book out: net = −1 and the loop stops.", "The execution lag is applied by the caller.", "Single-threaded.", EXACT_PARITY],
     appears: [LAB, OPT_BT, FARM, COMPUTE],

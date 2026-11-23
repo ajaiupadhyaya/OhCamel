@@ -221,6 +221,15 @@ export interface FarmBoardRow {
   selected_params: string | null;
   data_asof: string | null;
   ran_at: string | null;
+  /** Completion task 2.3 (research/config/costs.yaml): the out-of-sample path's one-way annual turnover, capacity
+   *  (USD at 1% of 20-session median dollar volume) and Sharpe at 0/1/3/6x every half-spread. Absent (null) on a
+   *  cell carried forward from before the cost file. */
+  turnover?: number | null;
+  capacity_usd?: number | null;
+  sr_at_0x?: number | null;
+  sr_at_1x?: number | null;
+  sr_at_3x?: number | null;
+  sr_at_6x?: number | null;
 }
 
 /** farm.sweep · cells: every cell, ok or skipped (with its reason). */

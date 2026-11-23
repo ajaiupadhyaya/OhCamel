@@ -59,6 +59,22 @@ def farm_dsr(cells: pd.DataFrame, trial_srs: np.ndarray) -> pd.Series:
                       for r in cells.itertuples()], index=cells.index, dtype=float)
 
 
+def cost_columns() -> tuple[str, ...]:
+    """The leaderboard's cost columns (completion task 2.3): one-way annual turnover and capacity of the out-of-sample
+    path, and its Sharpe at each of the cost file's half-spread multiples (``sr_at_0x`` ... ``sr_at_6x``)."""
+    from ..backtest import costs
+
+    return ("turnover", "capacity_usd", *(f"sr_at_{m:g}x" for m in costs.load().sweep))
+
+
+def _num(v: Any) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+    return f if math.isfinite(f) else float("nan")
+
+
 def _cost_curve(raw: Any) -> list[dict[str, Any]] | None:
     """The cell's stored 0/5/15/30 bps curve (JSON records); None when absent or unreadable."""
     if not isinstance(raw, str):
@@ -75,6 +91,7 @@ def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trial_srs: np.ndarra
     if ok.empty:
         return pd.DataFrame(columns=["cell_id", "verdict", "detail", "dsr_farm"])
     ok["dsr_farm"] = farm_dsr(ok, trial_srs)
+    extra = cost_columns()
     rows = []
     for r in ok.itertuples():
         reg = regimes[regimes["cell_id"] == r.cell_id]
@@ -84,5 +101,7 @@ def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trial_srs: np.ndarra
                      "detail": v.detail, "dsr_farm": r.dsr_farm, "psr": r.psr, "oos_sharpe_ann": r.oos_sharpe_ann,
                      "holdout_return": r.holdout_return, "boot_lo5": r.boot_lo5, "pbo": r.pbo, "spa_p": r.spa_p,
                      "n_combos": r.n_combos, "selected_params": r.selected_params, "data_asof": r.data_asof,
-                     "ran_at": r.ran_at})
+                     "ran_at": r.ran_at,
+                     # a cell carried forward from before the cost file has none: NaN, never a made-up figure
+                     **{k: _num(getattr(r, k, None)) for k in extra}})
     return pd.DataFrame(rows).sort_values(["dsr_farm"], ascending=False, na_position="last").reset_index(drop=True)

@@ -65,8 +65,8 @@ class GarchFitResult:
 @dataclass(frozen=True)
 class BacktestPath:
     """``backtest_weights``'s answer: per-session gross and net returns, post-trade
-    weights (n_t x n_a), turnover, signed trades (n_t x n_a), cost and borrow
-    fractions of NAV, and whether the book was wiped out."""
+    weights (n_t x n_a), turnover, signed trades (n_t x n_a), cost, borrow and
+    financing fractions of NAV, and whether the book was wiped out."""
 
     gross: np.ndarray
     net: np.ndarray
@@ -76,6 +76,7 @@ class BacktestPath:
     costs: np.ndarray
     borrow: np.ndarray
     ruined: bool
+    financing: np.ndarray   # completion task 2.3: the spread on gross above 1
 
 
 @dataclass(frozen=True)

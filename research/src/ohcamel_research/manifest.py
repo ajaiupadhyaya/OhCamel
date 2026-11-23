@@ -92,6 +92,9 @@ from ohcamel_research.battery.gates import THRESHOLDS
 # did.
 BATTERY_REL = Path("research/src/ohcamel_research/battery")
 UV_LOCK_REL = Path("research/uv.lock")
+# The one cost file (completion task 2.3): battery/gates.py reads capacity's
+# participation from it, so it is evidence like the battery itself.
+COSTS_REL = Path("research/config/costs.yaml")
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 _HASH_VALUE_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -653,7 +656,9 @@ def compute_hashes(
       resolved against ``repo_root`` (never the current working directory)
       when given as a relative path -- plus each fixture's own provenance
       sidecar when one exists;
-    - ``research/uv.lock``, so a dependency change stales the evidence too.
+    - ``research/uv.lock``, so a dependency change stales the evidence too;
+    - the cost file, ``research/config/costs.yaml``, which battery/gates.py
+      reads capacity's participation from (completion task 2.3).
 
     ``read_fixtures`` must not be empty: a manifest that recorded no fixture
     at all would have nothing pinning it to the data a strategy was actually
@@ -683,6 +688,7 @@ def compute_hashes(
     for p in read_fixtures:
         paths.extend(_fixture_and_sidecar((root / p).resolve()))
     paths.append(root / UV_LOCK_REL)
+    paths.append(root / COSTS_REL)
 
     hashes: dict[str, str] = {}
     for p in paths:
@@ -696,7 +702,8 @@ def _missing_required_reasons(hashes: Mapping[str, str]) -> list[str]:
     ``hashes`` entirely -- never mind whether what *is* recorded still
     matches the filesystem, checked separately below. A manifest that never
     claims to have hashed its config, its friction file, its macro fixture,
-    at least one history fixture, or ``research/uv.lock`` cannot be fresh no
+    at least one history fixture, ``research/uv.lock`` or the cost file
+    (``research/config/costs.yaml``, completion task 2.3) cannot be fresh no
     matter what it does record.
 
     These are name-pattern checks against this project's own fixed
@@ -712,6 +719,8 @@ def _missing_required_reasons(hashes: Mapping[str, str]) -> list[str]:
     reasons = []
     if UV_LOCK_REL.as_posix() not in hashes:
         reasons.append(f"{UV_LOCK_REL.as_posix()}: required key missing from the manifest")
+    if COSTS_REL.as_posix() not in hashes:
+        reasons.append(f"{COSTS_REL.as_posix()}: required key missing from the manifest")
     if not any(Path(k).name == "config.yaml" for k in hashes):
         reasons.append("config.yaml: required key missing from the manifest")
     if not any("friction" in Path(k).name for k in hashes):

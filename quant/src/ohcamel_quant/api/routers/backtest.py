@@ -344,6 +344,9 @@ def _method(p: Prepared, **extra: Any) -> dict[str, Any]:
         "engine": {
             "execution": f"decide at close t, execute at close t+{c.execution_lag}",
             "rebalance": c.rebalance, "cost_bps": c.cost_bps, "borrow_bps_per_year": c.borrow_bps,
+            # completion task 2.3: the form sets cost and borrow; the financing spread is the one cost file's
+            "financing_bps_per_year_over_rf_on_gross_above_1": (
+                c.financing_bps if c.financing_bps is not None else c.model().financing_spread_bps),
             "max_gross_leverage": c.max_gross_leverage, "vol_target": c.vol_target,
             "vol_estimator": c.vol_estimator if c.vol_target else None,
             "cash": ("1 - sum(w) earns the daily T-bill return, no look-ahead (source in provenance, timing in notes)"

@@ -206,6 +206,9 @@ COPY docs/perf/kernels.json /app/docs/perf/kernels.json
 COPY docs/perf/propagation.json /app/docs/perf/propagation.json
 # The pre-registered experiments' frozen configs (EXP-Q01/Q02), read by their jobs at run time.
 COPY research/experiments/ /app/research/experiments/
+# The one cost file (completion task 2.3): the engine, the farm and signals.daily
+# read every cost from it (backtest/costs.py, REPO_ROOT / "research/config/costs.yaml").
+COPY research/config/costs.yaml /app/research/config/costs.yaml
 # The signal contract's JSON schemas, against which signals.daily and
 # signals.overlay validate every document before it is written
 # (signals/contract.py, REPO_ROOT / "interface"), and the example book whose
@@ -261,6 +264,7 @@ ENV PATH=/app/quant/.venv/bin:$PATH \
 RUN python -c "import ohcamel_quant.api.app as a, ohcamel_quant.config as c, ohcamel_quant.kernels as k; \
 import lightgbm, pathlib; assert pathlib.Path('/app/research/experiments/EXP-Q01/config.yaml').is_file(); \
 assert pathlib.Path('/app/interface/signal.schema.json').is_file() and pathlib.Path('/app/book.example.sexp').is_file(); \
+import ohcamel_quant.backtest.costs as cf; assert cf.COSTS_PATH.is_file() and cf.load().tickers, cf.COSTS_PATH; \
 assert a.WEB_DIST.is_dir(), a.WEB_DIST; assert (c.get_settings().fixtures_dir / 'history').is_dir(); \
 assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n in k.API), [n for n in k.API if k.engine_of(n) != 'rust']; \
 print('routes:', len(a.app.routes), 'kernels:', k.ENGINE)"

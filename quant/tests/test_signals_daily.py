@@ -249,6 +249,21 @@ def test_symbol_outside_the_book_is_refused(world):
     assert "SPY" in daily.book_symbols() and "VTI" not in daily.book_symbols()
 
 
+def test_symbol_without_a_cost_tier_is_refused():
+    """Completion task 2.3: the desk's signals read the one cost file the farm's verdict was costed with; a name it
+    holds no tier for could not have been costed, so the cell is refused, never sent."""
+    cell = Cell("farm_x_single", "signals.daily", "buy_and_hold", "us_equity_indices", ("SPY", "AAPL"), 0.025)
+    assert daily._roster_refusal(cell, frozenset({"SPY", "AAPL"})) == (
+        "symbol AAPL has no cost tier in research/config/costs.yaml, so the farm could not cost its trades")
+
+
+def test_the_run_names_the_cost_file_it_read(world):
+    from ohcamel_quant.backtest import costs
+
+    prov = [p for p in world["spec"].provenance if p.get("source") == "costs"]
+    assert prov == [{"source": "costs", "path": "research/config/costs.yaml", "version": costs.load().version}]
+
+
 def test_validation_fail_from_a_fail_row(world):
     block = _doc(world, "farm_sma_trend_fixture")["validation"]
     assert block == {"status": "fail", "gates_version": "2026-09-02", "dsr": 0.41, "psr": 0.62, "pbo": 0.55,

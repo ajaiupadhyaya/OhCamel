@@ -335,7 +335,7 @@ def _objective(r: pd.Series, rf: pd.Series | None, objective: str) -> float:
 
 
 def walk_forward(sw: SweepResult, is_len: int, oos_len: int, anchored: bool = False,
-                 objective: str = "sharpe", cost_bps: float = 0.0, rf: pd.Series | None = None,
+                 objective: str = "sharpe", cost_bps: float | np.ndarray = 0.0, rf: pd.Series | None = None,
                  reference: int | None = None, lag: int = 1) -> dict[str, Any]:
     """Walk-forward optimization on the sweep's aligned returns.
 
@@ -349,8 +349,10 @@ def walk_forward(sw: SweepResult, is_len: int, oos_len: int, anchored: bool = Fa
     Because every strategy is causal, each combination's return at ``t``
     depends only on data ``<= t``, so the stitched series is genuinely
     out-of-sample. Switching combinations costs
-    ``cost_bps * sum|w_new - w_old|`` at the fold boundary (entry from cash on
-    the first fold). Walk-forward efficiency = OOS annualized Sharpe / mean
+    ``sum_i cost_bps_i * |w_new_i - w_old_i|`` at the fold boundary (entry from cash
+    on the first fold); ``cost_bps`` is one number for every name or one per
+    column of the sweep's weights (the cost file's half-spreads, completion task
+    2.3). Walk-forward efficiency = OOS annualized Sharpe / mean
     IS annualized Sharpe of the chosen combinations (Pardo 2008)."""
     rets = sw.returns
     t_len = len(rets)
@@ -360,7 +362,7 @@ def walk_forward(sw: SweepResult, is_len: int, oos_len: int, anchored: bool = Fa
         raise ValueError("lag must be >= 1 session")
     if is_len + oos_len > t_len:
         raise ValueError(f"is_len + oos_len = {is_len + oos_len} exceeds the {t_len} common sessions")
-    c = cost_bps / 1e4
+    c = _per_name(cost_bps, sw) / 1e4
     pieces, folds = [], []
     prev: int | None = None
     start = is_len
@@ -373,7 +375,7 @@ def walk_forward(sw: SweepResult, is_len: int, oos_len: int, anchored: bool = Fa
         oos = rets.iloc[start:stop][rets.columns[pick]].copy()
         w_new = sw.weights[pick].iloc[start - 1].to_numpy()
         w_old = np.zeros_like(w_new) if prev is None else sw.weights[prev].iloc[start - 1].to_numpy()
-        switch = c * float(np.abs(w_new - w_old).sum()) if prev != pick else 0.0
+        switch = float((c * np.abs(w_new - w_old)).sum()) if prev != pick else 0.0
         oos.iloc[0] = (1.0 + oos.iloc[0]) * (1.0 - switch) - 1.0
         pieces.append(oos)
         folds.append({
@@ -403,6 +405,115 @@ def walk_forward(sw: SweepResult, is_len: int, oos_len: int, anchored: bool = Fa
     return out
 
 
+def _per_name(cost_bps: float | np.ndarray, sw: SweepResult) -> np.ndarray:
+    """``cost_bps`` as one value per column of the sweep's weights."""
+    n = sw.weights[0].shape[1] if sw.weights else 0
+    raw = np.asarray(cost_bps, dtype=float)
+    out = np.full(n, float(raw)) if raw.ndim == 0 else raw.reshape(-1)
+    if out.size != n or not np.all(np.isfinite(out) & (out >= 0)):
+        raise ValueError(f"cost_bps must be one non-negative number or one per name ({n}); got {cost_bps!r}")
+    return out
+
+
+def _fold_spans(sw: SweepResult, wf: dict[str, Any]) -> list[tuple[int, int, int, int | None]]:
+    """``(combo, start, stop, previous combo)`` per walk-forward fold, by position in the sweep's aligned index."""
+    idx = sw.returns.index
+    spans, prev = [], None
+    for f in wf["folds"]:
+        start = int(idx.get_loc(f["oos_start"]))
+        stop = int(idx.get_loc(f["oos_end"])) + 1
+        spans.append((int(f["combo"]), start, stop, prev))
+        prev = int(f["combo"])
+    return spans
+
+
+def _switch_dw(sw: SweepResult, pick: int, prev: int | None, start: int) -> np.ndarray:
+    """|w_new - w_old| at the close before a fold starts (walk_forward's switch; from cash on the first fold)."""
+    w_new = sw.weights[pick].iloc[start - 1].to_numpy()
+    if prev == pick:
+        return np.zeros_like(w_new)
+    w_old = np.zeros_like(w_new) if prev is None else sw.weights[prev].iloc[start - 1].to_numpy()
+    return np.abs(w_new - w_old)
+
+
+def oos_at_cost(sw: SweepResult, wf: dict[str, Any], spreads_bps: float | np.ndarray, mult: float = 1.0, *,
+                flat_bps: float | None = None) -> pd.Series:
+    """The walk-forward out-of-sample series -- the one the gates judge -- re-priced at another cost (completion task
+    2.3: the sweep).
+
+    Costs do not move target or drifted weights (both are fractions of NAV), so each fold's session ``s`` re-prices
+    exactly as ``1 + net_s = (1 + gross_s - borrow_s - financing_s)(1 - k cost_s)``: with ``mult`` = k, every
+    half-spread the run paid (``cost_s``, at ``spreads_bps``, the half-spreads the sweep ran with) times k; with
+    ``flat_bps``, one cost of that many bps on every name's traded notional instead (``flat_bps x turnover_s``).
+    Each fold's switch from the previous fold's combination is re-priced the same way. At ``mult`` 1 this is
+    ``wf["returns"]``."""
+    c = _per_name(spreads_bps, sw) / 1e4
+    k = float(mult)
+    idx = sw.returns.index
+    pieces = []
+    for pick, start, stop, prev in _fold_spans(sw, wf):
+        res = sw.results[pick]
+        win = idx[start:stop]
+        fin = res.financing if res.financing is not None else 0.0
+        g = (res.returns_gross - res.borrow - fin).reindex(win)
+        if flat_bps is None:
+            paid = k * res.costs.reindex(win)
+            switch = k * float((c * _switch_dw(sw, pick, prev, start)).sum())
+        else:
+            paid = float(flat_bps) / 1e4 * res.turnover.reindex(win)
+            switch = float(flat_bps) / 1e4 * float(_switch_dw(sw, pick, prev, start).sum())
+        net = (1.0 + g) * (1.0 - paid) - 1.0
+        net.iloc[0] = (1.0 + net.iloc[0]) * (1.0 - switch) - 1.0
+        pieces.append(net)
+    return pd.concat(pieces).rename("walk_forward")
+
+
+def oos_turnover(sw: SweepResult, wf: dict[str, Any]) -> pd.Series:
+    """One-way turnover (sum |dw|) along the walk-forward out-of-sample path: each fold's own executions plus its
+    switch from the previous fold's combination, dated on the fold's first session as ``oos_at_cost`` charges it."""
+    idx = sw.returns.index
+    pieces = []
+    for pick, start, stop, prev in _fold_spans(sw, wf):
+        to = sw.results[pick].turnover.reindex(idx[start:stop]).copy()
+        to.iloc[0] += float(_switch_dw(sw, pick, prev, start).sum())
+        pieces.append(to)
+    return pd.concat(pieces).rename("turnover")
+
+
+def executed_trades(res: BacktestResult, prices: pd.DataFrame) -> pd.DataFrame:
+    """The signed trades ``w* - w~`` at each execution of ``res``, rebuilt from its post-trade weights for a result
+    the sweep slimmed (``trades`` dropped): ``w~_s = w_{s-1} (1 + R_s) / (1 + g_s)`` with ``g_s`` gross less borrow
+    and financing -- the engine's own drift (module docstring of :mod:`.engine`)."""
+    w = res.weights
+    px = prices.reindex(index=w.index, columns=w.columns)
+    r = px.pct_change().fillna(0.0)
+    fin = res.financing if res.financing is not None else 0.0
+    g = (res.returns_gross - res.borrow - fin).reindex(w.index)
+    drifted = w.shift(1).fillna(0.0) * (1.0 + r)
+    drifted = drifted.div(1.0 + g, axis=0)
+    out = pd.DataFrame(0.0, index=w.index, columns=w.columns)
+    ex = w.index.isin(res.executions)
+    out.loc[ex] = (w.loc[ex] - drifted.loc[ex]).to_numpy()
+    return out
+
+
+def oos_trades(sw: SweepResult, wf: dict[str, Any], prices: pd.DataFrame) -> pd.DataFrame:
+    """Signed trades along the walk-forward out-of-sample path: each fold's combination's own executions inside the
+    fold, and the switch into it at the close before the fold starts (from cash on the first fold)."""
+    idx = sw.returns.index
+    cols = sw.weights[0].columns
+    out = pd.DataFrame(0.0, index=idx, columns=cols)
+    spans = _fold_spans(sw, wf)
+    for pick, start, stop, prev in spans:
+        win = idx[start:stop]
+        out.loc[win] = executed_trades(sw.results[pick], prices).reindex(index=win, columns=cols).to_numpy()
+        w_new = sw.weights[pick].iloc[start - 1].to_numpy()
+        if prev != pick:
+            w_old = np.zeros_like(w_new) if prev is None else sw.weights[prev].iloc[start - 1].to_numpy()
+            out.iloc[start - 1] = out.iloc[start - 1].to_numpy() + (w_new - w_old)
+    return out.iloc[spans[0][1] - 1:] if spans else out.iloc[0:0]
+
+
 # ======================================================================= costs
 def cost_sensitivity(res: BacktestResult, bps_grid: list[float], rf: pd.Series | None = None,
                      benchmark: pd.Series | None = None) -> dict[str, Any]:
@@ -411,12 +522,13 @@ def cost_sensitivity(res: BacktestResult, bps_grid: list[float], rf: pd.Series |
     Costs do not change target or drifted weights (both are fractions of NAV),
     so turnover is invariant and the net return at cost ``c`` is exactly::
 
-        1 + net_s(c) = (1 + gross_s - borrow_s) (1 - c * turnover_s)
+        1 + net_s(c) = (1 + gross_s - borrow_s - financing_s) (1 - c * turnover_s)
 
     Returns metric curves over ``bps_grid`` and the break-even costs at which
     the (excess) Sharpe ratio reaches 0 and at which CAGR falls to the
     benchmark's (root-finding with Brent's method)."""
-    g = res.live(res.returns_gross - res.borrow)
+    fin = res.financing if res.financing is not None else 0.0
+    g = res.live(res.returns_gross - res.borrow - fin)
     to = res.live(res.turnover)
 
     def net(bps: float) -> pd.Series:
@@ -463,7 +575,8 @@ def run_config_from(config: EngineConfig, **kw: Any) -> EngineConfig:
 __all__ = [
     "BOOTSTRAP_SEED", "CSCV_CHUNK_BYTES", "JOB_MAX_REPS", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe",
     "cost_sensitivity", "cscv_pbo",
-    "deflated_sharpe_for_grid", "optimal_block", "param_grid", "run_weights", "spa_test", "sweep",
+    "deflated_sharpe_for_grid", "executed_trades", "oos_at_cost", "oos_trades", "oos_turnover", "optimal_block",
+    "param_grid", "run_weights", "spa_test", "sweep",
     "sweep_footprint_bytes",
     "walk_forward", "run_config_from",
 ]

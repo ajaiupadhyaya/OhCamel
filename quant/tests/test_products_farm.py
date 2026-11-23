@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pandas as pd
 import pytest
 from lane_m_harness import is_label, publish_artifact
@@ -31,6 +32,36 @@ def test_a_cell_carries_every_gate_input(cell):
     assert "costs_reported" not in row  # the gate reads the table, never a flag
     assert set(regimes["regime"]) == {"2008", "2015-16", "2020", "2022", "2024"}
     assert regimes.set_index("regime").loc["2008", "positive"] is None  # fixtures start 2016: no 2008 data
+
+
+COST_COLUMNS = ("turnover", "capacity_usd", "sr_at_0x", "sr_at_1x", "sr_at_3x", "sr_at_6x")
+
+
+def test_a_cell_reports_turnover_capacity_and_the_sweep_on_its_out_of_sample_series(cell):
+    """Completion task 2.3: the sweep multiplies every half-spread by 0, 1, 3 and 6 and re-prices the walk-forward
+    out-of-sample series the gates judge, so its 1x Sharpe is the gated one; turnover and capacity describe it too."""
+    from ohcamel_quant.backtest import costs
+
+    row, _, _ = cell
+    for k in COST_COLUMNS:
+        assert isinstance(row[k], float) and np.isfinite(row[k]), k
+    assert row["sr_at_1x"] == pytest.approx(row["oos_sharpe_ann"], rel=1e-12)
+    assert row["sr_at_0x"] >= row["sr_at_1x"] >= row["sr_at_3x"] >= row["sr_at_6x"]
+    assert row["sr_at_0x"] > row["sr_at_6x"]
+    assert row["turnover"] > 0 and row["capacity_usd"] > 0
+    assert row["costs_version"] == costs.load().version
+
+
+def test_leaderboard_carries_turnover_capacity_and_the_sweep(cell):
+    from ohcamel_quant.models.farm import leaderboard
+
+    row, regimes, trials = cell
+    board = leaderboard(pd.DataFrame([row]), regimes, trials)
+    for k in COST_COLUMNS:
+        assert board[k].iloc[0] == pytest.approx(row[k], rel=1e-12), k
+    before = {k: v for k, v in row.items() if k not in COST_COLUMNS}   # a cell carried forward from an older run
+    old = leaderboard(pd.DataFrame([before]), regimes, trials)
+    assert all(k in old.columns and old[k].isna().all() for k in COST_COLUMNS)
 
 
 def test_a_cell_is_deterministic(market, cell):

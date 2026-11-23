@@ -5,8 +5,12 @@ For each roster cell whose producer is ``signals.daily`` (the research
 service's rows are not this producer's and are skipped silently):
 
 * a cell naming a symbol outside ``book.example.sexp``'s positions is refused --
-  never projected onto the book's names -- and so is one whose roster symbols
-  are not ``universes.json``'s members for its universe (the farm's cell);
+  never projected onto the book's names -- and so is one naming a symbol the one
+  cost file (research/config/costs.yaml, completion task 2.3) holds no tier for:
+  the farm that validates the cell costs its trades from that file and could not
+  have costed it; so is one whose roster symbols are not ``universes.json``'s
+  members for its universe (the farm's cell). The run's provenance names the cost
+  file and its version;
 * its parameters are the month's frozen ones (:mod:`.freeze`), checked and
   merged over the defaults by ``validate_params`` as the farm's ``sweep`` does;
 * its target weights are the LAST row of the backtest's own strategy function,
@@ -497,9 +501,15 @@ def _spec(emitted: list[dict], refused: list[dict], notes: list[str], *,
 
 
 def _roster_refusal(c: Cell, book: frozenset[str]) -> str | None:
+    from ..backtest import costs
+
     outside = [s for s in c.symbols if s not in book]
     if outside:
         return f"symbol {outside[0]} is not in the book"
+    model = costs.load()
+    uncosted = [s for s in c.symbols if s.upper() not in model.tickers]
+    if uncosted:
+        return f"symbol {uncosted[0]} has no cost tier in {costs.COSTS_REL}, so the farm could not cost its trades"
     if not c.strategy or not c.universe or not c.symbols:
         return "the roster row names no strategy, universe or symbols"
     try:
@@ -509,6 +519,12 @@ def _roster_refusal(c: Cell, book: frozenset[str]) -> str | None:
     if list(c.symbols) != list(members):
         return "roster symbols differ from the farm's universe"
     return None
+
+
+def _costs_provenance() -> dict[str, str]:
+    from ..backtest import costs
+
+    return {"source": "costs", "path": costs.COSTS_REL, "version": costs.load().version}
 
 
 def _todo_any(eligible: list[Cell], frozen: dict[str, dict]) -> bool:
@@ -556,6 +572,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                   "strategy's own decision sessions; validation from the newest farm verdict when it tested "
                   "the frozen parameters", *run_notes, *EXECUTION_NOTES],
                  provenance=[{"source": "farm.sweep", "artifact": farm_id},
+                             _costs_provenance(),
                              {"source": FREEZE_KIND, "artifact": freeze_id(_today())},
                              {"source": "roster", "path": str(ROSTER_PATH)},
                              {"source": "calendar", "note": "NYSE full-day holidays by rule (pandas); "

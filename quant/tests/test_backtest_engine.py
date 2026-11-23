@@ -138,8 +138,11 @@ def test_levered_position_pays_financing_and_borrow(px, rf_real):
     r = px[["SPY", "TLT"]].pct_change()
     s = px.index[10]
     w = res.weights.shift(1).loc[s]
-    expected = float(w @ r.loc[s]) + (1 - w.sum()) * rf_real.loc[s] - 0.5 * 0.01 / 252
+    # gross 2: the unit above 1 pays costs.yaml's 50 bp financing spread over the risk-free rate (task 2.3)
+    fin = 50e-4 / 252 * (float(w.abs().sum()) - 1.0)
+    expected = float(w @ r.loc[s]) + (1 - w.sum()) * rf_real.loc[s] - 0.5 * 0.01 / 252 - fin
     assert res.returns_net.loc[s] == pytest.approx(expected, abs=1e-15)
+    assert res.financing.loc[s] == pytest.approx(fin, abs=1e-18)
 
 
 def test_gross_leverage_cap(px):
@@ -487,7 +490,9 @@ def test_a_members_result_says_the_bound_does_not_cover_a_short(tmp_path):
 
     with open_ro(path) as con:
         res = run_members_backtest(con, "t-short", short_aapl, {}, pd.Timestamp("2020-08-03").date(),
-                                   pd.Timestamp("2020-12-31").date(), EngineConfig(rebalance="monthly"),
+                                   pd.Timestamp("2020-12-31").date(),
+                                   # task 2.3: the cost file holds no single-name tier, so AAPL's cost is set here
+                                   EngineConfig(rebalance="monthly", cost_bps=5.0),
                                    settings=_gate_settings(True))
     lb = res.lower_bound
     assert lb["shorts"] == ["AAPL"] and lb["total_net_lower_bound"] <= lb["total_net"] + 1e-12

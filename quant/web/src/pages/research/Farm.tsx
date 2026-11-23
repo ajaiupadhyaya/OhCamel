@@ -10,7 +10,7 @@ import { useState } from "react";
 import { ArtifactCell, DataTable, Section, type Column } from "../../components";
 import { Absent, Note } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
-import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
+import { fmtCurrency, fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
 import { reasonCode, reasonNames } from "../../lib/reasons";
 import { CHARTER, GATE_CODE, costRows, failedGates, farmCounts, paramsText, pboHigh, type CostRow } from "./derive";
@@ -47,6 +47,14 @@ function FarmTables({ m, names }: { m: Manifest; names: Record<string, string> }
   return <FarmBoard board={board.rows ?? []} cells={cells.rows ?? []} regimes={regimes.rows ?? []} names={names} />;
 }
 
+/** Where the cost figures come from: the one cost file (completion task 2.3). */
+const COSTS_SOURCE = "research/config/costs.yaml — half-spread by tier, borrow, financing; tiers provisional until measured";
+const SWEEP = [0, 1, 3, 6] as const;
+interface SweepRow {
+  mult: number;
+  sharpe: number | null;
+}
+
 const verdictClass = (v: string | null | undefined) => (v === "FAIL" ? "sl-v sl-v-fail" : v === "PASS" ? "sl-v" : "sl-v sl-v-dim");
 const universeLabel = (u: string | null | undefined) => (u ? u.replace(/_/g, " ").toUpperCase() : "—");
 
@@ -68,6 +76,8 @@ export function FarmBoard({ board, cells, regimes, names }: { board: FarmBoardRo
     { key: "boot_lo5", label: "Boot lo 5%", numeric: true, hideBelow: 1200, format: (v) => fmtNum(v, 2), color: "sign", info: { text: "Lower 5th percentile of the stationary-bootstrap Sharpe. Gate > 0." } },
     { key: "pbo", label: "PBO", numeric: true, hideBelow: 900, format: (v) => fmtNum(v, 2), info: { text: `CSCV probability of backtest overfitting, S = 16. Reported; > ${fmtNum(CHARTER.pboHigh, 1)} is marked high.` } },
     { key: "spa_p", label: "SPA p", numeric: true, hideBelow: 1200, format: (v) => fmtNum(v, 3), info: { text: "Hansen's SPA p-value against equal-weight buy-and-hold. Reported." } },
+    { key: "turnover", label: "Turnover", numeric: true, hideBelow: 1200, format: (v) => fmtNum(v, 1), info: { text: "One-way turnover a year (Σ|Δw|) along the out-of-sample record, fold switches included.", reference: COSTS_SOURCE } },
+    { key: "capacity_usd", label: "Capacity", numeric: true, hideBelow: 900, format: (v) => fmtCurrency(v as number | null, { compact: true }), info: { text: "Capital at which the largest out-of-sample trade is 1% of its name's 20-session median dollar volume. Blank: no volume history for a trade.", reference: COSTS_SOURCE } },
     { key: "failed", label: "Failed", value: (r) => failedGates(r.detail).length, render: (r) => <FailedCell detail={r.detail} /> },
   ];
 
@@ -140,6 +150,10 @@ function FailedCell({ detail }: { detail: string | null }) {
 
 function CellDetail({ row, cell, regimes, name }: { row: FarmBoardRow; cell?: FarmCellRow; regimes: RegimeRow[]; name: string }) {
   const costs = costRows(cell?.cost_curve);
+  const sweep: SweepRow[] = SWEEP.map((m) => {
+    const v = row[`sr_at_${m}x` as keyof FarmBoardRow];
+    return { mult: m, sharpe: typeof v === "number" && Number.isFinite(v) ? v : null };
+  });
   return (
     <div>
       <Readline
@@ -170,7 +184,7 @@ function CellDetail({ row, cell, regimes, name }: { row: FarmBoardRow; cell?: Fa
           )}
         </div>
         <div>
-          <h3 className="sl-sub">COSTS · BP ONE WAY</h3>
+          <h3 className="sl-sub">COSTS · BP ONE WAY · OOS</h3>
           {costs.length ? (
             <DataTable<CostRow>
               columns={[
@@ -184,6 +198,22 @@ function CellDetail({ row, cell, regimes, name }: { row: FarmBoardRow; cell?: Fa
             />
           ) : (
             <Absent reason="NO COST LADDER" source={`${KINDS.farm} · cells`} />
+          )}
+        </div>
+        <div>
+          <h3 className="sl-sub">SPREAD SWEEP · × HALF-SPREAD · OOS</h3>
+          {sweep.some((r) => r.sharpe !== null) ? (
+            <DataTable<SweepRow>
+              columns={[
+                { key: "mult", label: "×", numeric: true, format: (v) => `${fmtNum(v, 0)}×` },
+                { key: "sharpe", label: "SR", numeric: true, format: (v) => fmtNum(v, 2), color: "sign", info: { text: "Annualized Sharpe of the out-of-sample record with every half-spread multiplied.", reference: COSTS_SOURCE } },
+              ]}
+              rows={sweep}
+              rowKey={(r) => r.mult}
+              compact
+            />
+          ) : (
+            <Absent reason="NO SPREAD SWEEP" source={`${KINDS.farm} · leaderboard`} />
           )}
         </div>
         <div>

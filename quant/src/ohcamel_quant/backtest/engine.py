@@ -17,19 +17,28 @@ Accounting for session ``s`` (``R_s`` asset simple returns close ``s-1`` -> ``s`
 ---------------------------------------------------------------------------------
 Let ``w`` be post-trade weights at the close of ``s - 1``::
 
-    gross_s  = w' R_s + (1 - 1'w) rf_s                  (cash / financing earns rf)
-    borrow_s = (b / 10^4 / 252) * sum_i max(-w_i, 0)     (short-borrow fee, b bps/yr)
-    g_s      = gross_s - borrow_s
-    w~       = w * (1 + R_s) / (1 + g_s)                (drifted weights)
+    gross_s     = w' R_s + (1 - 1'w) rf_s                  (cash earns rf; borrowed cash pays it)
+    borrow_s    = (b / 10^4 / 252) * sum_i max(-w_i, 0)     (short-borrow fee, b bps/yr)
+    financing_s = (f / 10^4 / 252) * max(sum_i |w_i| - 1, 0) (financing spread, f bps/yr on gross above 1)
+    g_s         = gross_s - borrow_s - financing_s
+    w~          = w * (1 + R_s) / (1 + g_s)                (drifted weights)
 
 and if an execution falls on ``s`` with (overlay-scaled, leverage-capped)
 target ``w*``::
 
-    turnover_s = sum_i |w*_i - w~_i|,   cost_s = (c / 10^4) * turnover_s
+    cost_s     = sum_i (c_i / 10^4) |w*_i - w~_i|,   turnover_s = sum_i |w*_i - w~_i|
     1 + net_s  = (1 + g_s) (1 - cost_s)
 
-so proportional costs ``c`` bps are charged on traded notional after drift.
-Between executions weights drift with prices (buy-and-hold inside the period).
+so each name's half-spread ``c_i`` bps is charged on its traded notional after
+drift. Between executions weights drift with prices (buy-and-hold inside the period).
+
+Costs (completion task 2.3): ``c_i``, ``b`` and ``f`` come from the one cost file,
+``research/config/costs.yaml`` (:mod:`.costs`): ``c_i`` is the half-spread of name
+``i``'s tier (a name with no tier raises :class:`~.costs.NoCostTier`), ``b`` the
+borrow fee on shorts, ``f`` the financing spread -- so a book at gross 2 pays the
+risk-free rate on its borrowed unit through the cash term plus ``f`` on it. An
+:class:`EngineConfig` number overrides the file (``cost_bps`` one cost on every
+name, as the public backtest form lets a visitor choose).
 
 Volatility-target overlay (optional)
 ------------------------------------
@@ -81,6 +90,7 @@ import pandas as pd
 
 from .. import kernels
 from ..data.base import DataUnavailable
+from . import costs as cost_file
 from .estimators import ewma_cov_at, rolling_cov_at
 
 Rebalance = Literal["daily", "weekly", "monthly", "quarterly", "signal", "never"]
@@ -123,8 +133,12 @@ WeightsFn = Callable[..., pd.DataFrame]
 
 @dataclass(frozen=True)
 class EngineConfig:
-    cost_bps: float = 5.0                 # one-way proportional cost on traded notional
-    borrow_bps: float = 0.0               # annual fee on short notional
+    #: Costs (completion task 2.3): None reads the one cost file (``costs``, else research/config/costs.yaml) --
+    #: each name's tiered half-spread, its borrow and its financing spread. A number overrides the file's.
+    cost_bps: float | None = None         # one-way cost on every name's traded notional; None = each name's tier
+    borrow_bps: float | None = None       # annual fee on short notional; None = the file's
+    financing_bps: float | None = None    # annual spread on gross above 1, over rf; None = the file's
+    costs: cost_file.CostModel | None = None   # the model to read; None = costs.load(); .scaled(m) for the sweep
     execution_lag: int = 1                # sessions between decision close and execution close
     rebalance: str = "monthly"
     max_gross_leverage: float = 2.0       # cap on sum |w|
@@ -135,13 +149,27 @@ class EngineConfig:
     signal_tolerance: float = 1e-6        # |dw| that counts as a signal change
     audit_points: int = 4                 # truncated re-runs for the look-ahead audit (0 = off)
 
+    def model(self) -> cost_file.CostModel:
+        return self.costs if self.costs is not None else cost_file.load()
+
+    def resolved(self, tickers: Any) -> tuple[np.ndarray, float, float]:
+        """``(half-spread per ticker in bps, borrow bps/yr, financing bps/yr)``: each override, else the cost file.
+        Raises :class:`~.costs.NoCostTier` for a ticker the file holds no tier for (only when no override)."""
+        names = list(tickers)
+        spread = (np.full(len(names), float(self.cost_bps)) if self.cost_bps is not None
+                  else self.model().half_spreads(names))
+        borrow = float(self.borrow_bps) if self.borrow_bps is not None else self.model().borrow_bps
+        fin = float(self.financing_bps) if self.financing_bps is not None else self.model().financing_spread_bps
+        return spread, borrow, fin
+
     def __post_init__(self) -> None:
         if self.execution_lag < 1:
             raise ValueError("execution_lag must be >= 1 session (same-close execution is look-ahead)")
         if self.rebalance not in REBALANCE_CHOICES:
             raise ValueError(f"rebalance must be one of {REBALANCE_CHOICES}")
-        if self.cost_bps < 0 or self.borrow_bps < 0:
-            raise ValueError("costs must be non-negative")
+        if any(x is not None and not (math.isfinite(x) and x >= 0)
+               for x in (self.cost_bps, self.borrow_bps, self.financing_bps)):
+            raise ValueError("costs must be finite and non-negative")
         if self.max_gross_leverage <= 0:
             raise ValueError("max_gross_leverage must be positive")
         if self.vol_target is not None and not (0 < self.vol_target <= 2.0):
@@ -150,7 +178,7 @@ class EngineConfig:
 
 @dataclass
 class BacktestResult:
-    returns_gross: pd.Series          # before transaction costs and borrow fees
+    returns_gross: pd.Series          # before transaction costs, borrow and financing fees
     returns_net: pd.Series            # after all costs
     weights: pd.DataFrame             # post-trade weights at each close
     turnover: pd.Series               # sum |dw| traded at each close
@@ -169,6 +197,8 @@ class BacktestResult:
     #: Completion task 3.8, fix round 1 (I2): a single-name run over dated membership also runs with every holding
     #: whose series ends inside the test marked to zero at its end -- a lower bound, beside the headline.
     lower_bound: dict[str, Any] | None = None
+    #: Completion task 2.3: the financing spread on gross above 1, as a fraction of NAV (zero below gross 1).
+    financing: pd.Series | None = None
 
     def live(self, s: pd.Series | pd.DataFrame) -> Any:
         """Slice a series/frame to the live period, which STARTS at the first
@@ -217,6 +247,7 @@ class BacktestResult:
             "total_cost_paid": float(self.live(self.costs).sum()),
             "annual_cost_drag": float(self.live(self.costs).sum() / years) if len(to) else 0.0,
             "total_borrow_paid": float(self.live(self.borrow).sum()),
+            "total_financing_paid": float(self.live(self.financing).sum()) if self.financing is not None else 0.0,
             "avg_gross_exposure": float(exp["gross"].mean()) if len(exp) else float("nan"),
             "avg_net_exposure": float(exp["net"].mean()) if len(exp) else float("nan"),
             "avg_holdings": float(exp["holdings"].mean()) if len(exp) else float("nan"),
@@ -315,6 +346,7 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
     rets[1:] = px[1:] / px[:-1] - 1.0
     rf_arr = np.zeros(n_t) if rf is None else rf.reindex(idx).fillna(0.0).to_numpy(dtype=float)
 
+    spread, borrow_bps, fin_bps = config.resolved(prices.columns)
     tgt, valid = _prep_targets(targets, prices)
     sched = rebalance_mask(idx, config.rebalance)
     notes: list[str] = []
@@ -373,7 +405,7 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
     # which is this loop verbatim)
     ex = np.array(sorted(exec_at), dtype=np.int64)
     tw = np.vstack([exec_at[int(s)] for s in ex]) if len(ex) else np.zeros((0, n_a))
-    path = kernels.backtest_weights(px, tw, ex, config.cost_bps, config.borrow_bps, rf_arr)
+    path = kernels.backtest_weights(px, tw, ex, spread, borrow_bps, rf_arr, fin_bps)
     if untraded is not None and len(ex):
         hold = untraded.reindex(index=idx, columns=prices.columns).fillna(False).to_numpy(dtype=bool)
         for k, sess in enumerate(ex):
@@ -384,7 +416,7 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
             if np.array_equal(tw[k, cols], drifted[cols]):
                 continue
             tw[k, cols] = drifted[cols]
-            path = kernels.backtest_weights(px, tw, ex, config.cost_bps, config.borrow_bps, rf_arr)
+            path = kernels.backtest_weights(px, tw, ex, spread, borrow_bps, rf_arr, fin_bps)
     gross, net, W = path.gross, path.net, path.weights
     turnover, trades, costs, borrow = path.turnover, path.trades, path.costs, path.borrow
     # arithmetic attribution w_{s-1,i} R_{s,i} (W[s-1] is the book carried into s)
@@ -405,6 +437,7 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
         turnover=pd.Series(turnover, idx, name="turnover"),
         costs=pd.Series(costs, idx, name="costs"),
         borrow=pd.Series(borrow, idx, name="borrow"),
+        financing=pd.Series(path.financing, idx, name="financing"),
         vol_scale=pd.Series(scale, idx, name="vol_scale"),
         decisions=decisions,
         executions=executions,
@@ -541,7 +574,9 @@ def run_members_backtest(con: Any, universe: str, fn: WeightsFn, params: dict[st
     """A single-name backtest whose investable set is ``readers.members_asof`` on each date (module docstring).
     Refused (:class:`SingleNameRefused`) unless :func:`survivorship_gate` passes; the strategy sees the members'
     adjusted closes (NaN where a name has no bar) and ``ctx.members``; the look-ahead audit runs as in
-    :func:`run_backtest`."""
+    :func:`run_backtest`. The cost file (research/config/costs.yaml) holds tiers for the site's ETFs only, so a
+    member without one raises :class:`~.costs.NoCostTier` unless ``config.cost_bps`` sets a cost for every name
+    (completion task 2.3: a single-name tier is the owner's to add)."""
     from ..warehouse import readers
 
     config = config or EngineConfig()

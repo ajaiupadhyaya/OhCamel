@@ -449,6 +449,14 @@ def test_turnover_is_none_for_fewer_than_two_rows():
 # ---------------------------------------------------------------------------
 
 
+def test_capacity_participation_is_read_from_the_one_cost_file():
+    # completion task 2.3: research/config/costs.yaml is the one cost file; the
+    # battery's capacity reads its participation from it, not a copy of its own.
+    doc = yaml.safe_load((gates.COSTS_PATH).read_text(encoding="utf-8"))
+    assert gates.COSTS_PATH == Path(__file__).resolve().parents[1] / "config" / "costs.yaml"
+    assert gates.MAX_ADV_PARTICIPATION == doc["capacity"]["participation"] == 0.01
+
+
 def test_capacity_is_the_median_of_per_trade_capital():
     # capital_i = 0.01 * adv_i / |trade_i|
     # 0.01*10,000,000/0.10 = 100,000/0.10 = 1,000,000

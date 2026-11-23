@@ -61,6 +61,17 @@ describe("FarmBoard (P4 leaderboard)", () => {
     expect(html).toMatch(/>30</);
   });
 
+  it("carries turnover, capacity and the half-spread sweep from the cost file, absent when a row has none", () => {
+    const priced = { ...board[0], turnover: 4.2, capacity_usd: 12_500_000, sr_at_0x: 0.61, sr_at_1x: 0.55, sr_at_3x: 0.41, sr_at_6x: 0.2 };
+    const out = render(<FarmBoard board={[priced, board[1]]} cells={cells} regimes={regimes} names={{}} />);
+    const head = out.slice(out.indexOf("<thead"), out.indexOf("</thead>"));
+    expect(head).toContain("Turnover");
+    expect(head).toContain("Capacity");
+    expect(out).toContain("SPREAD SWEEP");
+    expect(out).toContain("6×");
+    expect(out).toContain("0.20");
+    expect(html).toContain("NO SPREAD SWEEP"); // the fixture rows predate the cost file
+  });
 });
 
 const gates: GateRow[] = [

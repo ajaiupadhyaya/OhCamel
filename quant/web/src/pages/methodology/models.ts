@@ -797,7 +797,7 @@ export const MODELS: Model[] = [
       { tex: T`\text{DSR} = \Phi\!\left(\frac{(\widehat{SR} - SR_0)\sqrt{n-1}}{\sqrt{1 - \hat\gamma_3\widehat{SR} + \frac{\hat\gamma_4-1}{4}\widehat{SR}^2}}\right),\ SR_0 = \sqrt{V[SR]}\,\big((1-\gamma)\Phi^{-1}(1-\tfrac1N) + \gamma\Phi^{-1}(1-\tfrac1{Ne})\big)`, caption: "N = every trial in the farm" },
       { tex: T`\text{PBO} = \Pr[\lambda_c \le 0],\ \lambda_c = \ln\frac{w_c}{1-w_c}`, caption: "CSCV, S = 16" },
     ],
-    assumptions: ["Grids are fixed in code before any result; nothing is tuned on the leaderboard.", "Costs are the engine's (5 bps one-way; execution one session after the decision close).", "ETF universes are fixed lists; nothing here is live or sized (advisory)."],
+    assumptions: ["Grids are fixed in code before any result; nothing is tuned on the leaderboard.", "Costs are the one cost file's, research/config/costs.yaml: a half-spread by tier (1, 3 or 8 bp one way; tiers provisional until measured on IEX quotes), 50 bp a year borrow on shorts and 50 bp a year over the T-bill rate on gross above 1; execution one session after the decision close. The sweep re-prices the walk-forward out-of-sample record at 0, 1, 3 and 6 times every half-spread, beside the charter's 0/5/15/30 bps; turnover and capacity (the capital at which the largest trade is 1% of 20-session median dollar volume) are leaderboard columns.", "ETF universes are fixed lists; nothing here is live or sized (advisory)."],
     appears: [{ label: "Research · Farm", to: "/research" }, { label: "Front page", to: "/" }],
     refs: ["bailey_2014", "bailey_2017", "bailey_2012", "hansen_2005", "politis_romano_1994", "pardo_2008"],
     keywords: "strategy farm backtest overfitting deflated sharpe pbo spa walk forward leaderboard",
