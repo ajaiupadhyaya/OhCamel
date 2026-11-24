@@ -103,7 +103,7 @@ HOST = "burst"
 BURST_TABLES: dict[str, frozenset[str]] = {
     "risk.mc_atlas": frozenset({"summary", "euler", "members"}),
     "cov.league": frozenset({"league", "tests", "skipped"}),
-    "farm.sweep": frozenset({"cells", "regimes", "trials", "leaderboard"}),
+    "farm.sweep": frozenset({"cells", "regimes", "trials", "leaderboard", "ledger"}),
     "models.xs_lgbm": frozenset({"gates", "selection", "trials", "stitched", "holdout", "holdout_returns",
                                  "holdout_costs", "holdout_regimes", "holdout_ic", "holdout_deciles", "model",
                                  "scores"}),
@@ -148,6 +148,11 @@ def burst_context() -> Iterator[None]:
         yield
     finally:
         _IN_BURST.reset(token)
+
+
+def in_burst() -> bool:
+    """True inside ``burst_context``: the farm labels the trials it appends to its ledger ``burst`` (task 2.4)."""
+    return _IN_BURST.get()
 
 
 def refuse_holdout(experiment: str) -> None:

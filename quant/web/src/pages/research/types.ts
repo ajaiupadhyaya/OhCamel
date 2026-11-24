@@ -221,7 +221,7 @@ export interface CostsOut extends Envelope {
 // Rows of artifact tables (GET /api/artifacts/{kind}/{id}/{table}), as frameRecords returns
 // them. Every field may be null or absent: a renderer checks before it shows a number.
 
-/** farm.sweep · leaderboard: one ok cell, its charter verdict, deflated by every trial in the farm. */
+/** farm.sweep · leaderboard: one ok cell, its charter verdict, deflated by every trial in the trial ledger. */
 export interface FarmBoardRow {
   cell_id: string;
   strategy: string;

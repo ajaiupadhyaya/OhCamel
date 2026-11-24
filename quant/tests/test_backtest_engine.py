@@ -498,3 +498,35 @@ def test_a_members_result_says_the_bound_does_not_cover_a_short(tmp_path):
     assert lb["shorts"] == ["AAPL"] and lb["total_net_lower_bound"] <= lb["total_net"] + 1e-12
     note = next(n for n in res.notes if "lower bound" in n)
     assert "long holdings" in note and "AAPL" in note and "no upper limit" in note
+
+
+# ------------------------------------------------------- fill at the next open (completion task 2.4)
+def _equal_weight(ctx: StrategyContext) -> pd.DataFrame:
+    return pd.DataFrame(1.0 / ctx.prices.shape[1], index=ctx.prices.index, columns=ctx.prices.columns)
+
+
+def test_an_open_fill_needs_the_open_prices(px):
+    with pytest.raises(ValueError, match="open prices"):
+        run_backtest(StrategyContext(px[["SPY", "TLT"]]), _equal_weight, {}, EngineConfig(fill="open"))
+    with pytest.raises(ValueError, match="fill"):
+        EngineConfig(fill="vwap")
+
+
+def test_an_open_fill_is_the_close_accounting_on_the_open_panel(market):
+    """Decisions on closes; the book filled at the next open and marked open to open, on the real fixture opens put
+    on the closes' adjustment (open x adj_close / close)."""
+    tk = ["SPY", "TLT"]
+    adj, op, cl = (market.prices(tk, field=f).data for f in ("adj_close", "open", "close"))
+    idx = adj.index.intersection(op.index).intersection(cl.index)
+    closes, opens = adj.loc[idx], (op * adj / cl).loc[idx]
+    cfg = EngineConfig(fill="open", rebalance="monthly", cost_bps=5.0)
+    got = run_backtest(StrategyContext(closes, opens=opens), _equal_weight, {}, cfg)
+    want = run_weights(opens, _equal_weight(StrategyContext(closes)), EngineConfig(rebalance="monthly", cost_bps=5.0))
+    pd.testing.assert_series_equal(got.returns_net, want.returns_net)
+    assert got.executions.equals(want.executions)
+    close_filled = run_backtest(StrategyContext(closes, opens=opens), _equal_weight, {},
+                                EngineConfig(rebalance="monthly", cost_bps=5.0))
+    assert not np.allclose(close_filled.returns_net.to_numpy(), got.returns_net.to_numpy())
+    # an open missing on a session the closes have is refused, never filled from elsewhere
+    with pytest.raises(ValueError, match="no open price"):
+        run_backtest(StrategyContext(closes, opens=opens.drop(opens.index[100])), _equal_weight, {}, cfg)

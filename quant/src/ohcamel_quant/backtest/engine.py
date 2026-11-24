@@ -7,7 +7,8 @@ Timeline (no look-ahead by construction)
   ``w*_d`` (fractions of NAV, signed; cash = ``1 - sum w``).
 * Decisions are taken only on rebalance sessions (schedule below). A decision
   taken at ``d`` is EXECUTED at the close of ``d + L`` (``L = execution_lag >= 1``
-  sessions) -- the engine shifts, the strategy never sees ``d + 1``.
+  sessions; at its open with ``fill="open"``, below) -- the engine shifts, the
+  strategy never sees ``d + 1``.
 * Structural audit: the strategy is re-run on the panel TRUNCATED at several
   checkpoints; if any truncated last row differs from the full-panel row, the
   strategy used future data and :class:`LookAheadError` is raised
@@ -31,6 +32,19 @@ target ``w*``::
 
 so each name's half-spread ``c_i`` bps is charged on its traded notional after
 drift. Between executions weights drift with prices (buy-and-hold inside the period).
+
+Fill at the next open (completion task 2.4)
+-------------------------------------------
+With ``EngineConfig(fill="open")`` the same accounting runs on the panel of OPEN prices
+(``StrategyContext.opens``, on the closes' adjustment: ``open x adj_close / close``),
+while the strategy still decides on closes: a decision at the close of ``d`` is executed
+at the OPEN of ``d + L`` -- the desk's fill (``signals.daily`` targets, the OMS fills at
+the next open) -- and the book is marked open to open, so ``R_s`` is
+``open_s / open_{s-1} - 1``, session ``s``'s return is the one realised at its open, and
+each name's half-spread is paid on what it trades at that open after the overnight drift.
+``rf_s``, borrow and financing accrue once a session as above. The last session's
+close-to-close move after its open is not in the series. The farm scores every cell this
+way, at gross 1 (``max_gross_leverage=1``) and lag 1.
 
 Costs (completion task 2.3): ``c_i``, ``b`` and ``f`` come from the one cost file,
 ``research/config/costs.yaml`` (:mod:`.costs`): ``c_i`` is the half-spread of name
@@ -114,6 +128,9 @@ class StrategyContext:
     #: Dated membership (completion task 3.8): True where a name is an index member that day (``readers.members_panel``,
     #: point in time). None for a fixed universe.
     members: pd.DataFrame | None = None
+    #: Open prices on the closes' adjustment (completion task 2.4), read by the engine for ``fill="open"`` only;
+    #: strategies decide on closes and never see them.
+    opens: pd.DataFrame | None = None
 
     @property
     def returns(self) -> pd.DataFrame:
@@ -125,6 +142,7 @@ class StrategyContext:
             rf=None if self.rf is None else self.rf.loc[:end],
             market=None if self.market is None else self.market.loc[:end],
             members=None if self.members is None else self.members.loc[:end],
+            opens=None if self.opens is None else self.opens.loc[:end],
         )
 
 
@@ -139,7 +157,8 @@ class EngineConfig:
     borrow_bps: float | None = None       # annual fee on short notional; None = the file's
     financing_bps: float | None = None    # annual spread on gross above 1, over rf; None = the file's
     costs: cost_file.CostModel | None = None   # the model to read; None = costs.load(); .scaled(m) for the sweep
-    execution_lag: int = 1                # sessions between decision close and execution close
+    execution_lag: int = 1                # sessions between decision close and execution (close or open)
+    fill: Literal["close", "open"] = "close"   # execute and mark at the close, or at the open (module docstring)
     rebalance: str = "monthly"
     max_gross_leverage: float = 2.0       # cap on sum |w|
     vol_target: float | None = None       # annualized, e.g. 0.10; None = no overlay
@@ -167,6 +186,8 @@ class EngineConfig:
             raise ValueError("execution_lag must be >= 1 session (same-close execution is look-ahead)")
         if self.rebalance not in REBALANCE_CHOICES:
             raise ValueError(f"rebalance must be one of {REBALANCE_CHOICES}")
+        if self.fill not in ("close", "open"):
+            raise ValueError("fill must be 'close' or 'open'")
         if any(x is not None and not (math.isfinite(x) and x >= 0)
                for x in (self.cost_bps, self.borrow_bps, self.financing_bps)):
             raise ValueError("costs must be finite and non-negative")
@@ -316,15 +337,31 @@ def run_backtest(ctx: StrategyContext, fn: WeightsFn, params: dict[str, Any],
     config = config or EngineConfig()
     targets = fn(ctx, **params)
     audit = audit_causality(fn, ctx, params, targets, config.audit_points)
-    res = run_weights(ctx.prices, targets, config, ctx.rf)
+    res = run_weights(ctx.prices, targets, config, ctx.rf, opens=ctx.opens)
     res.audit = audit
     return res
 
 
+def _fill_panel(prices: pd.DataFrame, opens: pd.DataFrame | None) -> pd.DataFrame:
+    """The open prices the book fills and is marked at (``fill="open"``), on the closes' sessions and names."""
+    if opens is None:
+        raise ValueError("fill='open' needs the open prices (StrategyContext.opens)")
+    o = opens.reindex(index=prices.index, columns=prices.columns)
+    if o.isna().any().any():
+        days = [d.date().isoformat() for d in o.index[o.isna().any(axis=1)][:5]]
+        raise ValueError(f"no open price on {int(o.isna().any(axis=1).sum())} session(s) the closes have "
+                         f"({', '.join(days)}{' ...' if o.isna().any(axis=1).sum() > 5 else ''})")
+    return o
+
+
 def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfig | None = None,
-                rf: pd.Series | None = None, *, untraded: pd.DataFrame | None = None) -> BacktestResult:
+                rf: pd.Series | None = None, *, untraded: pd.DataFrame | None = None,
+                opens: pd.DataFrame | None = None) -> BacktestResult:
     """Simulate the accounting in the module docstring for given target weights
     (row ``d`` = decision at the close of ``d``; all-NaN rows = no signal).
+
+    ``opens`` (completion task 2.4): with ``config.fill == "open"`` the book fills and is marked at these open
+    prices (on ``prices``' sessions and names; a missing one raises) instead of the closes.
 
     ``untraded`` (completion task 3.8, fix round 1): a boolean frame on the SESSION index, True where a name cannot
     trade at an execution on that session (no bar that day though the series goes on: a halt or a vendor gap).
@@ -333,6 +370,8 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
     rescaled), one execution at a time in order, re-running the accounting from it."""
     config = config or EngineConfig()
     prices = prices.sort_index()
+    if config.fill == "open":
+        prices = _fill_panel(prices, opens)
     if prices.isna().any().any():
         raise ValueError("price panel contains missing values; align sessions first")
     if (prices <= 0).any().any():

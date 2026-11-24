@@ -51,6 +51,8 @@ has no route to it at all. Three requests, each signed (jobs/burst.py, SIGNING):
                                    holdout, unchanged: a burst never evaluates the once-only holdout (I2)
   422   schema_mismatch            a table's column names or types are not those of the droplet's newest worker
                                    artifact of the kind (an all-null column matches any type; M3)
+  422   bad_file                   a farm upload's ``ledger`` row without its trial identity; otherwise its trials
+                                   are appended to the droplet's trial ledger (``record_burst_trials``, task 2.4)
   ====  =========================  ===============================================================================
 
   Then the files are written into a fresh staging directory under names from the kind's allow-list and
@@ -697,6 +699,26 @@ def verify_artifact_reads(reads: list[dict[str, Any]], *, db: Path, root: Path, 
             raise Refused(409, "not_from_export", f"an artifact read the door cannot check: {name[:160]}")
 
 
+def record_burst_trials(kind: str, blobs: dict[str, bytes], root: Path) -> int:
+    """Completion task 2.4: a farm run on a burst machine counts on the droplet too. Its artifact's ``ledger`` table
+    (the distinct trials its run knew: the droplet's, mirrored, and its own) is appended to the droplet's trial
+    ledger through ``trial_ledger.append_many``, the function the worker's farm appends with; trials already there
+    add nothing. -> how many were new. Any other kind, or no ledger table: nothing. Done once the upload has passed
+    every check and before it is published: the trials were run whether or not the publish then wins its race, and
+    appending can only add trials -- a larger N deflates more -- so it never loosens a gate. ``ValueError`` for a
+    row without its identity (the door answers 422 bad_file)."""
+    raw = blobs.get("ledger")
+    if kind != "farm.sweep" or not raw:
+        return 0
+    import io
+
+    import pandas as pd
+
+    from ..models import trial_ledger as L
+
+    return L.append_many(L.ledger_path(root), pd.read_parquet(io.BytesIO(raw)), source=B.HOST)
+
+
 def _published(conn: Any, job: Any) -> dict[str, Any] | None:
     row = conn.execute("SELECT path FROM artifacts WHERE id = ?", (job.artifact_id,)).fetchone() \
         if job.artifact_id else None
@@ -802,6 +824,10 @@ def accept_upload(door: Door, job_id: str, body: bytes | list[bytes], *,
     verify_artifact_reads(reads, db=door.db, root=door.root, exported_at=exported_at)
     check_holdout(job.kind, blobs, db=door.db, root=door.root)
     check_schemas(job.kind, schemas, db=door.db, root=door.root, code_sha=door.code_sha)
+    try:
+        record_burst_trials(job.kind, blobs, Path(door.root))
+    except ValueError as e:
+        raise Refused(422, "bad_file", f"ledger: {e}") from e
 
     # a staging directory of its own (M4): two uploads for one job never share one
     (Path(door.root) / ".staging").mkdir(parents=True, exist_ok=True)

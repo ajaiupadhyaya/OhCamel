@@ -601,7 +601,10 @@ def _do_sweep(body: SweepIn, market: Market, max_combos: int = V.MAX_GRID,
             pbo = V.cscv_pbo(rets.sub(rf, axis=0) if rf is not None else rets, body.n_partitions, threads=threads)
         except ValueError as e:
             pbo = {"error": str(e)}
-    dsr = V.deflated_sharpe_for_grid(rets, None, rf)
+    try:
+        dsr = V.deflated_sharpe_for_grid(rets, None, rf)
+    except ValueError as e:      # fewer than two finite trial Sharpes: no selection to deflate (task 2.4)
+        dsr = {"error": str(e)}
     spa = V.spa_test(bench, rets, body.spa_reps, seed=body.seed)
     best = int(tab["sharpe"].idxmax())
     weekly = (1.0 + rets).cumprod()

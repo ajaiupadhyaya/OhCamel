@@ -708,7 +708,9 @@ _reg(StrategySpec(
     explanation="Regress one price on the other to get a hedge ratio and a spread. When the spread is more "
                 "than two standard deviations from its mean—and a cointegration test says the pair really "
                 "does mean-revert—bet on it closing. Exit near the mean, cut losses if it keeps widening.",
-    default_rebalance="signal", default_tickers=("XLK", "QQQ"), suggested_universes=("sectors",),
+    # no suggested universe: it takes exactly two tickers, and sectors -- eleven -- made a farm cell that could
+    # never run (completion task 2.4); choosing a pair universe for it is a research decision, not made here
+    default_rebalance="signal", default_tickers=("XLK", "QQQ"), suggested_universes=(),
     min_assets=2, max_assets=2, default_max_leverage=2.0,
 ))
 _reg(StrategySpec(

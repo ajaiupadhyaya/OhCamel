@@ -1,6 +1,7 @@
 /**
  * FARM (P4, farm.sweep): every literature strategy × each universe it suits, swept, selected
- * walk-forward and held to the charter's gates with DSR deflated by every trial in the farm.
+ * walk-forward and held to the charter's gates with DSR deflated by every trial the farm has ever run (the trial ledger); each cell
+ * is scored at gross 1, filled at the next session's open, as the desk trades.
  * The ArtifactCell stamps the farm's verdict first; then the count (failures first and
  * largest), the leaderboard (verdict first on every row), the selected cell's regimes and
  * cost ladder, and the cells the farm skipped with their reason. Before Lane M's first run
@@ -88,7 +89,7 @@ export function FarmBoard({ board, cells, regimes, names, costs = costsSource(nu
     { key: "verdict", label: "Verdict", render: (r) => <span className={verdictClass(r.verdict)}>{r.verdict}</span> },
     { key: "strategy", label: "Strategy", value: (r) => nameOf(r.strategy), render: (r) => <span>{nameOf(r.strategy)}</span> },
     { key: "universe", label: "Universe", hideBelow: 900, render: (r) => <span className="num">{universeLabel(r.universe)}</span> },
-    { key: "dsr_farm", label: "DSR", numeric: true, format: (v) => fmtNum(v, 2), color: (v) => (typeof v === "number" && v < CHARTER.dsr ? "loss" : undefined), info: { text: `Deflated Sharpe, counting every trial in the farm. Gate ≥ ${fmtNum(CHARTER.dsr, 2)}.`, reference: "Bailey & López de Prado (2014), Journal of Portfolio Management 40(5)" } },
+    { key: "dsr_farm", label: "DSR", numeric: true, format: (v) => fmtNum(v, 2), color: (v) => (typeof v === "number" && v < CHARTER.dsr ? "loss" : undefined), info: { text: `Deflated Sharpe, counting every trial the farm has ever run (the append-only trial ledger); each cell scored at gross 1, filled at the next open. Gate ≥ ${fmtNum(CHARTER.dsr, 2)}.`, reference: "Bailey & López de Prado (2014), Journal of Portfolio Management 40(5)" } },
     { key: "psr", label: "PSR", numeric: true, format: (v) => fmtNum(v, 2), color: (v) => (typeof v === "number" && v < CHARTER.psr ? "loss" : undefined), info: { text: `P(true Sharpe > 0). Gate ≥ ${fmtNum(CHARTER.psr, 2)}.` } },
     { key: "oos_sharpe_ann", label: "SR OOS", numeric: true, format: (v) => fmtNum(v, 2), info: { text: "Annualized Sharpe of the stitched walk-forward record (5Y in, 1Y out)." } },
     { key: "holdout_return", label: "Holdout", numeric: true, format: (v) => fmtPct(v, 1, { signed: true }), color: "sign" },

@@ -75,6 +75,26 @@ def test_expected_max_sharpe_closed_form():
     assert M.expected_max_sharpe(1000, 1.0) > M.expected_max_sharpe(10, 1.0)
 
 
+@pytest.mark.parametrize("n", [0, 1])
+def test_expected_max_sharpe_with_fewer_than_two_trials_raises(n):
+    """Completion task 2.4 (spec R3): the maximum of fewer than two trials is not a selection; the old answer, a
+    benchmark of 0, turned the DSR into the PSR without saying so."""
+    with pytest.raises(ValueError, match="two trials"):
+        M.expected_max_sharpe(n, 1.0)
+    with pytest.raises(ValueError, match="two trials"):
+        M.deflated_sharpe(0.05, 1000, 0.0, 3.0, n, 1.0)
+
+
+@pytest.mark.parametrize("v", [float("nan"), float("inf"), -1e-6])
+def test_expected_max_sharpe_with_a_variance_that_is_not_finite_raises(v):
+    with pytest.raises(ValueError, match="variance"):
+        M.expected_max_sharpe(100, v)
+
+
+def test_expected_max_sharpe_of_identical_trials_is_zero():
+    assert M.expected_max_sharpe(100, 0.0) == 0.0
+
+
 def test_deflated_sharpe_paper_example():
     """Bailey & Lopez de Prado (2014), section 4 numerical example: annualized
     SR 2.5 over 1250 daily observations (250/yr), skew -3, kurtosis 10,

@@ -202,8 +202,16 @@ def expected_max_sharpe(n_trials: int, var_sr: float) -> float:
 
         E[max SR] ~ sqrt(V) [ (1 - gamma) Phi^-1(1 - 1/N) + gamma Phi^-1(1 - 1/(N e)) ]
 
-    gamma = Euler-Mascheroni constant."""
-    if n_trials < 2 or not math.isfinite(var_sr) or var_sr <= 0:
+    gamma = Euler-Mascheroni constant.
+
+    Raises ``ValueError`` with fewer than two trials (the maximum of one trial is not a selection, and the old
+    answer -- a benchmark of 0 -- quietly turned the DSR into the PSR) or a variance that is not finite and
+    non-negative (completion task 2.4, spec R3). Trials whose Sharpes are all equal (``V = 0``) give 0."""
+    if n_trials < 2:
+        raise ValueError(f"expected_max_sharpe needs at least two trials, got {n_trials}")
+    if not math.isfinite(var_sr) or var_sr < 0:
+        raise ValueError(f"expected_max_sharpe needs a finite, non-negative Sharpe variance, got {var_sr!r}")
+    if var_sr == 0:
         return 0.0
     z1 = stats.norm.ppf(1.0 - 1.0 / n_trials)
     z2 = stats.norm.ppf(1.0 - 1.0 / (n_trials * math.e))

@@ -6,7 +6,14 @@ rounded and de-duplicated), so a strategy never exceeds ``GRID_MAX``
 combinations. The leaderboard's DSR deflates each row by the number of trials
 in the WHOLE farm and their Sharpe dispersion (Bailey & Lopez de Prado 2014):
 ranking thousands of trials and deflating each by its own cell would be the
-textbook uncorrected scan.
+textbook uncorrected scan. Since completion task 2.4 those trials are the trial
+ledger's (:mod:`.trial_ledger`): every trial the farm has ever run, not only
+tonight's grids.
+
+A cell is a (strategy, universe) pair from the strategy's ``suggested_universes``
+whose universe holds between ``min_assets`` and ``max_assets`` names;
+:func:`farm_cells` refuses one that does not (``pairs_coint`` takes two tickers,
+so ``pairs_coint x sectors``, eleven, is not a cell).
 """
 
 from __future__ import annotations
@@ -44,18 +51,47 @@ def strategy_grid(spec: StrategySpec) -> dict[str, list]:
 
 
 def farm_cells() -> list[tuple[str, str]]:
-    return [(k, u) for k, s in STRATEGIES.items() if s.category != "benchmark" for u in s.suggested_universes]
+    """Every non-benchmark strategy on each universe it suggests. Raises ``ValueError`` naming a cell whose
+    universe's size is outside the strategy's ``[min_assets, max_assets]``: it could never run."""
+    from ..data.market import load_universes
+
+    size = {k: len(v["members"]) for k, v in load_universes()["universes"].items()}
+    cells = [(k, u) for k, s in STRATEGIES.items() if s.category != "benchmark" for u in s.suggested_universes]
+    for k, u in cells:
+        spec, n = STRATEGIES[k], size.get(u)
+        if n is None or n < spec.min_assets or (spec.max_assets is not None and n > spec.max_assets):
+            raise ValueError(f"{cell_id(k, u)} is not a farm cell: {u} holds {n} names and {k} takes "
+                             f"{spec.min_assets} to {spec.max_assets or 'any number of'}")
+    return cells
 
 
 def cell_id(strategy: str, universe: str) -> str:
     return f"{strategy}@{universe}"
 
 
-def farm_dsr(cells: pd.DataFrame, trial_srs: np.ndarray) -> pd.Series:
-    t = np.asarray(trial_srs, dtype=float)
-    t = t[np.isfinite(t)]
-    var = float(np.var(t, ddof=1)) if t.size > 1 else float("nan")
-    return pd.Series([M.deflated_sharpe(r.sr_pp, int(r.n), r.skew, r.kurt, int(t.size), var)["dsr"]
+def _trial_sharpes(trials: pd.DataFrame | np.ndarray) -> np.ndarray:
+    """One per-period Sharpe per distinct trial: the ledger's ``sharpe`` column (``trial_ledger.distinct``), or an
+    array of them."""
+    if isinstance(trials, pd.DataFrame):
+        return trials["sharpe"].to_numpy(dtype=float)
+    return np.asarray(trials, dtype=float).reshape(-1)
+
+
+def farm_dsr(cells: pd.DataFrame, trials: pd.DataFrame | np.ndarray) -> pd.Series:
+    """Each row's DSR with ``N`` = the number of distinct trials (``trials``: the ledger's distinct frame, one row a
+    trial -- completion task 2.4 -- or their Sharpes) and ``V[SR]`` = the variance of the finite ones. A trial with
+    no Sharpe (a flat book) still counts in ``N``. Fewer than two trials, or fewer than two finite Sharpes, leave the
+    DSR missing (``expected_max_sharpe`` raises): a missing DSR fails its gate, where the old benchmark of 0 made it
+    the PSR."""
+    t = _trial_sharpes(trials)
+    fin = t[np.isfinite(t)]
+    n = int(t.size)
+    var = float(np.var(fin, ddof=1)) if fin.size > 1 else float("nan")
+    try:
+        M.expected_max_sharpe(n, var)
+    except ValueError:
+        return pd.Series(np.nan, index=cells.index, dtype=float)
+    return pd.Series([M.deflated_sharpe(r.sr_pp, int(r.n), r.skew, r.kurt, n, var)["dsr"]
                       for r in cells.itertuples()], index=cells.index, dtype=float)
 
 
@@ -86,11 +122,12 @@ def _cost_curve(raw: Any) -> list[dict[str, Any]] | None:
     return rows if isinstance(rows, list) else None
 
 
-def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trial_srs: np.ndarray) -> pd.DataFrame:
+def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trials: pd.DataFrame | np.ndarray) -> pd.DataFrame:
+    """The verdict table; ``trials`` as :func:`farm_dsr` takes them (the ledger's distinct trials)."""
     ok = cells[cells["status"] == "ok"].copy()
     if ok.empty:
         return pd.DataFrame(columns=["cell_id", "verdict", "detail", "dsr_farm"])
-    ok["dsr_farm"] = farm_dsr(ok, trial_srs)
+    ok["dsr_farm"] = farm_dsr(ok, trials)
     extra = leaderboard_cost_columns()
     rows = []
     for r in ok.itertuples():
