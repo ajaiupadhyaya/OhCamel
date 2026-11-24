@@ -19,7 +19,9 @@ import pandas as pd
 import pytest
 import yaml
 
+from ohcamel_research import REPO_ROOT
 from ohcamel_research.battery import gates
+from ohcamel_research.battery import regimes as regime_file
 from ohcamel_research.battery.gates import (
     REGIMES,
     THRESHOLDS,
@@ -27,6 +29,7 @@ from ohcamel_research.battery.gates import (
     capacity,
     cost_sweep,
     dsr_gate,
+    excess_gate,
     holdout_gate,
     psr_gate,
     regime_gate,
@@ -84,8 +87,8 @@ def test_psr_gate_is_exactly_one_half_on_a_symmetric_series_and_fails():
     r = daily([-0.02, -0.01, 0.0, 0.01, 0.02])
     g = psr_gate(r)
     assert g.value == pytest.approx(0.5, abs=1e-9)
-    assert g.passed is False  # 0.5 < THRESHOLDS.psr_min (0.70)
-    assert g.detail["threshold"] == THRESHOLDS.psr_min == 0.70
+    assert g.passed is False  # 0.5 < THRESHOLDS.psr_min (0.95)
+    assert g.detail["threshold"] == THRESHOLDS.psr_min == 0.95
 
 
 def test_psr_gate_passes_a_hand_derived_positive_series():
@@ -98,7 +101,7 @@ def test_psr_gate_passes_a_hand_derived_positive_series():
     # The skew/kurtosis correction on 5 points close to symmetric is small:
     # working the same formula through gives skew ~= 0.19430, kurt ~= 1.25160,
     # denom_sq ~= 0.86970, z_stat = sr*sqrt(4)/sqrt(denom_sq) ~= 4.5142,
-    # PSR = Phi(4.5142) ~= 0.9999968 -- far past the 0.70 line either way.
+    # PSR = Phi(4.5142) ~= 0.9999968 -- far past the 0.95 line either way.
     r = daily([0.02, 0.03, 0.01, 0.04, 0.02])
     g = psr_gate(r)
     assert g.value == pytest.approx(0.9999968228683818, abs=1e-9)
@@ -107,14 +110,18 @@ def test_psr_gate_passes_a_hand_derived_positive_series():
 
 def test_psr_gate_passes_at_exactly_the_threshold(monkeypatch):
     # Pins strictness: the gate is `psr >= threshold`, so a PSR of exactly
-    # 0.70 must pass. Monkeypatching the `probabilistic_sharpe` name
+    # 0.95 must pass. Monkeypatching the `probabilistic_sharpe` name
     # `gates.py` calls (rather than constructing a series that happens to
-    # land on 0.70) isolates the comparison itself -- a `>=` -> `>` flip
+    # land on 0.95) isolates the comparison itself -- a `>=` -> `>` flip
     # fails this test regardless of what the real PSR formula does.
-    monkeypatch.setattr(gates, "probabilistic_sharpe", lambda *a, **k: 0.70)
+    monkeypatch.setattr(gates, "probabilistic_sharpe", lambda *a, **k: 0.95)
     g = psr_gate(daily([0.01, -0.01, 0.02, -0.02, 0.03]))
-    assert g.value == pytest.approx(0.70, abs=1e-12)
+    assert g.value == pytest.approx(0.95, abs=1e-12)
     assert g.passed is True
+    # R3 (completion task 2.5): the old 0.70 line no longer passes, nor does 0.90.
+    for low in (0.70, 0.90):
+        monkeypatch.setattr(gates, "probabilistic_sharpe", lambda *a, low=low, **k: low)
+        assert psr_gate(daily([0.01, -0.01, 0.02, -0.02, 0.03])).passed is False
 
 
 # ---------------------------------------------------------------------------
@@ -276,9 +283,9 @@ def test_regime_gate_compounds_two_days_per_regime_by_hand():
 
 
 def test_regime_gate_skips_regimes_the_series_does_not_cover():
-    r = daily([0.0001] * 250, start="2023-01-02")  # inside 2023_recovery only
+    r = daily([0.0001] * 250, start="2022-01-03")  # inside 2022 only
     g = regime_gate(r)
-    assert g.detail["covered"] == ["2023_recovery"]
+    assert g.detail["covered"] == ["2022"]
     assert g.passed is False  # one positive regime is not THRESHOLDS.regime_min_positive (3)
     assert g.detail["min_positive"] == THRESHOLDS.regime_min_positive == 3
 
@@ -287,12 +294,12 @@ def test_regime_gate_reports_bar_counts_including_zero_for_skipped_regimes():
     # M5 is disclosure only -- no coverage threshold -- but the verdict must
     # show coverage: every regime in the input dict gets a bar count, 0 for
     # one the series never reaches.
-    r = daily([0.0001] * 250, start="2023-01-02")  # inside 2023_recovery only
+    r = daily([0.0001] * 250, start="2022-01-03")  # inside 2022 only
     g = regime_gate(r)
     assert set(g.detail["bar_counts"]) == set(REGIMES)
-    assert g.detail["bar_counts"]["2023_recovery"] == 250
+    assert g.detail["bar_counts"]["2022"] == 250
     for name in REGIMES:
-        if name != "2023_recovery":
+        if name != "2022":
             assert g.detail["bar_counts"][name] == 0
 
 
@@ -546,8 +553,9 @@ def test_thresholds_matches_the_charter_exactly():
     # is the owner's decision, argued before a result -- not a passing test's
     # to loosen quietly by drifting one field.
     assert THRESHOLDS == Thresholds(
-        psr_min=0.70,
-        dsr_min=0.30,
+        psr_min=0.95,
+        dsr_min=0.95,
+        spa_max_p=0.10,
         bootstrap_resamples=1000,
         bootstrap_block=21,
         bootstrap_lower_percentile=5.0,
@@ -612,10 +620,13 @@ def test_holdout_gate_refuses_an_empty_series():
 
 
 def test_dsr_gate_passes_at_exactly_the_threshold(monkeypatch):
-    monkeypatch.setattr(gates, "deflated_sharpe", lambda *a, **k: 0.30)
+    monkeypatch.setattr(gates, "deflated_sharpe", lambda *a, **k: 0.95)
     g = dsr_gate(daily([0.01, -0.01, 0.02]), np.array([0.1, 0.2]))
-    assert (g.name, g.value, g.passed) == ("dsr", 0.30, True)
-    monkeypatch.setattr(gates, "deflated_sharpe", lambda *a, **k: 0.2999)
+    assert (g.name, g.value, g.passed) == ("dsr", 0.95, True)
+    monkeypatch.setattr(gates, "deflated_sharpe", lambda *a, **k: 0.9499)
+    assert dsr_gate(daily([0.01, -0.01, 0.02]), np.array([0.1, 0.2])).passed is False
+    # R3 (completion task 2.5): a DSR of 0.50 fails.
+    monkeypatch.setattr(gates, "deflated_sharpe", lambda *a, **k: 0.50)
     assert dsr_gate(daily([0.01, -0.01, 0.02]), np.array([0.1, 0.2])).passed is False
 
 
@@ -647,3 +658,100 @@ def test_dsr_gate_is_fdqs_number():
 def test_dsr_gate_refuses_no_trials():
     with pytest.raises(ValueError, match="no trial Sharpes"):
         dsr_gate(daily([0.01, -0.01]), np.array([]))
+
+
+# ---------------------------------------------------------------------------
+# Completion task 2.5 (owner ruling R3): one regime table, in one file, read by
+# both batteries; the excess gate; the charter's table held to THRESHOLDS.
+# ---------------------------------------------------------------------------
+
+
+def test_the_regimes_are_the_one_regime_files():
+    assert regime_file.REGIMES_PATH == REPO_ROOT / "research" / "config" / "regimes.yaml"
+    assert regime_file.REGIMES_REL == "research/config/regimes.yaml"
+    table = regime_file.load()
+    assert [n for n, _, _ in table] == ["2008", "2011", "2015-16", "2018Q4", "2020", "2022", "2024"]
+    assert REGIMES == {n: (date.fromisoformat(a), date.fromisoformat(b)) for n, a, b in table}
+    assert REGIMES["2018Q4"] == (date(2018, 10, 1), date(2018, 12, 31))
+    assert REGIMES["2015-16"] == (date(2015, 1, 1), date(2016, 12, 31))
+
+
+def test_both_packages_return_the_same_regime_tuple():
+    """The quant battery's loader, loaded by its path (it imports nothing of
+    its package), reads the same table."""
+    import importlib.util
+
+    path = REPO_ROOT / "quant" / "src" / "ohcamel_quant" / "models" / "regimes.py"
+    spec = importlib.util.spec_from_file_location("_quant_regimes", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.REGIMES_PATH == regime_file.REGIMES_PATH
+    assert mod.load() == regime_file.load()
+
+
+def test_regime_gate_records_too_few_regimes_with_data_as_insufficient():
+    # 2020 and 2022 only: two regimes with data, fewer than
+    # THRESHOLDS.regime_min_positive (3). The gate is not passed (nothing can
+    # pass on it) and says why; the verdict reads it as insufficient data,
+    # not a fail (manifest.compute_verdict).
+    r = pd.concat(
+        [daily([0.001] * 20, start="2020-03-02"), daily([0.001] * 20, start="2022-03-01")]
+    )
+    g = regime_gate(r)
+    assert g.detail["covered"] == ["2020", "2022"] and g.passed is False
+    assert g.detail["insufficient_data"] is True
+    three = pd.concat([daily([0.001] * 20, start="2018-10-01"), r])
+    assert regime_gate(three).detail["insufficient_data"] is False
+
+
+def test_excess_gate_is_spa_p_at_most_0_10():
+    assert excess_gate(0.04).passed is True and excess_gate(0.10).passed is True
+    g = excess_gate(0.20)
+    assert (g.name, g.value, g.passed) == ("excess", 0.20, False)
+    assert g.detail["threshold"] == THRESHOLDS.spa_max_p == 0.10
+    assert g.detail["rule"] == "SPA p <= 0.10 vs buy-and-hold"
+
+
+def test_an_excess_gate_the_battery_cannot_compute_fails():
+    """The charter's excess gate needs Hansen's SPA against the universe's
+    equal-weight buy-and-hold; the research battery has no SPA test yet (fdq
+    ships none), so it fails the gate and says so -- a gate that cannot be
+    computed is never passed (completion task 2.5)."""
+    g = excess_gate(None, reason="not computed")
+    assert (g.name, g.value, g.passed) == ("excess", None, False)
+    assert g.detail["reason"] == "not computed"
+
+
+def _charter_rows() -> dict[str, str]:
+    text = (REPO_ROOT / "docs" / "CHARTER.md").read_text(encoding="utf-8")
+    table = text[text.index("## The gates") : text.index("## Data")]
+    rows = [
+        line.strip().strip("|").split("|") for line in table.splitlines() if line.startswith("| ")
+    ]
+    return {test.strip(): rule.strip() for test, rule in rows[1:]}
+
+
+def test_the_charters_gates_table_states_thresholds():
+    """docs/CHARTER.md's gates table, read: every line THRESHOLDS gates by is
+    the one the table states."""
+    rows = _charter_rows()
+    assert (
+        rows["Deflated Sharpe Ratio (multiple-testing corrected)"] == f"≥ {THRESHOLDS.dsr_min:.2f}"
+    )
+    assert rows["Probabilistic Sharpe Ratio"] == f"≥ {THRESHOLDS.psr_min:.2f}"
+    assert rows["Excess: Hansen's SPA test against the universe's equal-weight buy-and-hold"] == (
+        f"p-value ≤ {THRESHOLDS.spa_max_p:.2f}"
+    )
+    assert rows["Stationary-block bootstrap, ~1000 resamples"] == "lower 5th percentile > 0"
+    assert THRESHOLDS.bootstrap_resamples == 1000 and THRESHOLDS.bootstrap_lower_percentile == 5.0
+    regime = rows[
+        f"Regime stress across the {len(REGIMES)} regimes of `research/config/regimes.yaml`"
+    ]
+    assert regime.startswith(f"positive in ≥ {THRESHOLDS.regime_min_positive};")
+    assert (
+        f"fewer than {THRESHOLDS.regime_min_positive} with out-of-sample data is INSUFFICIENT DATA"
+        in regime
+    )
+    levels = " / ".join(f"{b:g}" for b in THRESHOLDS.cost_sweep_bps_round_trip)
+    assert rows[f"Cost sensitivity at {levels} bps"] == "reported at every level"

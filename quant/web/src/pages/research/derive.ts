@@ -11,14 +11,17 @@ import type { VerdictValue } from "../../design";
 import { fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import type { CostsOut, FarmBoardRow, FarmCellRow, RunOut, SweepOut, WalkForwardOut } from "./types";
 
-/** docs/CHARTER.md "The gates" (and quant/src/ohcamel_quant/models/verdict.py). */
+/** docs/CHARTER.md "The gates" (and quant/src/ohcamel_quant/models/verdict.py; owner ruling R3, 2026-11-23). */
 export const CHARTER = {
-  dsr: 0.3,
-  psr: 0.7,
+  dsr: 0.95,
+  psr: 0.95,
+  /** Excess: Hansen's SPA p-value against the universe's equal-weight buy-and-hold, at most this. */
+  spa: 0.1,
   /** Bootstrap: lower 5th percentile of the Sharpe > 0, i.e. P(SR <= 0) < 5% across resamples. */
   bootP: 0.05,
   regimes: 3,
-  regimesOf: 5,
+  /** research/config/regimes.yaml's regimes; fewer than `regimes` with out-of-sample data is INSUFFICIENT DATA. */
+  regimesOf: 7,
   pboHigh: 0.5,
   costs: [0, 5, 15, 30],
 } as const;
@@ -122,6 +125,7 @@ export const GATE_CODE: Record<string, string> = {
   holdout_positive: "HOLD",
   dsr: "DSR",
   psr: "PSR",
+  excess: "XS",
   bootstrap_lower_5pct: "BOOT",
   regimes_positive: "REG",
   pbo: "PBO",
@@ -131,7 +135,7 @@ export const GATE_CODE: Record<string, string> = {
 
 /**
  * The gate names a charter verdict's detail lists as failed, lower-case: the label form
- * ("FAILED DSR 0.12 (NEEDS >= 0.3), ...") and the earlier sentence form ("failed: dsr 0.12 (needs >= 0.3), ...").
+ * ("FAILED DSR 0.12 (NEEDS >= 0.95), ...") and the earlier sentence form ("failed: dsr 0.12 (needs >= 0.3), ...").
  */
 export function failedGates(detail: string | null | undefined): string[] {
   if (!detail || !/^failed\b/i.test(detail)) return [];

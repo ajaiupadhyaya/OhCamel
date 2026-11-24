@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -108,3 +109,49 @@ def test_the_traded_configuration_is_counted_from_each_row():
     assert traded_configuration(cells) == (1, 2)
     assert traded_configuration(pd.DataFrame([{"status": "ok"}])) == (0, 1)
     assert traded_configuration(pd.DataFrame()) == (0, 0)
+
+
+def _board_inputs(spa_p, regime_names=None, positive=(None, None, None, True, True, True, False)):
+    """One ok cell whose every other gate passes (a DSR far above 0.95 against two dispersed trials) and its regime
+    rows: the current regime file's names unless ``regime_names`` says otherwise."""
+    from ohcamel_quant.models.verdict import REGIMES
+
+    names = regime_names or [r[0] for r in REGIMES]
+    cells = pd.DataFrame([{"cell_id": "a@u", "strategy": "a", "universe": "u", "status": "ok", "holdout_return": 0.2,
+                           "sr_pp": 0.2, "n": 2500, "skew": 0.0, "kurt": 3.0, "psr": 0.999, "boot_lo5": 0.5,
+                           "pbo": 0.1, "spa_p": spa_p, "oos_sharpe_ann": 3.2, "n_combos": 2, "selected_params": "{}",
+                           "data_asof": "2026-11-20", "ran_at": "2026-11-21T00:00:00+00:00",
+                           "cost_curve": json.dumps([{"cost_bps": b, "sharpe": 1.0} for b in (0, 5, 15, 30)])}])
+    regimes = pd.DataFrame({"cell_id": "a@u", "regime": names, "positive": list(positive)[:len(names)]})
+    return cells, regimes, pd.DataFrame({"sharpe": [0.0, 0.01]})
+
+
+def test_the_leaderboards_excess_gate_reads_each_cells_spa_p():
+    """Completion task 2.5 (R3): a cell passing every other gate fails on an SPA p-value above 0.10 against its
+    universe's equal-weight buy-and-hold, and passes at 0.10 or below."""
+    from ohcamel_quant.models.farm import leaderboard
+
+    passed = leaderboard(*_board_inputs(0.04))
+    assert passed.loc[0, "verdict"] == "PASS" and passed.loc[0, "spa_p"] == 0.04
+    failed = leaderboard(*_board_inputs(0.30))
+    assert failed.loc[0, "verdict"] == "FAIL" and failed.loc[0, "detail"].startswith("FAILED EXCESS 0.30 (NEEDS SPA P")
+    assert leaderboard(*_board_inputs(None)).loc[0, "verdict"] == "FAIL"     # no SPA p-value: the gate fails
+
+
+def test_a_cell_with_fewer_than_three_regimes_of_data_is_insufficient_data():
+    from ohcamel_quant.models.farm import leaderboard
+
+    board = leaderboard(*_board_inputs(0.30, positive=(None, None, None, None, None, True, True)))
+    assert board.loc[0, "verdict"] == "INSUFFICIENT DATA"
+    assert board.loc[0, "detail"] == "2 OF 7 REGIMES HAVE OUT-OF-SAMPLE DATA (NEEDS 3)"
+
+
+def test_a_cell_scored_on_an_earlier_regime_table_awaits_a_re_run():
+    """A cell carried forward from before the one regime file holds the old five regimes' rows: it is not judged
+    against a table it was never scored on -- INSUFFICIENT DATA until it runs again, never a verdict."""
+    from ohcamel_quant.models.farm import leaderboard
+
+    old = ["2008", "2015-16", "2020", "2022", "2024"]
+    board = leaderboard(*_board_inputs(0.04, regime_names=old, positive=(None, True, True, True, True)))
+    assert board.loc[0, "verdict"] == "INSUFFICIENT DATA"
+    assert board.loc[0, "detail"] == "REGIMES SCORED ON AN EARLIER TABLE · AWAITS A RE-RUN"

@@ -23,6 +23,16 @@ copy: a book.sexp can override that per book, and doing so does not move this
 one. `capacity` reports what 1% headroom looks like, not whatever a book
 currently sets. The manifest hashes the cost file (`manifest.COSTS_REL`), so
 editing it stales the evidence like editing this module.
+
+Completion task 2.5 (owner ruling R3): PSR and DSR at 0.95; the excess gate
+(`excess_gate`: Hansen's SPA p-value against the universe's equal-weight
+buy-and-hold at most 0.10) -- this battery has no SPA test yet (fdq ships
+none), so the runner fails it, saying so, rather than leave a charter gate
+unapplied; and `REGIMES` is the one regime table,
+`research/config/regimes.yaml` (`regimes.py`), which the quant battery reads
+too. The manifest hashes that file (`manifest.REGIMES_REL`). Fewer than
+`regime_min_positive` regimes with data is recorded on the regime gate
+(`insufficient_data`) and judged INSUFFICIENT DATA by `manifest.compute_verdict`.
 """
 
 from __future__ import annotations
@@ -39,6 +49,8 @@ import yaml
 from fdq.validation.dsr import deflated_sharpe, probabilistic_sharpe
 from fdq.validation.metrics import sharpe
 
+from ohcamel_research.battery import regimes as _regime_file
+
 
 @dataclass(frozen=True)
 class Thresholds:
@@ -50,8 +62,11 @@ class Thresholds:
     so Task 11's verdict and Task 13's report read the same numbers this
     module does, instead of a second copy that could drift."""
 
-    psr_min: float = 0.70
-    dsr_min: float = 0.30
+    psr_min: float = 0.95
+    dsr_min: float = 0.95
+    # completion task 2.5 (R3): Hansen's SPA consistent p-value against the
+    # universe's equal-weight buy-and-hold, at or below this, passes `excess`.
+    spa_max_p: float = 0.10
     bootstrap_resamples: int = 1000
     bootstrap_block: int = 21
     bootstrap_lower_percentile: float = 5.0
@@ -80,13 +95,12 @@ MAX_ADV_PARTICIPATION = float(
     yaml.safe_load(COSTS_PATH.read_text(encoding="utf-8"))["capacity"]["participation"]
 )
 
+# The one regime table (completion task 2.5): research/config/regimes.yaml,
+# read through regimes.py -- never a copy held here. Both batteries read it.
 REGIMES: dict[str, tuple[date, date]] = {
-    "2018_q4_selloff": (date(2018, 10, 1), date(2018, 12, 31)),
-    "2020_covid": (date(2020, 2, 19), date(2020, 6, 30)),
-    "2022_rate_shock": (date(2022, 1, 1), date(2022, 12, 31)),
-    "2023_recovery": (date(2023, 1, 1), date(2023, 12, 31)),
-    "2024": (date(2024, 1, 1), date(2024, 12, 31)),
+    name: (date.fromisoformat(a), date.fromisoformat(b)) for name, a, b in _regime_file.load()
 }
+EXCESS_RULE = f"SPA p <= {THRESHOLDS.spa_max_p:.2f} vs buy-and-hold"
 
 
 @dataclass(frozen=True)
@@ -237,8 +251,30 @@ def regime_gate(
             "by_regime": by_regime,
             "min_positive": min_positive,
             "bar_counts": bar_counts,
+            # completion task 2.5 (R3): fewer regimes with data than the gate
+            # needs positive is INSUFFICIENT DATA, not FAIL -- the gate is not
+            # passed, and manifest.compute_verdict reads this flag.
+            "insufficient_data": len(covered) < min_positive,
         },
     )
+
+
+def excess_gate(spa_p: float | None, reason: str | None = None) -> GateResult:
+    """The charter's excess gate (completion task 2.5, owner ruling R3):
+    Hansen's SPA consistent p-value of the strategy's trials against the
+    universe's equal-weight buy-and-hold, filled and costed as the strategy
+    is, at or below `THRESHOLDS.spa_max_p` passes. `None` -- a p-value that
+    was not computed -- fails, with `reason` in the detail: a charter gate
+    that cannot be computed is never passed."""
+    ok = spa_p is not None and np.isfinite(spa_p) and spa_p <= THRESHOLDS.spa_max_p
+    detail: dict[str, Any] = {
+        "threshold": THRESHOLDS.spa_max_p,
+        "rule": EXCESS_RULE,
+        "benchmark": "the universe's equal-weight buy-and-hold",
+    }
+    if reason is not None:
+        detail["reason"] = reason
+    return GateResult("excess", bool(ok), None if spa_p is None else float(spa_p), detail)
 
 
 def cost_sweep(

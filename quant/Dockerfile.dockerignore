@@ -26,6 +26,8 @@
 !research/experiments/
 # The one cost file the engine, the farm and signals.daily read (completion task 2.3)
 !research/config/costs.yaml
+# The one regime table the charter's verdict reads (completion task 2.5)
+!research/config/regimes.yaml
 !research/kronos/pyproject.toml
 !research/kronos/uv.lock
 !research/kronos/README.md

@@ -82,7 +82,7 @@ def test_q01_runs_and_leads_with_the_charter_verdict(market, wh, test_cfg, monke
     spec = _run(market, wh, test_cfg, monkeypatch, tmp_path / "jobs.sqlite")
     assert spec.verdict in ("PASS", "FAIL")
     g = spec.tables["gates"]
-    assert {"holdout_positive", "dsr", "psr", "bootstrap_lower_5pct", "regimes_positive", "pbo", "cost_sweep",
+    assert {"holdout_positive", "dsr", "psr", "excess", "bootstrap_lower_5pct", "regimes_positive", "pbo", "cost_sweep",
             "beats_linear_composite"} == set(g["gate"])
     h = spec.tables["holdout"].iloc[0]
     assert h["methodology_version"] == 1 and h["n_trials"] == 2 * 13
@@ -185,6 +185,46 @@ def test_q01_holdout_with_no_finite_trial_sharpe_records_a_failed_dsr_not_a_rais
     assert np.isnan(h["dsr"]) and h["n_trials"] > 0 and spec.verdict == "FAIL"
     g = spec.tables["gates"].set_index("gate")
     assert not bool(g.loc["dsr", "passed"])
+
+
+def test_q01_excess_gate_is_spa_against_the_universe_held_by_hand(market, wh, test_cfg, monkeypatch, tmp_path):
+    """Completion task 2.5 (R3): the holdout's excess gate is Hansen's SPA consistent p-value of the model's holdout
+    net returns against the frozen universe's equal-weight buy-and-hold over the same sessions -- 1/N of each ETF
+    bought at the holdout's first entry open, never rebalanced, marked open to open on adjusted opens (I-Q01-8), its
+    entry paying the base cost once -- computed here by hand from the warehouse's bars."""
+    from ohcamel_quant.backtest.validation import spa_test
+
+    spec = _run(market, wh, test_cfg, monkeypatch, tmp_path / "jobs.sqlite")
+    held = spec.tables["holdout_returns"].assign(date=lambda d: pd.to_datetime(d["date"])).set_index("date")
+    bars = duckdb.connect(str(wh), read_only=True).execute(
+        "SELECT ticker, date, open * adj_close / close AS ao FROM bars_daily WHERE ticker IN "
+        f"({', '.join(repr(t) for t in FIXTURE_ETFS)}) ORDER BY date").df()
+    ao = bars.pivot(index="date", columns="ticker", values="ao")
+    ao.index = pd.to_datetime(ao.index)
+    entry = held.index[0]
+    nxt = ao.shift(-1)                                   # the return dated d is open(d) -> open(d + 1)
+    value = (nxt.loc[held.index] / ao.loc[entry]).mean(axis=1)
+    hand = value / value.shift(1).fillna(1.0) - 1.0
+    c = test_cfg["portfolio"]["cost_bps_base"] / 1e4
+    hand.iloc[0] = (1.0 + hand.iloc[0]) * (1.0 - c) - 1.0
+    want = spa_test(hand, held[["model_net"]])["pvalue_consistent"]
+    g = spec.tables["gates"].set_index("gate")
+    assert g.loc["excess", "value"] == pytest.approx(want, abs=1e-12)
+    assert bool(g.loc["excess", "passed"]) == (want <= 0.10) and g.loc["excess", "rule"] == "SPA p <= 0.10 vs buy-and-hold"
+    assert spec.tables["holdout"].iloc[0]["spa_p"] == pytest.approx(want, abs=1e-12)
+
+
+def test_q01_holdout_whose_spa_cannot_be_computed_records_a_failed_excess_gate_not_a_raise(market, wh, test_cfg,
+                                                                                          monkeypatch, tmp_path):
+    from ohcamel_quant.models import xsec
+
+    def broken(*a, **k):
+        raise ValueError("no block length")
+
+    monkeypatch.setattr(xsec, "spa_test", broken)
+    spec = _run(market, wh, test_cfg, monkeypatch, tmp_path / "jobs.sqlite")
+    assert np.isnan(spec.tables["holdout"].iloc[0]["spa_p"]) and spec.verdict in ("FAIL", "INSUFFICIENT DATA")
+    assert not bool(spec.tables["gates"].set_index("gate").loc["excess", "passed"])
 
 
 def test_q01_holdout_is_evaluated_once_and_carried_forward(market, wh, test_cfg, monkeypatch, tmp_path):

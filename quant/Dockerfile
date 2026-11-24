@@ -209,6 +209,10 @@ COPY research/experiments/ /app/research/experiments/
 # The one cost file (completion task 2.3): the engine, the farm and signals.daily
 # read every cost from it (backtest/costs.py, REPO_ROOT / "research/config/costs.yaml").
 COPY research/config/costs.yaml /app/research/config/costs.yaml
+# The one regime table (completion task 2.5): the charter's regime gate reads its
+# windows from it (models/regimes.py, /app/research/config/regimes.yaml), as the
+# research battery does.
+COPY research/config/regimes.yaml /app/research/config/regimes.yaml
 # The signal contract's JSON schemas, against which signals.daily and
 # signals.overlay validate every document before it is written
 # (signals/contract.py, REPO_ROOT / "interface"), and the example book whose

@@ -277,9 +277,12 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     board = leaderboard(cells, regimes, counted)
     n_pass = int((board["verdict"] == "PASS").sum()) if len(board) else 0
     n_fail = int((board["verdict"] == "FAIL").sum()) if len(board) else 0
+    n_short = int((board["verdict"] == "INSUFFICIENT DATA").sum()) if len(board) else 0
     n_skip = int((cells.get("status") == "skipped").sum()) if len(cells) else 0
     asof = cells.loc[cells.get("status") == "ok", "data_asof"].min() if len(board) else None
-    verdict = "INSUFFICIENT DATA" if board.empty else "PASS" if n_pass else "FAIL"
+    # PASS when a cell passes; FAIL when one fails and none passes; INSUFFICIENT DATA when no scored cell could be
+    # judged (task 2.5: too few regimes with out-of-sample data is not a FAIL)
+    verdict = "PASS" if n_pass else "FAIL" if n_fail else "INSUFFICIENT DATA"
     traded, scored = traded_configuration(cells)
     config = (f"{traded} of {scored} scored cells at gross {MAX_GROSS:g}, decided at the close and filled at the next "
               "open" + (f"; the other {scored - traded} were scored before that (the strategy's default leverage, "
@@ -296,4 +299,4 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                + (f", {unledgered} carried from before it" if unledgered else "") + f"); {config}; walk-forward "
                f"{WF_IS}/{WF_OOS} sessions", _costs_note(cost_file.load())],
         verdict=verdict,
-        verdict_detail=f"{n_pass} PASS · {n_fail} FAIL · {n_skip} SKIPPED · ADVISORY")
+        verdict_detail=f"{n_pass} PASS · {n_fail} FAIL · {n_short} INSUFFICIENT DATA · {n_skip} SKIPPED · ADVISORY")

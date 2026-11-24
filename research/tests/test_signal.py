@@ -53,6 +53,7 @@ from ohcamel_research.contract import check, data_hash
 from ohcamel_research.manifest import (
     BATTERY_REL,
     COSTS_REL,
+    REGIMES_REL,
     UV_LOCK_REL,
     DsrRecord,
     Manifest,
@@ -63,6 +64,7 @@ from ohcamel_research.manifest import (
 from ohcamel_research.replay import load_bars
 from ohcamel_research.signal import (
     FRAGILE_REASON,
+    INSUFFICIENT_REASON,
     UNVALIDATED,
     emit,
     invested_fraction,
@@ -133,6 +135,7 @@ def _build_repo(root: Path) -> dict[str, Path]:
     uv_lock_path = root / UV_LOCK_REL
     _write(uv_lock_path, b"lockfile v1")
     _write(root / COSTS_REL, b"capacity: {participation: 0.01}\n")  # task 2.3: hashed evidence
+    _write(root / REGIMES_REL, b"regimes: []\n")  # task 2.5: hashed evidence
 
     return {
         "root": root,
@@ -364,6 +367,30 @@ def test_validation_from_manifest_is_unvalidated_when_fresh_and_verdict_pass_fra
     assert v["manifest"] == f"{manifest_file}: {FRAGILE_REASON}"
     assert FRAGILE_REASON == "pass, fragile: not promoted without a second, independent window"
     assert v["pbo"] == 0.6
+    assert v["dsr"] == m.dsr.value
+
+
+def test_validation_from_manifest_is_unvalidated_when_fresh_and_verdict_insufficient_data(
+    tmp_path: Path,
+):
+    """Completion task 2.5: a record reaching fewer than three regimes is
+    neither a pass nor a fail."""
+    paths = _build_repo(tmp_path)
+    regime = {
+        "name": "regimes_positive",
+        "passed": False,
+        "value": 1.0,
+        "detail": {"covered": ["2020", "2022"], "min_positive": 3, "insufficient_data": True},
+    }
+    m = _manifest(paths, gates=(regime,), pbo=0.2)
+    assert m.verdict == "insufficient data"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
+    m.dump(manifest_file)
+
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
+
+    assert v["status"] == "unvalidated"
+    assert v["manifest"] == f"{manifest_file}: {INSUFFICIENT_REASON}"
     assert v["dsr"] == m.dsr.value
 
 

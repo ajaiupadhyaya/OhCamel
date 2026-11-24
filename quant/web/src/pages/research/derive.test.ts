@@ -9,6 +9,15 @@ const run = (psr: number | null, probLe0: number | null, audit = true) =>
     look_ahead_audit: { passed: audit, checked: [], max_abs_diff: 0, points: 3 },
   }) as unknown as RunOut;
 
+describe("CHARTER (docs/CHARTER.md, owner ruling R3)", () => {
+  it("states the gates models/verdict.py applies", () => {
+    expect(CHARTER).toMatchObject({ dsr: 0.95, psr: 0.95, spa: 0.1, regimes: 3, regimesOf: 7 });
+  });
+  it("failedGates reads the excess gate a farm verdict names", () => {
+    expect(failedGates("FAILED DSR 0.12 (NEEDS >= 0.95), EXCESS 0.96 (NEEDS SPA P <= 0.10 VS BUY-AND-HOLD)")).toEqual(["dsr", "excess"]);
+  });
+});
+
 describe("backtestVerdict (one run is never promoted: charter, 'nothing on a single backtest')", () => {
   it("ADVISORY at best, naming what a single run cannot test", () => {
     const v = backtestVerdict(run(0.97, 0.01));
@@ -17,12 +26,13 @@ describe("backtestVerdict (one run is never promoted: charter, 'nothing on a sin
     expect(v.gates.find((g) => g.code === "PSR")?.status).toBe("PASS");
     expect(v.gates.find((g) => g.code === "DSR")?.status).toBe("NOT RUN");
   });
-  it("FAIL on the charter's PSR >= 0.70 and on the bootstrap's lower 5th percentile (P(SR <= 0) >= 5%)", () => {
+  it("FAIL on the charter's PSR >= 0.95 (R3) and on the bootstrap's lower 5th percentile (P(SR <= 0) >= 5%)", () => {
     const v = backtestVerdict(run(0.62, 0.18));
     expect(v.value).toBe("FAIL");
-    expect(v.detail).toBe("PSR 0.62 < 0.70 · P(SR≤0) 18.0% ≥ 5%");
-    expect(backtestVerdict(run(0.9, 0.05)).value).toBe("FAIL");
-    expect(backtestVerdict(run(0.7, 0.049)).value).toBe("ADVISORY");
+    expect(v.detail).toBe("PSR 0.62 < 0.95 · P(SR≤0) 18.0% ≥ 5%");
+    expect(backtestVerdict(run(0.99, 0.05)).value).toBe("FAIL");
+    expect(backtestVerdict(run(0.9, 0.01)).value).toBe("FAIL");
+    expect(backtestVerdict(run(0.95, 0.049)).value).toBe("ADVISORY");
   });
   it("a failed look-ahead audit fails the run", () => {
     const v = backtestVerdict(run(0.99, 0.0, false));
@@ -42,14 +52,15 @@ const sweep = (dsr: number | null, psr: number | null, pbo: number | null) =>
   }) as unknown as SweepOut;
 
 describe("sweepVerdict (DSR deflated by every combination tried)", () => {
-  it("FAIL below the charter's DSR 0.30, with a high PBO named", () => {
-    const v = sweepVerdict(sweep(0.12, 0.91, 0.62));
+  it("FAIL below the charter's DSR 0.95 (R3), with a high PBO named", () => {
+    const v = sweepVerdict(sweep(0.12, 0.96, 0.62));
     expect(v.value).toBe("FAIL");
-    expect(v.detail).toBe("DSR 0.12 < 0.30 · PBO 0.62 HIGH");
+    expect(v.detail).toBe("DSR 0.12 < 0.95 · PBO 0.62 HIGH");
+    expect(sweepVerdict(sweep(0.5, 0.96, 0.2)).value).toBe("FAIL");
     expect(v.gates.find((g) => g.code === "PBO")?.status).toBe("REPORTED");
   });
   it("ADVISORY when DSR and PSR clear: a sweep is in-sample, the holdout is the walk-forward's", () => {
-    const v = sweepVerdict(sweep(0.55, 0.93, 0.2));
+    const v = sweepVerdict(sweep(0.96, 0.97, 0.2));
     expect(v.value).toBe("ADVISORY");
     expect(v.detail).toBe("IN-SAMPLE · HOLDOUT NOT RUN");
   });
@@ -65,10 +76,11 @@ describe("walkForwardVerdict (the charter's holdout gate)", () => {
   it("FAIL when the stitched out-of-sample record lost money", () => {
     const v = walkForwardVerdict(wf(-0.04, 0.3, 0.1));
     expect(v.value).toBe("FAIL");
-    expect(v.detail).toBe("HOLDOUT −4.0% ≤ 0 · PSR 0.30 < 0.70");
+    expect(v.detail).toBe("HOLDOUT −4.0% ≤ 0 · PSR 0.30 < 0.95");
   });
   it("ADVISORY when positive: DSR and regimes are the farm's", () => {
-    expect(walkForwardVerdict(wf(0.21, 0.8, 0.64))).toMatchObject({ value: "ADVISORY", detail: "WFE 64% · DSR · REGIMES NOT RUN" });
+    expect(walkForwardVerdict(wf(0.21, 0.97, 0.64))).toMatchObject({ value: "ADVISORY", detail: "WFE 64% · DSR · REGIMES NOT RUN" });
+    expect(walkForwardVerdict(wf(0.21, 0.8, 0.64)).value).toBe("FAIL");   // PSR 0.80 < 0.95 (R3)
   });
   it("INSUFFICIENT DATA without an out-of-sample return", () => {
     expect(walkForwardVerdict(wf(null, null, null)).value).toBe("INSUFFICIENT DATA");

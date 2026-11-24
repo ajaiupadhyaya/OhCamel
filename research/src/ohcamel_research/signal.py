@@ -95,6 +95,7 @@ UNVALIDATED: dict[str, Any] = {
 # until a second, independent window confirms it. Enforced here, where the
 # status is set, rather than left to whoever reads the verdict.
 FRAGILE_REASON = "pass, fragile: not promoted without a second, independent window"
+INSUFFICIENT_REASON = "insufficient data: fewer than three regimes with out-of-sample data"
 
 
 def _identity_mismatches(
@@ -147,7 +148,8 @@ def validation_from_manifest(
       rule or parameters differ -- its numbers are then not reported, since
       they describe something else), it is stale, or its verdict is
       ``"pass, fragile"`` (``FRAGILE_REASON``: the pre-registration's own
-      kill criterion -- not promoted without a second, independent window).
+      kill criterion -- not promoted without a second, independent window) or
+      ``"insufficient data"`` (``INSUFFICIENT_REASON``, completion task 2.5).
       This function never raises for any of those -- a caller that always
       routes ``validation`` through here can never end up emitting a
       hand-written ``"pass"``, because there is no path through it that
@@ -211,6 +213,10 @@ def validation_from_manifest(
         status, manifest_field = "fail", manifest_str
     elif manifest.verdict == "pass, fragile":
         status, manifest_field = "unvalidated", f"{manifest_str}: {FRAGILE_REASON}"
+    elif manifest.verdict == "insufficient data":
+        # completion task 2.5: too few regimes with out-of-sample data to judge
+        # -- neither a pass nor a fail, so unvalidated, and said why
+        status, manifest_field = "unvalidated", f"{manifest_str}: {INSUFFICIENT_REASON}"
     else:  # Manifest.__post_init__ admits no other verdict; never a pass if it ever did
         status, manifest_field = "unvalidated", f"{manifest_str}: verdict {manifest.verdict!r}"
     return {

@@ -1427,10 +1427,11 @@ let test_the_evidence_is_both_manifests_as_committed () =
         [
           ( "exp_a01_spy",
             "fail",
-            "fail: 1 of 5 gates failed (regimes_positive); PBO 0.786, above 0.5" );
+            "fail: 3 of 6 gates failed (dsr, excess, regimes_positive); PBO 0.786, above \
+             0.5" );
           ( "exp_a01_tlt",
             "fail",
-            "fail: 5 of 5 gates failed (holdout_positive, dsr, psr, \
+            "fail: 6 of 6 gates failed (holdout_positive, dsr, psr, excess, \
              bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5" );
         ]
         (List.map (manifests_of body) ~f:(fun m ->
@@ -1441,7 +1442,8 @@ let test_the_evidence_is_both_manifests_as_committed () =
    ">=" is the gate detail's own -- so that no copy of battery/gates.py's
    THRESHOLDS lives in the JavaScript. That only works if every manifest
    carries every number the page reads, so this pins that it does, at the
-   values docs/CHARTER.md's gates table states: DSR 0.30, PSR 0.70, the
+   values docs/CHARTER.md's gates table states (owner ruling R3, completion
+   task 2.5): DSR 0.95, PSR 0.95, the excess gate's SPA p at most 0.10, the
    bootstrap's lower 5th percentile of 1,000 resamples, 3 regimes, PBO named
    above 0.5, and the sweep at 0 / 5 / 15 / 30 bps with both of its Sharpe
    series and both of its return series at each level. A manifest regenerated
@@ -1463,6 +1465,7 @@ let test_the_manifests_carry_every_line_the_page_reads () =
               "holdout_positive";
               "dsr";
               "psr";
+              "excess";
               "bootstrap_sharpe_lower5";
               "regimes_positive";
               "pbo";
@@ -1471,8 +1474,9 @@ let test_the_manifests_carry_every_line_the_page_reads () =
             (List.map
                (Yojson.Safe.Util.to_list (field m "gates"))
                ~f:(fun g -> Yojson.Safe.Util.to_string (field g "name")));
-          check_num "DSR at or above" 0.30 (field (gate_detail m "dsr") "threshold");
-          check_num "PSR at or above" 0.70 (field (gate_detail m "psr") "threshold");
+          check_num "DSR at or above" 0.95 (field (gate_detail m "dsr") "threshold");
+          check_num "PSR at or above" 0.95 (field (gate_detail m "psr") "threshold");
+          check_num "SPA p at or below" 0.10 (field (gate_detail m "excess") "threshold");
           let boot = gate_detail m "bootstrap_sharpe_lower5" in
           check_num "the bootstrap's lower percentile" 5.0 (field boot "lower_percentile");
           check_num "its resamples" 1000.0 (field boot "n_samples");

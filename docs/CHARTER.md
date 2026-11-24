@@ -53,12 +53,21 @@ battery and the gates are applied literally:
 | Test | Pass |
 |---|---|
 | Walk-forward, out-of-sample | holdout positive |
-| Deflated Sharpe Ratio (multiple-testing corrected) | ≥ 0.30 |
-| Probabilistic Sharpe Ratio | ≥ 0.70 |
+| Deflated Sharpe Ratio (multiple-testing corrected) | ≥ 0.95 |
+| Probabilistic Sharpe Ratio | ≥ 0.95 |
+| Excess: Hansen's SPA test against the universe's equal-weight buy-and-hold | p-value ≤ 0.10 |
 | Probability of Backtest Overfitting | reported; high values named in the verdict |
 | Stationary-block bootstrap, ~1000 resamples | lower 5th percentile > 0 |
-| Regime stress across distinct regimes | positive in ≥ 3 |
+| Regime stress across the 7 regimes of `research/config/regimes.yaml` | positive in ≥ 3; fewer than 3 with out-of-sample data is INSUFFICIENT DATA, not FAIL |
 | Cost sensitivity at 0 / 5 / 15 / 30 bps | reported at every level |
+
+The lines are the owner's ruling R3 (2026-11-23): a strategy must beat its own
+universe held, at 0.95 -- a Sharpe ratio judged against zero passed a
+long-or-flat SPY rule in a bull market. A gate that cannot be computed fails.
+A deflated Sharpe needs at least two trials. Each battery holds these numbers
+in one place (`quant/src/ohcamel_quant/models/verdict.py`,
+`research/src/ohcamel_research/battery/gates.py`), and a test in each reads
+this table.
 
 A signal reaches the core with a `validation` block written by the code that
 ran the battery. Only `status: pass` may be sized as `live`; anything else is

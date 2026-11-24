@@ -128,21 +128,32 @@
           "EXP-002-SPY rerun[1] donchian SPY": 8,
           "EXP-A01 exp_a01_spy walk_forward": 12
         },
-        "threshold": 0.3,
+        "threshold": 0.95,
         "trial_count": 56,
         "unit": "fold_trials"
       },
       "name": "dsr",
-      "passed": true,
+      "passed": false,
       "value": 0.398942349577739
     },
     {
       "detail": {
-        "threshold": 0.7
+        "threshold": 0.95
       },
       "name": "psr",
       "passed": true,
       "value": 0.9769533438969177
+    },
+    {
+      "detail": {
+        "benchmark": "the universe's equal-weight buy-and-hold",
+        "reason": "not computed: the research battery has no SPA test against the universe's equal-weight buy-and-hold yet (fdq ships none), and a charter gate that cannot be computed fails",
+        "rule": "SPA p <= 0.10 vs buy-and-hold",
+        "threshold": 0.1
+      },
+      "name": "excess",
+      "passed": false,
+      "value": null
     },
     {
       "detail": {
@@ -160,26 +171,27 @@
     {
       "detail": {
         "bar_counts": {
-          "2018_q4_selloff": 63,
-          "2020_covid": 93,
-          "2022_rate_shock": 250,
-          "2023_recovery": 250,
+          "2008": 0,
+          "2011": 0,
+          "2015-16": 0,
+          "2018Q4": 63,
+          "2020": 253,
+          "2022": 250,
           "2024": 252
         },
         "by_regime": {
-          "2018_q4_selloff": -0.11235806810834315,
-          "2020_covid": -0.13894850342890397,
-          "2022_rate_shock": -0.1952949048973377,
-          "2023_recovery": 0.11142612184493528,
+          "2018Q4": -0.11235806810834315,
+          "2020": 0.07000305371133297,
+          "2022": -0.1952949048973377,
           "2024": 0.21151211233076306
         },
         "covered": [
-          "2018_q4_selloff",
-          "2020_covid",
-          "2022_rate_shock",
-          "2023_recovery",
+          "2018Q4",
+          "2020",
+          "2022",
           "2024"
         ],
+        "insufficient_data": false,
         "min_positive": 3
       },
       "name": "regimes_positive",
@@ -279,7 +291,7 @@
       "value": null
     }
   ],
-  "gates_version": "2026-09-02",
+  "gates_version": "2026-11-23",
   "hashes": {
     "fixtures/history/SPY.parquet": "sha256:cf3ed91057d36f6c0d7dc8f3f0c7879c7ab625ca3545412a746c157cd68e3362",
     "fixtures/history/SPY.parquet.meta.json": "sha256:21d59b201dbeeb08972eaf9c07f17cedb5d1bfc926adbcf9b1b054180fb4fd95",
@@ -287,13 +299,15 @@
     "fixtures/macro/macro.parquet.meta.json": "sha256:f8d591f35fd7346bf5578a1f784017edf9a155e69495d32e9034c8a37a1c40d9",
     "research/config/costs.yaml": "sha256:1b66c22ba3be4e47d6368f8577b045366d8d57f03db333d3098280b0bd1bbeb6",
     "research/config/friction_v1.yaml": "sha256:1c09f884a55487ca7bc228efc285b69a865d1df59ee4ea367d9b4c09dc1d4cc9",
+    "research/config/regimes.yaml": "sha256:67b4341a33669a412fb23f52cecb1e2d4d3b9fef3a5bf85349e3fe06af2b02d1",
     "research/experiments/EXP-A01/config.yaml": "sha256:1e3c52bbaae5576f01e555195c266ebfc62f57320fcac4433b8bece79d9c5b0a",
-    "research/src/ohcamel_research/battery/__init__.py": "sha256:2b0d5667f50e223d29954344e677755420db1ef23b8d444f8ddc0e7af02a8216",
+    "research/src/ohcamel_research/battery/__init__.py": "sha256:43612202c7f2f7453b5b5a15a2885383732dca011f35983ce751d20105ffbd6a",
     "research/src/ohcamel_research/battery/config.py": "sha256:2e452f75d56dc48f50a757199553a4ecd5dd1c3912c90fe44f0338094fd8e6a1",
     "research/src/ohcamel_research/battery/data.py": "sha256:dbce0c249012dc62ddfd1979cd3d28477a881816bf7c400a6630234f7c6db6f7",
-    "research/src/ohcamel_research/battery/gates.py": "sha256:11bf7e5076889517cb950a53a6f67dc737ce1072eea1be1e1336eefafcb34f83",
+    "research/src/ohcamel_research/battery/gates.py": "sha256:f442ba32208c99ed20123d6b8f6f39eeb75674adb6ea5030e1252b7768dff35a",
     "research/src/ohcamel_research/battery/pbo.py": "sha256:ccab3973ddcb2b1a87d4300c50762c9da99342ba1ce70d07f7545558acb74d24",
-    "research/src/ohcamel_research/battery/run.py": "sha256:c0578a8e8624421a1a26f3b960e36bc70b225ebfbb7f859c49d0676ca80a8e07",
+    "research/src/ohcamel_research/battery/regimes.py": "sha256:697dbf5b62664801cf908456c7a9608e3bc230fddda52bcafd54983ac2f05a14",
+    "research/src/ohcamel_research/battery/run.py": "sha256:d7373032d56e224cfde38122d91627d194ada18ea05aacfc229442d9470305be",
     "research/uv.lock": "sha256:83d4802a6c029197f776f7865ea755a89a1d9faf6c2fd9b5f089622384dd8b21"
   },
   "holdout_window": {
@@ -312,8 +326,8 @@
   ],
   "pbo": 0.786013986013986,
   "psr": 0.9769533438969177,
-  "python_version": "3.13.12",
-  "ran_at": "2026-11-23T15:22:25Z",
+  "python_version": "3.13.18",
+  "ran_at": "2026-11-24T04:15:13Z",
   "selected_params": {
     "fast": 1,
     "slow": 150,
@@ -328,5 +342,5 @@
   "symbol": "SPY",
   "turnover": 4.896254034147488,
   "verdict": "fail",
-  "verdict_line": "fail: 1 of 5 gates failed (regimes_positive); PBO 0.786, above 0.5"
+  "verdict_line": "fail: 3 of 6 gates failed (dsr, excess, regimes_positive); PBO 0.786, above 0.5"
 }

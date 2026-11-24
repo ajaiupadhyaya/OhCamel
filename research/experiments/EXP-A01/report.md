@@ -3,37 +3,64 @@
 Pre-registration: `hypothesis.md` and `config.yaml`, committed alone in `2c92874`,
 before any line of `battery/` existed. Evidence: `manifest.exp_a01_spy.json` and
 `manifest.exp_a01_tlt.json`, written by `ohcamel-research battery run` on the battery
-at `38011f6`, seed 42, `ran_at` 2026-09-19T04:12:20Z, Python 3.13.12. Every number
+at `38011f6`, seed 42, `ran_at` 2026-09-19T04:12:20Z, Python 3.13.12, and re-derived
+on 2026-11-23 (`ran_at` 2026-11-24T04:15:13Z, Python 3.13.18) under the gates of the
+owner's ruling R3 (completion task 2.5; see "Re-judged under R3" below). Every number
 below is read from those two manifests. None is computed by hand, except the
 distribution bound in the Disclosures, which is arithmetic on the pre-registration's
 own figure and is labelled as such.
+
+## Re-judged under R3 (2026-11-23)
+
+The charter's gates changed (owner ruling R3, `docs/CHARTER.md`): DSR and PSR at 0.95
+(were 0.30 and 0.70); a new excess gate, Hansen's SPA p-value against the universe's
+equal-weight buy-and-hold at most 0.10; and one regime table for both batteries,
+`research/config/regimes.yaml` (2008, 2011, 2015-16, 2018Q4, 2020, 2022, 2024),
+replacing this battery's five regimes (2018 Q4 selloff, 2020 COVID, 2022, 2023, 2024).
+The re-derivation re-ran the battery on the same data with the same seed. No return,
+Sharpe, PBO, bootstrap figure or cost-sweep number moved; what moved is listed here.
+
+- **Both verdicts are unchanged: fail.**
+- **SPY** now fails three gates. DSR 0.399 is below 0.95 (it passed the old 0.30).
+  The excess gate fails because this battery has no SPA test yet (fdq ships none); a
+  charter gate that cannot be computed fails, and the manifest says so. The regime
+  gate still fails, 2 of 4 regimes with data positive, on the new table (below).
+  PSR 0.977 passes 0.95.
+- **TLT** fails all six decided gates, now including the excess gate.
+- **The regimes** are read on the new table. The joined series starts 2017-08-11, so
+  2008, 2011 and 2015-16 have no data; 2018Q4, 2020 (now the calendar year, not
+  2020-02-19 → 2020-06-30), 2022 and 2024 do. 2023 is no longer a regime.
 
 ## Verdict
 
 | Strategy | Verdict | Sizing | verdict_line |
 |---|---|---|---|
-| `exp_a01_spy` (SPY) | **fail** | advisory | fail: 1 of 5 gates failed (regimes_positive); PBO 0.786, above 0.5 |
-| `exp_a01_tlt` (TLT) | **fail** | advisory | fail: 5 of 5 gates failed (holdout_positive, dsr, psr, bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5 |
+| `exp_a01_spy` (SPY) | **fail** | advisory | fail: 3 of 6 gates failed (dsr, excess, regimes_positive); PBO 0.786, above 0.5 |
+| `exp_a01_tlt` (TLT) | **fail** | advisory | fail: 6 of 6 gates failed (holdout_positive, dsr, psr, excess, bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5 |
 
 Both strategies fail. The pre-registration's kill criterion is "any charter gate
 failing is a fail", and each strategy fails at least one gate.
 
-- **SPY fails one gate, the regimes.** It was positive in 2 of the 5 regimes. Those
-  two are 2023 and 2024, the calm bull years the owner named before the run. It was
-  negative in all three stress regimes: the 2018 Q4 selloff, the 2020 COVID crash and
-  the 2022 rate shock. SPY passes the holdout, DSR, PSR and bootstrap gates. Had its
-  regime gate passed, its verdict would have been "pass, fragile", because its PBO is
-  0.786, and under the kill criteria it would still not have been promoted without a
-  second, independent window.
+- **SPY fails three gates: DSR, excess and the regimes.** Its DSR, 0.399, is below
+  0.95. The excess gate is not computed by this battery and fails. It was positive in
+  2 of the 4 regimes with data, 2020 and 2024, and negative in 2018Q4 and 2022. Under
+  the battery's first gates (DSR 0.30, five regimes) it failed only the regimes: it
+  was positive then in 2023 and 2024 alone, the calm bull years the owner named before
+  the run, and negative in the 2018 Q4 selloff, the 2020 COVID crash (2020-02-19 →
+  2020-06-30) and the 2022 rate shock. SPY passes the holdout, PSR and bootstrap
+  gates. Its PBO, 0.786, is high: had every gate passed, its verdict would have been
+  "pass, fragile", not promoted without a second, independent window.
 - **TLT fails every decided gate.** Its holdout is negative. Its DSR, PSR and
-  bootstrap lower bound are far below their lines. It was positive in 2 of 5 regimes,
-  the 2018 Q4 selloff and the 2020 COVID crash, and negative in 2022, 2023 and 2024.
+  bootstrap lower bound are far below their lines; the excess gate is not computed.
+  It was positive in 2 of 4 regimes with data, 2018Q4 and 2020, and negative in 2022
+  and 2024.
 - **PBO is high for both.** It is 0.786 for SPY and 0.981 for TLT, and both are above
   0.5. With three configurations, a set with no skill scores about 2/3 (see
   Disclosures). Both figures are above that.
 
-The hypothesis says "Three regimes negative would refute it." Three regimes are
-negative for SPY and three for TLT.
+The hypothesis says "Three regimes negative would refute it." On the battery's first
+five regimes three were negative for SPY and three for TLT; on the R3 table two of
+four are negative for each.
 
 **The verdict promotes nothing.** Both strategies ship `advisory`. Promotion to
 sizing is the owner's decision alone, made in `book.sexp` after reading this report.
@@ -53,10 +80,11 @@ series joined to the holdout series (`walk_forward_oos+holdout`, 2,211 bars,
 | Gate | Value | Threshold | Result |
 |---|---|---|---|
 | Holdout positive (2022-06-01 → 2026-06-01, 1,003 bars) | +0.526 compounded | > 0 | pass |
-| Deflated Sharpe Ratio (56 fold-trials) | 0.399 | ≥ 0.30 | pass |
-| Probabilistic Sharpe Ratio | 0.977 | ≥ 0.70 | pass |
+| Deflated Sharpe Ratio (56 fold-trials) | 0.399 | ≥ 0.95 | **fail** |
+| Probabilistic Sharpe Ratio | 0.977 | ≥ 0.95 | pass |
+| Excess: Hansen's SPA against the universe's equal-weight buy-and-hold | not computed (no SPA test in this battery) | p ≤ 0.10 | **fail** |
 | Stationary-block bootstrap, lower 5th percentile of annualised Sharpe (1,000 resamples, mean block 21, seed 42) | 0.120 | > 0 | pass |
-| Regimes positive | 2 of 5 | ≥ 3 | **fail** |
+| Regimes positive | 2 of 4 with data | ≥ 3 | **fail** |
 | PBO, max(port, fdq) | **0.786, high** (port 0.786, fdq 0.786) | reported; above 0.5 named | reported: high |
 | Cost sweep | see below | reported at 0 / 5 / 15 / 30 bps | reported |
 
@@ -66,10 +94,10 @@ Regimes (compounded return of the joined series inside each span):
 
 | Regime | Span | Bars | Return | Positive |
 |---|---|---|---|---|
-| 2018_q4_selloff | 2018-10-01 → 2018-12-31 | 63 | −0.112 | no |
-| 2020_covid | 2020-02-19 → 2020-06-30 | 93 | −0.139 | no |
-| 2022_rate_shock | 2022-01-01 → 2022-12-31 | 250 | −0.195 | no |
-| 2023_recovery (calm bull year) | 2023-01-01 → 2023-12-31 | 250 | +0.111 | yes |
+| 2008, 2011, 2015-16 | — | 0 | no data | — |
+| 2018Q4 | 2018-10-01 → 2018-12-31 | 63 | −0.112 | no |
+| 2020 | 2020-01-01 → 2020-12-31 | 253 | +0.070 | yes |
+| 2022 | 2022-01-01 → 2022-12-31 | 250 | −0.195 | no |
 | 2024 (calm bull year) | 2024-01-01 → 2024-12-31 | 252 | +0.212 | yes |
 
 PBO detail: 12,870 CSCV splits over 2016-06-01 → 2022-05-31. The port and fdq agree
@@ -80,10 +108,11 @@ exactly. No split is called overfit by one and not the other.
 | Gate | Value | Threshold | Result |
 |---|---|---|---|
 | Holdout positive (2022-06-01 → 2026-06-01, 1,003 bars) | −0.272 compounded | > 0 | **fail** |
-| Deflated Sharpe Ratio (12 fold-trials) | 0.003 | ≥ 0.30 | **fail** |
-| Probabilistic Sharpe Ratio | 0.234 | ≥ 0.70 | **fail** |
+| Deflated Sharpe Ratio (12 fold-trials) | 0.003 | ≥ 0.95 | **fail** |
+| Probabilistic Sharpe Ratio | 0.234 | ≥ 0.95 | **fail** |
+| Excess: Hansen's SPA against the universe's equal-weight buy-and-hold | not computed (no SPA test in this battery) | p ≤ 0.10 | **fail** |
 | Stationary-block bootstrap, lower 5th percentile of annualised Sharpe (1,000 resamples, mean block 21, seed 42) | −0.833 | > 0 | **fail** |
-| Regimes positive | 2 of 5 | ≥ 3 | **fail** |
+| Regimes positive | 2 of 4 with data | ≥ 3 | **fail** |
 | PBO, max(port, fdq) | **0.981, high** (port 0.981, fdq 0.981) | reported; above 0.5 named | reported: high |
 | Cost sweep | see below | reported at 0 / 5 / 15 / 30 bps | reported |
 
@@ -91,10 +120,10 @@ Bootstrap percentiles: 5th −0.833, 50th −0.258, 95th 0.248.
 
 | Regime | Span | Bars | Return | Positive |
 |---|---|---|---|---|
-| 2018_q4_selloff | 2018-10-01 → 2018-12-31 | 63 | +0.027 | yes |
-| 2020_covid | 2020-02-19 → 2020-06-30 | 93 | +0.114 | yes |
-| 2022_rate_shock | 2022-01-01 → 2022-12-31 | 250 | −0.028 | no |
-| 2023_recovery (calm bull year) | 2023-01-01 → 2023-12-31 | 250 | −0.064 | no |
+| 2008, 2011, 2015-16 | — | 0 | no data | — |
+| 2018Q4 | 2018-10-01 → 2018-12-31 | 63 | +0.027 | yes |
+| 2020 | 2020-01-01 → 2020-12-31 | 253 | +0.091 | yes |
+| 2022 | 2022-01-01 → 2022-12-31 | 250 | −0.028 | no |
 | 2024 (calm bull year) | 2024-01-01 → 2024-12-31 | 252 | −0.158 | no |
 
 PBO detail: 12,870 CSCV splits over 2016-06-01 → 2022-05-31. The port and fdq agree
@@ -265,11 +294,13 @@ The fragile label therefore reads the higher of the two figures, so neither defe
 can flatter it. In this run the two figures are identical for both strategies, and no
 split differs in either direction. The rule moved neither figure.
 
-**The owner's regime decision.** The regime gate keeps Alpha's five regimes and the
+**The owner's regime decision.** The regime gate kept Alpha's five regimes and the
 3-of-5 threshold unchanged, as the owner decided before the run. Two of the five,
 2023 and 2024, are calm bull years. A long-or-flat rule on SPY is expected to be
-positive in them, so a regime pass on SPY would be weak evidence. In this run SPY was
-positive in exactly those two years and in no other, so its regime gate fails.
+positive in them, so a regime pass on SPY would be weak evidence. In the first run SPY
+was positive in exactly those two years and in no other, so its regime gate failed.
+Ruling R3 (2026-11-23) replaced the five with the one regime table both batteries
+read; on it SPY is positive in 2020 and 2024 and its regime gate still fails.
 
 **PBO with three configurations.** With 3 configurations, a set with no skill at all
 scores a PBO of about 2/3, since the in-sample best lands at or below the
@@ -281,7 +312,7 @@ against it. The hypothesis said so before the run. Both figures here, 0.786 and
 **Walk-forward coverage.** The selection window has 1,511 bars, cut into 5 blocks of
 302. The first block, 2016-06-01 → 2017-08-10, only ever trains. The last bar,
 2022-05-31, falls in no fold's test span and is in neither the walk-forward series nor
-the holdout. That is why the 2022_rate_shock regime has 250 bars, not 251.
+the holdout. That is why the 2022 regime has 250 bars, not 251.
 
 Each fold's out-of-sample backtest restarts in cash and re-enters, and so does the
 holdout on 2022-06-01. Two regimes are affected:

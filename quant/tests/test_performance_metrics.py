@@ -158,10 +158,14 @@ def test_psr_identities(spy):
     z = (sr - 0.0) * math.sqrt(m - 1) / math.sqrt(1 - g3 * sr + (g4 - 1) / 4 * sr**2)
     assert stats.norm.cdf(z) == pytest.approx(0.95, rel=1e-12)
     assert perf.min_track_record_length(-0.01) == math.inf
-    # DSR with one trial is PSR(0); more trials can only lower it.
-    dsr1 = perf.deflated_sharpe(x, n_trials=1, sr_variance=0.0)
-    assert dsr1 == pytest.approx(psr0)
-    prev = dsr1
+    # A DSR needs at least two trials (completion task 2.5; spec "Gates (R3)": expected_max_sharpe with fewer than
+    # two trials raises); with V[SR] = 0 the deflation benchmark is 0, so two trials give PSR(0), and more trials
+    # can only lower it.
+    with pytest.raises(ValueError, match="two trials"):
+        perf.deflated_sharpe(x, n_trials=1, sr_variance=0.0)
+    dsr2 = perf.deflated_sharpe(x, n_trials=2, sr_variance=0.0)
+    assert dsr2 == pytest.approx(psr0)
+    prev = dsr2
     for n in (2, 10, 100, 1000):
         d = perf.deflated_sharpe(x, n_trials=n, sr_variance=1e-4)
         assert d <= prev + 1e-15
@@ -171,8 +175,22 @@ def test_psr_identities(spy):
 def test_expected_max_sharpe_monotone():
     vals = [perf.expected_max_sharpe(n, 0.01) for n in (2, 10, 100, 1000)]
     assert all(b > a for a, b in zip(vals, vals[1:], strict=False))
-    with pytest.raises(ValueError):
-        perf.expected_max_sharpe(0, 0.01)
+
+
+@pytest.mark.parametrize("n", [1, 0, -3])
+def test_expected_max_sharpe_with_fewer_than_two_trials_raises(n):
+    """Spec, "Gates (R3)": expected_max_sharpe with fewer than two trials raises -- this one as backtest/metrics.py's
+    does (completion task 2.4); one trial is no selection to deflate, and the old answer (the trial's mean) read as a
+    deflation that had happened."""
+    with pytest.raises(ValueError, match="at least two trials"):
+        perf.expected_max_sharpe(n, 0.01)
+
+
+def test_expected_max_sharpe_agrees_with_the_backtests():
+    from ohcamel_quant.backtest import metrics as M
+
+    for n in (2, 16, 1000):
+        assert perf.expected_max_sharpe(n, 0.04) == pytest.approx(M.expected_max_sharpe(n, 0.04), rel=1e-12)
 
 
 # ----------------------------------------------------------- portfolio returns

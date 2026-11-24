@@ -3,9 +3,18 @@
 A verdict leads every product. ``charter_verdict`` is the strategy battery:
 every gated metric must pass; a metric that cannot be computed fails its gate
 (never-pass is the conservative reading); no holdout at all is INSUFFICIENT
-DATA; PBO and the cost sweep are reported (PBO named when high), not gated.
+DATA, and so is an out-of-sample record with data in fewer than ``REGIMES_MIN``
+regimes; PBO and the cost sweep are reported (PBO named when high), not gated.
 The cost sweep is read from the cost table itself: every 0/5/15/30 bps row must
 be there with at least one finite number, or the gate fails and names the gaps.
+
+Completion task 2.5 (owner ruling R3; spec, "Gates (R3)"): PSR and DSR at 0.95;
+the excess gate, Hansen's SPA p-value against the universe's equal-weight
+buy-and-hold at most 0.10 (Sharpe against zero passed long-or-flat SPY in a
+bull market); and one regime table, ``research/config/regimes.yaml``, read here
+through ``models/regimes.py`` and by the research battery through its own
+loader. ``tests/test_products_methodology.py`` holds docs/CHARTER.md's gates
+table to these constants.
 """
 
 from __future__ import annotations
@@ -19,15 +28,17 @@ import numpy as np
 import pandas as pd
 
 from ..jobs.artifacts import VERDICTS
+from . import regimes as _regime_file
 
-DSR_MIN = 0.30
-PSR_MIN = 0.70
+DSR_MIN = 0.95
+PSR_MIN = 0.95
+SPA_MAX_P = 0.10
 REGIMES_MIN = 3
 PBO_HIGH = 0.5
 COST_GRID_BPS = (0.0, 5.0, 15.0, 30.0)
-REGIMES = (("2008", "2008-01-01", "2008-12-31"), ("2015-16", "2015-01-01", "2016-12-31"),
-           ("2020", "2020-01-01", "2020-12-31"), ("2022", "2022-01-01", "2022-12-31"),
-           ("2024", "2024-01-01", "2024-12-31"))
+#: ``((name, first day, last day), ...)`` from the one regime file (task 2.5): never a copy held here.
+REGIMES = _regime_file.load()
+EXCESS_RULE = f"SPA p <= {SPA_MAX_P:.2f} vs buy-and-hold"
 ADVISORY_NOTE = "ADVISORY · NEVER SIZED"
 
 
@@ -79,6 +90,11 @@ def regime_table(r: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(rows).astype({"positive": object})
 
 
+def covered(regimes: pd.DataFrame) -> int:
+    """How many regimes of a :func:`regime_table` frame hold out-of-sample data (``positive`` not missing)."""
+    return sum(1 for x in regimes["positive"] if x is not None and not pd.isna(x))
+
+
 def cost_sweep_gate(costs: pd.DataFrame | Sequence[Mapping[str, Any]] | None) -> Gate:
     """Reported, not gated, when the table holds a row for each of 0/5/15/30 bps with a finite metric."""
     df = pd.DataFrame(list(costs)) if costs is not None and not isinstance(costs, pd.DataFrame) else costs
@@ -95,19 +111,27 @@ def cost_sweep_gate(costs: pd.DataFrame | Sequence[Mapping[str, Any]] | None) ->
 
 
 def charter_verdict(*, holdout_return: Any, dsr: Any, psr: Any, boot_lo5: Any, regimes: pd.DataFrame, pbo: Any,
-                    costs: pd.DataFrame | Sequence[Mapping[str, Any]] | None,
+                    costs: pd.DataFrame | Sequence[Mapping[str, Any]] | None, spa_p: Any, regimes_covered: int,
                     extra: Sequence[Gate] = ()) -> Verdict:
+    """``spa_p``: Hansen's SPA consistent p-value of the strategy's trials against the universe's equal-weight
+    buy-and-hold, filled and costed as the strategy is. ``regimes_covered``: how many of ``regimes`` hold
+    out-of-sample data (:func:`covered`); it must agree with the table, and fewer than ``REGIMES_MIN`` is INSUFFICIENT
+    DATA whatever the other gates say -- the record cannot be judged across regimes at all."""
     hr = _num(holdout_return)
     if hr is None:
         return Verdict("INSUFFICIENT DATA", "NO OOS HOLDOUT RETURNS")
-    d, p, b, pb = _num(dsr), _num(psr), _num(boot_lo5), _num(pbo)
+    d, p, b, pb, sp = _num(dsr), _num(psr), _num(boot_lo5), _num(pbo), _num(spa_p)
     flags = [None if x is None or pd.isna(x) else bool(x) for x in regimes["positive"]]  # parquet may return np.bool_
     pos = sum(1 for x in flags if x is True)
     avail = sum(1 for x in flags if x is not None)
+    if int(regimes_covered) != avail:
+        raise ValueError(f"regimes_covered {regimes_covered} disagrees with the regime table ({avail} with data)")
     gates = [
         Gate("holdout_positive", hr, "> 0", hr > 0),
-        Gate("dsr", d, f">= {DSR_MIN}", d is not None and d >= DSR_MIN),
-        Gate("psr", p, f">= {PSR_MIN}", p is not None and p >= PSR_MIN),
+        Gate("dsr", d, f">= {DSR_MIN:.2f}", d is not None and d >= DSR_MIN),
+        Gate("psr", p, f">= {PSR_MIN:.2f}", p is not None and p >= PSR_MIN),
+        Gate("excess", sp, EXCESS_RULE, sp is not None and sp <= SPA_MAX_P,
+             note="Hansen's SPA, consistent p-value, against the universe's equal-weight buy-and-hold"),
         Gate("bootstrap_lower_5pct", b, "> 0", b is not None and b > 0),
         Gate("regimes_positive", float(pos), f">= {REGIMES_MIN} of {len(REGIMES)}", pos >= REGIMES_MIN,
              note=f"{avail} of {len(REGIMES)} regimes have out-of-sample data"),
@@ -115,6 +139,9 @@ def charter_verdict(*, holdout_return: Any, dsr: Any, psr: Any, boot_lo5: Any, r
         cost_sweep_gate(costs),
         *extra,
     ]
+    if avail < REGIMES_MIN:
+        return Verdict("INSUFFICIENT DATA", f"{avail} OF {len(REGIMES)} REGIMES HAVE OUT-OF-SAMPLE DATA "
+                                            f"(NEEDS {REGIMES_MIN})", tuple(gates))
     pbo_txt = f" · PBO {pb:.2f} HIGH" if pb is not None and pb > PBO_HIGH else ""
     failed = [g for g in gates if g.passed is False]
     if failed:

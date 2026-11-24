@@ -492,14 +492,13 @@ def expected_max_sharpe(n_trials: int, sr_variance: float, sr_mean: float = 0.0)
 
         SR_0 = E[SR_n] + sqrt(V[SR_n]) ((1 - gamma) Phi^-1(1 - 1/N) + gamma Phi^-1(1 - 1/(N e)))
 
-    with ``gamma`` the Euler-Mascheroni constant.
+    with ``gamma`` the Euler-Mascheroni constant. Fewer than two trials raise, as ``backtest.metrics``'s does
+    (spec, "Gates (R3)"): one trial is no selection to deflate.
     """
-    if n_trials < 1:
-        raise ValueError("n_trials must be >= 1")
+    if n_trials < 2:
+        raise ValueError(f"expected_max_sharpe needs at least two trials, got {n_trials}")
     if sr_variance < 0:
         raise ValueError("sr_variance must be >= 0")
-    if n_trials == 1:
-        return sr_mean
     g = EULER_MASCHERONI
     z = (1.0 - g) * stats.norm.ppf(1.0 - 1.0 / n_trials) + g * stats.norm.ppf(1.0 - 1.0 / (n_trials * math.e))
     return sr_mean + math.sqrt(sr_variance) * float(z)
@@ -550,7 +549,7 @@ def deflated_sharpe(
     ``V / P``); ``returns``-derived SR is always per period.
 
     Returns the DSR probability (or a :class:`DeflatedSharpe` with
-    ``detail=True``). ``n_trials = 1`` reduces to ``PSR(0)``.
+    ``detail=True``). Fewer than two trials raise (:func:`expected_max_sharpe`).
     """
     scale = float(periods_per_year) if periods_per_year else 1.0
     if returns is not None:

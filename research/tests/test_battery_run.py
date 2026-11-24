@@ -94,6 +94,7 @@ GATE_ORDER = [
     "holdout_positive",
     "dsr",
     "psr",
+    "excess",
     "bootstrap_sharpe_lower5",
     "regimes_positive",
     "pbo",
@@ -280,6 +281,36 @@ def recorded(tmp_path_factory, mirror_builder) -> Recorded:
         mp.setattr(run_mod, "regime_gate", regime)
         rec.manifests = run(exp, write=True, repo_root=root)
     return rec
+
+
+def test_the_excess_gate_fails_because_the_battery_has_no_spa_test(recorded):
+    """Completion task 2.5 (R3): the charter's excess gate -- SPA p <= 0.10
+    against the universe's equal-weight buy-and-hold -- is applied to every
+    strategy; this battery cannot compute it yet, so it fails, saying why,
+    and nothing it judges can pass until it can."""
+    for m in recorded.manifests:
+        g = m.gates[GATE_ORDER.index("excess")]
+        assert (g["name"], g["passed"], g["value"]) == ("excess", False, None)
+        assert (
+            g["detail"]["threshold"] == 0.10
+            and g["detail"]["rule"] == "SPA p <= 0.10 vs buy-and-hold"
+        )
+        assert "no SPA test" in g["detail"]["reason"]
+        assert m.verdict != "pass"
+
+
+def test_the_regime_gate_reads_the_one_regime_file(recorded):
+    from ohcamel_research.battery.gates import REGIMES
+
+    for m in recorded.manifests:
+        d = m.gates[GATE_ORDER.index("regimes_positive")]["detail"]
+        assert (
+            list(d["bar_counts"])
+            == list(REGIMES)
+            == ["2008", "2011", "2015-16", "2018Q4", "2020", "2022", "2024"]
+        )
+        assert d["insufficient_data"] == (len(d["covered"]) < 3)
+        assert (m.verdict == "insufficient data") == d["insufficient_data"]
 
 
 def _own_wf(rec: Recorded, symbol: str) -> WalkForwardResult:
@@ -1130,7 +1161,7 @@ def _gates(**passed: bool | None) -> list[dict[str, Any]]:
     return [{"name": k, "passed": v, "value": 0.0, "detail": {}} for k, v in passed.items()]
 
 
-_ALL = ("holdout_positive", "dsr", "psr", "bootstrap_sharpe_lower5", "regimes_positive")
+_ALL = ("holdout_positive", "dsr", "psr", "excess", "bootstrap_sharpe_lower5", "regimes_positive")
 
 
 def test_a_fail_names_every_failed_gate_first():
@@ -1139,11 +1170,28 @@ def test_a_fail_names_every_failed_gate_first():
     assert line == "fail: 2 of 3 gates failed (holdout_positive, psr); PBO 0.300"
 
 
+def test_insufficient_data_names_the_regime_coverage():
+    gates = [
+        {"name": "psr", "passed": False, "value": 0.2, "detail": {}},
+        {
+            "name": "regimes_positive",
+            "passed": False,
+            "value": 1.0,
+            "detail": {"covered": ["2020", "2022"], "min_positive": 3, "insufficient_data": True},
+        },
+    ]
+    line = verdict_line("insufficient data", gates, 0.3)
+    assert line == (
+        "insufficient data: 2 of 7 regimes have out-of-sample data (needs 3); "
+        "1 other gate failed (psr); PBO 0.300"
+    )
+
+
 def test_the_longest_fail_fits_in_200_characters():
     gates = _gates(**dict.fromkeys(_ALL, False), pbo=None, cost_sweep=None)
     line = verdict_line("fail", gates, 0.999)
     assert len(line) <= 200
-    assert line.startswith("fail: 5 of 5 gates failed (")
+    assert line.startswith("fail: 6 of 6 gates failed (")
     assert all(name in line for name in _ALL)
     assert "above 0.5" in line
 
@@ -1151,10 +1199,10 @@ def test_the_longest_fail_fits_in_200_characters():
 def test_a_pass_with_a_high_pbo_is_named_fragile():
     gates = _gates(**dict.fromkeys(_ALL, True), pbo=None, cost_sweep=None)
     assert verdict_line("pass, fragile", gates, 0.62) == (
-        "pass, fragile: all 5 gates passed; PBO 0.620, above 0.5, "
+        "pass, fragile: all 6 gates passed; PBO 0.620, above 0.5, "
         "so not promoted without a second window"
     )
-    assert verdict_line("pass", gates, 0.2) == "pass: all 5 gates passed; PBO 0.200"
+    assert verdict_line("pass", gates, 0.2) == "pass: all 6 gates passed; PBO 0.200"
 
 
 def test_a_fail_with_no_decided_gate_says_so():

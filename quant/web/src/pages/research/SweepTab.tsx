@@ -1,7 +1,7 @@
 /**
  * SWEEP (POST /api/backtest/sweep): the rule over a parameter grid, then the overfitting
  * battery. Verdict first: the DSR deflated by every combination tried against the charter's
- * 0.30 and the pick's PSR against 0.70 (FAIL), else ADVISORY: a sweep is in-sample, the
+ * 0.95 and the pick's PSR against 0.95 (FAIL), else ADVISORY: a sweep is in-sample, the
  * holdout is the walk-forward's. Then the Sharpe surface, every combination's equity, the
  * CSCV logit distribution (PBO), the degradation scatter, DSR against the luck bar, SPA and
  * the full table.

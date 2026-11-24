@@ -40,7 +40,9 @@ def test_a_cell_carries_every_gate_input(cell):
         assert row[k] is not None, k
     assert [c["cost_bps"] for c in json.loads(row["cost_curve"])] == [0.0, 5.0, 15.0, 30.0]
     assert "costs_reported" not in row  # the gate reads the table, never a flag
-    assert set(regimes["regime"]) == {"2008", "2015-16", "2020", "2022", "2024"}
+    from ohcamel_quant.models.verdict import REGIMES
+
+    assert list(regimes["regime"]) == [r[0] for r in REGIMES]   # the one regime file's table (task 2.5)
     assert regimes.set_index("regime").loc["2008", "positive"] is None  # fixtures start 2016: no 2008 data
 
 
@@ -105,9 +107,12 @@ def test_incremental_run_carries_cells_forward_and_respects_the_budget(market, t
     assert "1 of 1 scored cells at gross 1" in spec.notes[0] and "await a re-run" not in spec.notes[0]
     assert spec.tables["leaderboard"][["fill", "max_gross"]].iloc[0].tolist() == ["open", 1.0]
     assert spec.tables["cells"]["cell_id"].tolist() == [row["cell_id"]]
-    assert spec.tables["leaderboard"]["verdict"].iloc[0] in ("PASS", "FAIL")
+    # the fixture cell's out-of-sample record reaches one of the seven regimes: it cannot be judged (task 2.5), and a
+    # farm whose every scored cell is INSUFFICIENT DATA says so rather than FAIL
+    assert spec.tables["leaderboard"]["verdict"].iloc[0] == "INSUFFICIENT DATA"
     assert spec.verdict == spec.tables["leaderboard"]["verdict"].iloc[0]
-    assert spec.verdict_detail.startswith(("0 PASS", "1 PASS")) and is_label(spec.verdict_detail)
+    assert spec.verdict_detail == "0 PASS · 0 FAIL · 1 INSUFFICIENT DATA · 0 SKIPPED · ADVISORY"
+    assert is_label(spec.verdict_detail)
     # fix round 1 (M2): the page says "provisional" from this count, so the word goes when the owner measures
     from ohcamel_quant.backtest import costs
 
@@ -121,6 +126,10 @@ def test_leaderboard_cost_gate_reads_the_cells_cost_curve(cell):
     from ohcamel_quant.models.farm import leaderboard
 
     row, regimes, trials = cell
+    # the fixture record reaches one regime, 2024 (INSUFFICIENT DATA, task 2.5); here it is credited two more, 2018Q4
+    # and 2020, so the cost gate is judged
+    lent = regimes["regime"].isin(["2018Q4", "2020"])
+    regimes = regimes.assign(n=np.where(lent, 63, regimes["n"]), positive=regimes["positive"].where(~lent, True))
     curve = json.loads(row["cost_curve"])
     t = trials["sr_pp"].to_numpy()
     full = leaderboard(pd.DataFrame([row]), regimes, t)
@@ -315,3 +324,40 @@ def test_a_cells_out_of_sample_series_is_a_hand_backtest_filled_at_the_next_open
                                                      **validate_params(spec, sw.combos[wf["folds"][0]["combo"]], TK)),
                                          weekly, spreads, m.borrow_bps, m.financing_spread_bps, rf_arr, 1.0)
     assert not np.allclose(close_filled.reindex(hand.index).to_numpy()[:252], hand.to_numpy()[:252])
+
+
+def test_the_excess_gates_benchmark_is_the_universes_equal_weight_buy_and_hold_filled_like_the_cell(market, monkeypatch):
+    """Completion task 2.5 (R3): the excess gate's SPA p-value is the cell's grid against its own universe held --
+    1/N of each name bought once at the next open after the first close, never rebalanced, paying its half-spread
+    once -- by hand, on the sessions the sweep ran; and the row's ``spa_p`` is that test's consistent p-value."""
+    from ohcamel_quant.backtest import costs
+    from ohcamel_quant.data.base import DataUnavailable
+
+    seen = {}
+    real = farm.spa_test
+
+    def spy(bench, models, **k):
+        seen["bench"], seen["models"], seen["out"] = bench, models, real(bench, models, **k)
+        return seen["out"]
+
+    monkeypatch.setattr(farm, "spa_test", spy)
+    row, _, _ = farm.run_cell("sma_trend", "fixture", ctx(market), tickers=TK)
+    assert row["status"] == "ok", row.get("reason")
+    adj, op, cl = (market.prices(TK, field=f).data for f in ("adj_close", "open", "close"))
+    idx = adj.index.intersection(op.index).intersection(cl.index)
+    opens = (op * adj / cl).loc[idx]
+    try:
+        rf = market.risk_free_daily(idx[0].date(), idx[-1].date()).data.reindex(idx).fillna(0.0)
+    except DataUnavailable:
+        rf = None
+    m = costs.load()
+    first = np.zeros(len(idx), dtype=bool)
+    first[0] = True                                    # decided once, at the first close; filled at the next open
+    hand, book, fills = _hand_open_fill(opens, pd.DataFrame(1.0 / len(TK), index=idx, columns=TK), first,
+                                        m.half_spreads(TK), m.borrow_bps, m.financing_spread_bps,
+                                        np.zeros(len(idx)) if rf is None else rf.to_numpy(float), 1.0)
+    assert list(fills) == [1] and np.allclose(fills[1], 1.0 / len(TK))
+    want = hand.reindex(seen["models"].index).fillna(0.0)
+    np.testing.assert_allclose(seen["bench"].to_numpy(), want.to_numpy(), rtol=0, atol=1e-12)
+    assert seen["models"].shape[1] == row["n_combos"] == 16          # every trial of the grid against it
+    assert row["spa_p"] == seen["out"]["pvalue_consistent"]

@@ -24,6 +24,7 @@ import pytest
 from ohcamel_research.manifest import (
     BATTERY_REL,
     COSTS_REL,
+    REGIMES_REL,
     UV_LOCK_REL,
     DsrRecord,
     Manifest,
@@ -82,9 +83,12 @@ def _build_repo(root: Path) -> dict[str, Path]:
 
     costs_path = root / COSTS_REL
     _write(costs_path, b"capacity: {participation: 0.01}\n")
+    regimes_path = root / REGIMES_REL
+    _write(regimes_path, b"regimes: []\n")
 
     return {
         "costs": costs_path,
+        "regimes": regimes_path,
         "root": root,
         "battery": battery,
         "config": config_path,
@@ -334,6 +338,29 @@ def test_the_cost_file_is_hashed_and_an_edit_stales_the_manifest(tmp_path: Path)
     paths["costs"].write_bytes(b"capacity: {participation: 0.02}\n")
     reasons = is_stale(m, paths["root"])
     assert any("costs.yaml" in r and "no longer matches" in r for r in reasons)
+
+
+def test_the_regime_file_is_hashed_and_an_edit_stales_the_manifest(tmp_path: Path):
+    # completion task 2.5: battery/gates.py reads its regimes from
+    # research/config/regimes.yaml, so the file is evidence like the battery itself.
+    paths = _build_repo(tmp_path)
+    m = _make_manifest(paths)
+    assert (
+        REGIMES_REL.as_posix() == "research/config/regimes.yaml"
+        and REGIMES_REL.as_posix() in m.hashes
+    )
+    paths["regimes"].write_bytes(b"regimes: [{name: x}]\n")
+    reasons = is_stale(m, paths["root"])
+    assert any("regimes.yaml" in r and "no longer matches" in r for r in reasons)
+
+
+def test_stale_without_regimes_key(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    hashes = dict(compute_hashes(paths["root"], paths["config"], read_fixtures=[paths["fixture"]]))
+    del hashes[REGIMES_REL.as_posix()]
+    m = _make_manifest(paths, hashes=hashes)
+    reasons = is_stale(m, paths["root"])
+    assert any("regimes.yaml" in r and "required key missing" in r for r in reasons)
 
 
 def test_stale_without_costs_key(tmp_path: Path):
@@ -746,6 +773,36 @@ def test_compute_verdict_fails_with_no_decided_gate():
     assert compute_verdict((), pbo=0.2) == "fail"
     undecided = ({"name": "cost_sweep", "passed": None, "value": None, "detail": {}},)
     assert compute_verdict(undecided, pbo=0.2) == "fail"
+
+
+def _regime_gate(covered: int, passed: bool) -> dict:
+    names = ["2008", "2011", "2015-16", "2018Q4", "2020", "2022", "2024"][:covered]
+    return {
+        "name": "regimes_positive",
+        "passed": passed,
+        "value": float(covered if passed else 0),
+        "detail": {"covered": names, "min_positive": 3, "insufficient_data": covered < 3},
+    }
+
+
+def test_compute_verdict_too_few_regimes_with_data_is_insufficient_data_not_fail():
+    # completion task 2.5 (R3; spec "Gates (R3)"): fewer than three regimes
+    # with out-of-sample data is INSUFFICIENT DATA, not FAIL -- whatever else
+    # failed, the record cannot be judged across regimes at all.
+    other = {"name": "psr", "passed": False, "value": 0.2, "detail": {}}
+    assert compute_verdict((other, _regime_gate(2, False)), pbo=0.1) == "insufficient data"
+    assert compute_verdict((_regime_gate(0, False),), pbo=0.9) == "insufficient data"
+    assert compute_verdict((other, _regime_gate(3, False)), pbo=0.1) == "fail"
+    ok = {"name": "psr", "passed": True, "value": 0.99, "detail": {}}
+    assert compute_verdict((ok, _regime_gate(3, True)), pbo=0.1) == "pass"
+
+
+def test_compute_verdict_reads_coverage_not_a_flag_alone():
+    # The flag and the covered list must agree: two covered regimes are
+    # insufficient even if a hand-edited detail claimed otherwise.
+    g = _regime_gate(2, False)
+    g["detail"]["insufficient_data"] = False
+    assert compute_verdict((g,), pbo=0.1) == "insufficient data"
 
 
 def test_compute_verdict_refuses_a_non_finite_pbo():

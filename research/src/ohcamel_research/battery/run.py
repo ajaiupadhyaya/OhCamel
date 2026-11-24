@@ -90,12 +90,14 @@ from ohcamel_research.battery.data import (
     wide,
 )
 from ohcamel_research.battery.gates import (
+    REGIMES,
     THRESHOLDS,
     GateResult,
     bootstrap_gate,
     capacity,
     cost_sweep,
     dsr_gate,
+    excess_gate,
     holdout_gate,
     psr_gate,
     regime_gate,
@@ -171,6 +173,15 @@ PBO_NOTE = (
     "over losing columns -- so the fragile label reads the higher; where fdq raises (an "
     "in-sample half all flat) the port's figure alone; the pbo gate's detail has both, and "
     "how many splits each alone calls overfit"
+)
+
+# Completion task 2.5 (owner ruling R3): the charter's excess gate is
+# Hansen's SPA p-value against the universe's equal-weight buy-and-hold. fdq
+# ships no SPA test and this battery holds none of its own, so it cannot
+# compute the gate; a charter gate that cannot be computed fails, and says so.
+EXCESS_NOT_COMPUTED = (
+    "not computed: the research battery has no SPA test against the universe's equal-weight "
+    "buy-and-hold yet (fdq ships none), and a charter gate that cannot be computed fails"
 )
 
 SWEEP_NOTE = (
@@ -431,6 +442,7 @@ def judge_strategy(
         },
     )
     pg = psr_gate(returns)
+    xg = excess_gate(None, reason=EXCESS_NOT_COMPUTED)
     bg = bootstrap_gate(returns, n_samples=cfg.bootstrap_resamples, seed=cfg.seed)
     rg = regime_gate(returns)
     pbo_g = GateResult(
@@ -486,7 +498,7 @@ def judge_strategy(
     )
     return Evaluation(
         selection=sel,
-        gates=(hg, dg, pg, bg, rg, pbo_g, cs),
+        gates=(hg, dg, pg, xg, bg, rg, pbo_g, cs),
         dsr=dsr,
         psr=float(pg.value),  # type: ignore[arg-type]
         pbo=sel.pbo,
@@ -841,12 +853,28 @@ def pooled_capacity(
 def verdict_line(verdict: str, gates: Sequence[Mapping[str, Any]], pbo: float) -> str:
     """One sentence, at most 200 characters, that leads with the verdict and
     the gates and never with a return: every failed gate is named, and PBO is
-    always reported, with "above 0.5" when it is."""
+    always reported, with "above 0.5" when it is. "insufficient data" (too
+    few regimes with out-of-sample data, task 2.5) names the coverage first,
+    then every other gate that failed."""
     decided = [g for g in gates if g["passed"] is not None]
     failed = [g["name"] for g in decided if g["passed"] is False]
     fragile = THRESHOLDS.pbo_fragile_above
     pbo_part = f"PBO {pbo:.3f}" + (f", above {fragile:g}" if pbo > fragile else "")
-    if verdict == "fail":
+    if verdict == "insufficient data":
+        reg = next(g for g in gates if g["name"] == "regimes_positive")
+        others = [n for n in failed if n != "regimes_positive"]
+        line = (
+            f"insufficient data: {len(reg['detail']['covered'])} of {len(REGIMES)} regimes have "
+            f"out-of-sample data (needs {THRESHOLDS.regime_min_positive}); "
+            + (
+                f"{len(others)} other gate{'s' if len(others) != 1 else ''} failed "
+                f"({', '.join(others)}); "
+                if others
+                else ""
+            )
+            + pbo_part
+        )
+    elif verdict == "fail":
         if not decided:
             line = f"fail: no gate was decided; {pbo_part}"
         else:

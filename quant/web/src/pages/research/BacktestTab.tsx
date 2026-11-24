@@ -12,7 +12,7 @@ import { XYChart, type XYSeries } from "../../charts/XYChart";
 import { Note } from "../../design";
 import type { ApiError } from "../../lib/api";
 import { fmtDate, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
-import { backtestVerdict } from "./derive";
+import { CHARTER, backtestVerdict } from "./derive";
 import { INFO } from "./info";
 import { Readline, VerdictBlock, finite, fmtProb, fmtSR, fmtYears, paramLine } from "./shared";
 import type { RunOut, Summary } from "./types";
@@ -255,8 +255,8 @@ function Psr({ r }: { r: RunOut }) {
   const n = r.metrics.net;
   const psr = r.psr.psr_vs_0;
   const rows: [string, string, string?][] = [
-    ["PSR · SR > 0", fmtProb(psr), finite(psr) && psr < 0.7 ? "loss" : ""],
-    ["CHARTER BAR", "≥ 70%"],
+    ["PSR · SR > 0", fmtProb(psr), finite(psr) && psr < CHARTER.psr ? "loss" : ""],
+    ["CHARTER BAR", `≥ ${fmtPct(CHARTER.psr, 0)}`],
     ["SR · NET", fmtSR(n.sharpe)],
     ["SESSIONS", fmtNum(n.observations, 0)],
     ["SKEW", fmtNum(n.skew, 2)],

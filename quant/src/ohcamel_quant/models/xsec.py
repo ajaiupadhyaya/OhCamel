@@ -17,11 +17,11 @@ import numpy as np
 import pandas as pd
 
 from ..backtest import metrics as M
-from ..backtest.validation import bootstrap_sharpe, cscv_pbo
+from ..backtest.validation import bootstrap_sharpe, cscv_pbo, spa_test
 from ..factors.hac import newey_west_lrv, nw_lag_rule
 from .cv import owned_months, purge, walk_forward
 from .features import FEATURES, Panel, assert_point_in_time, build_features, month_ends
-from .verdict import COST_GRID_BPS, Gate, Verdict, charter_verdict, regime_table
+from .verdict import COST_GRID_BPS, Gate, Verdict, charter_verdict, covered, regime_table
 
 CAPACITY_ADV_SHARE = 0.01
 
@@ -219,13 +219,28 @@ def _stitched_preds(samples: pd.DataFrame, cfg: Q01Config, params: dict[str, Any
     return pd.concat(parts), preds
 
 
+def _exit(panel: Panel, last_decision: pd.Timestamp) -> pd.Timestamp | None:
+    """The open after the month-end that follows ``last_decision``: where the last position exits."""
+    later = month_ends(panel.adj_close.index)
+    later = later[later > last_decision]
+    return None if len(later) == 0 else panel.adj_close.index[panel.adj_close.index.get_loc(later[0]) + 1]
+
+
 def _port(score: pd.Series, panel: Panel, cfg: Q01Config, cost_bps: float | None = None) -> pd.DataFrame:
     """The quantile portfolio of ``score``; the last position exits at the open after the next month-end."""
     w = quantile_weights(score, cfg.quantile)
-    later = month_ends(panel.adj_close.index)
-    later = later[later > w.index.max()]
-    end = None if len(later) == 0 else panel.adj_close.index[panel.adj_close.index.get_loc(later[0]) + 1]
-    return daily_portfolio(w, panel.adj_open, cfg.cost_bps if cost_bps is None else cost_bps, end)
+    return daily_portfolio(w, panel.adj_open, cfg.cost_bps if cost_bps is None else cost_bps,
+                           _exit(panel, w.index.max()))
+
+
+def universe_held(score: pd.Series, panel: Panel, cfg: Q01Config) -> pd.DataFrame:
+    """The excess gate's benchmark (completion task 2.5, R3): the frozen universe's equal-weight buy-and-hold over
+    ``score``'s sessions -- 1/N of each ETF bought at the open after the first decision, never rebalanced (weights
+    drift), on I-Q01-8's accounting, its one entry paying the base cost -- exiting where the quantile portfolio does."""
+    dates = score.index.get_level_values("date")
+    names = [t for t in cfg.universe if t in panel.adj_open.columns]
+    w = pd.DataFrame(1.0 / len(names), index=pd.DatetimeIndex([dates.min()]), columns=names)
+    return daily_portfolio(w, panel.adj_open, cfg.cost_bps, _exit(panel, dates.max()))
 
 
 @dataclass
@@ -300,6 +315,15 @@ def holdout_dsr(sr: float, n: int, skew: float, kurt: float, trial_srs: np.ndarr
         return float("nan")
 
 
+def holdout_spa(net: pd.Series, held: pd.Series) -> float:
+    """The excess gate's SPA p-value of the holdout against the universe held; NaN -- recorded, and its gate failed --
+    when the test cannot be computed, never a raise: the once-only holdout must be recorded once it is looked at."""
+    try:
+        return float(spa_test(held.reindex(net.index).fillna(0.0), net.to_frame("model"))["pvalue_consistent"])
+    except (ValueError, ArithmeticError, np.linalg.LinAlgError):
+        return float("nan")
+
+
 def run_holdout(samples: pd.DataFrame, panel: Panel, cfg: Q01Config, sel: Selection, threads: int) -> Holdout:
     sessions = panel.adj_close.index
     labelled = samples.dropna(subset=["ret"]).index.get_level_values("date").max()
@@ -326,8 +350,10 @@ def run_holdout(samples: pd.DataFrame, panel: Panel, cfg: Q01Config, sel: Select
                            "composite_sharpe": M.sharpe(_port(comp, panel, cfg, b)["net"]),
                            "model_total": M.total_return(_port(pred, panel, cfg, b)["net"])} for b in COST_GRID_BPS])
     beats = M.sharpe(net) - M.sharpe(base["net"])
+    spa_p = holdout_spa(net, universe_held(pred, panel, cfg)["net"])
     v = charter_verdict(holdout_return=M.total_return(net), dsr=dsr, psr=M.probabilistic_sharpe(sr, len(net), sk, ku),
-                        boot_lo5=boot["ci_low"], regimes=regimes, pbo=sel.pbo, costs=costs,
+                        boot_lo5=boot["ci_low"], regimes=regimes, regimes_covered=covered(regimes), spa_p=spa_p,
+                        pbo=sel.pbo, costs=costs,
                         extra=[Gate("beats_linear_composite", beats, "> 0", beats > 0,
                                     note="model holdout net Sharpe minus composite's")])
     ic = ic_table(pred, samples)
@@ -346,6 +372,7 @@ def run_holdout(samples: pd.DataFrame, panel: Panel, cfg: Q01Config, sel: Select
            "net_sharpe": M.sharpe(net), "composite_net_sharpe": M.sharpe(base["net"]), "total_return": M.total_return(net),
            "max_drawdown": M.max_drawdown(net), "dsr": dsr, "n_trials": int(len(trial_srs)),
            "psr": M.probabilistic_sharpe(sr, len(net), sk, ku), "boot_lo5": boot["ci_low"], "pbo": sel.pbo,
+           "spa_p": spa_p,
            "ic_mean": m_ic, "ic_hac_t": t_ic, "rank_ic_mean": m_ric, "rank_ic_hac_t": t_ric,
            "annual_turnover": float(model["turnover"].sum() / years), "capacity_usd": float(cap)}
     rets = pd.DataFrame({"model_net": net, "composite_net": base["net"].reindex(net.index)})

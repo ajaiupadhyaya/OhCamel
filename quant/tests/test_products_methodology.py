@@ -54,3 +54,44 @@ def test_vol_league_entry_states_the_target_the_code_computes():
     vrp_block = models[models.index('id: "p7-surface-history"'):]
     p7 = vrp_block[:vrp_block.index("\n  },")]
     assert "close-to-close variance" in p7 and "OLD TARGET" in p7
+
+
+def _charter_gates() -> dict[str, str]:
+    text = (REPO_ROOT / "docs" / "CHARTER.md").read_text(encoding="utf-8")
+    table = text[text.index("## The gates"):text.index("## Data")]
+    rows = [line.strip().strip("|").split("|") for line in table.splitlines() if line.startswith("| ")]
+    return {test.strip(): rule.strip() for test, rule in rows[1:]}
+
+
+def test_the_charters_gates_table_is_the_verdicts_constants():
+    """Completion task 2.5 (owner ruling R3): docs/CHARTER.md's gates table states exactly the lines
+    models/verdict.py gates by -- a constant moved without the charter, or the charter without the constant, fails."""
+    from ohcamel_quant.models import verdict as V
+
+    rows = _charter_gates()
+    assert rows["Walk-forward, out-of-sample"] == "holdout positive"
+    assert rows["Deflated Sharpe Ratio (multiple-testing corrected)"] == f"≥ {V.DSR_MIN:.2f}"
+    assert rows["Probabilistic Sharpe Ratio"] == f"≥ {V.PSR_MIN:.2f}"
+    assert rows["Excess: Hansen's SPA test against the universe's equal-weight buy-and-hold"] == (
+        f"p-value ≤ {V.SPA_MAX_P:.2f}")
+    assert rows["Probability of Backtest Overfitting"] == "reported; high values named in the verdict"
+    assert rows["Stationary-block bootstrap, ~1000 resamples"] == "lower 5th percentile > 0"
+    assert rows[f"Regime stress across the {len(V.REGIMES)} regimes of `research/config/regimes.yaml`"] == (
+        f"positive in ≥ {V.REGIMES_MIN}; fewer than {V.REGIMES_MIN} with out-of-sample data is INSUFFICIENT DATA, "
+        "not FAIL")
+    levels = " / ".join(f"{b:g}" for b in V.COST_GRID_BPS)
+    assert rows[f"Cost sensitivity at {levels} bps"] == "reported at every level"
+    assert len(rows) == 8
+
+
+def test_the_farm_entry_states_the_charters_gates():
+    from ohcamel_quant.models import verdict as V
+
+    models = (WEB / "models.ts").read_text()
+    start = models.index('id: "p4-strategy-farm"')
+    summary = re.search(r'summary: "([^"]+)"', models[start:]).group(1)
+    assert f"deflated Sharpe ≥ {V.DSR_MIN:.2f}" in summary and f"PSR ≥ {V.PSR_MIN:.2f}" in summary
+    assert f"SPA p ≤ {V.SPA_MAX_P:.2f} against the universe's equal-weight buy-and-hold" in summary
+    assert f"positive in {V.REGIMES_MIN} of {len(V.REGIMES)} regimes" in summary
+    assert "fewer than three with out-of-sample data is insufficient data" in summary
+    assert "0.30" not in summary and "0.70" not in summary and "three of five" not in summary

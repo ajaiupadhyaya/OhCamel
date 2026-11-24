@@ -300,6 +300,17 @@
       value: function (g) { return fixed(field(g, "value")); },
       line: function (d) { return "≥ " + need(field(d, "threshold")); }
     },
+    excess: {
+      label: function (d) {
+        var b = str(field(d, "benchmark"));
+        return "excess: Hansen's SPA test" + (b ? " against " + b : "");
+      },
+      value: function (g, d) {
+        var v = field(g, "value");
+        return isNum(v) ? fixed(v) : (str(field(d, "reason")) ? "not computed" : null);
+      },
+      line: function (d) { return "SPA p ≤ " + need(field(d, "threshold")); }
+    },
     bootstrap_sharpe_lower5: {
       label: function (d) {
         var p = field(d, "lower_percentile"), n = field(d, "n_samples"), b = field(d, "block");

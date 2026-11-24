@@ -27,7 +27,7 @@ import pandas as pd
 
 from ..backtest import metrics as M
 from ..backtest.strategies import STRATEGIES, StrategySpec
-from .verdict import charter_verdict
+from .verdict import REGIMES, charter_verdict, covered, insufficient
 
 GRID_MAX = 256
 MAX_LEVELS = 16
@@ -145,14 +145,23 @@ def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trials: pd.DataFrame
         return pd.DataFrame(columns=["cell_id", "verdict", "detail", "dsr_farm"])
     ok["dsr_farm"] = farm_dsr(ok, trials)
     extra = leaderboard_cost_columns()
+    current = sorted(name for name, _, _ in REGIMES)
     rows = []
     for r in ok.itertuples():
         reg = regimes[regimes["cell_id"] == r.cell_id]
-        v = charter_verdict(holdout_return=r.holdout_return, dsr=r.dsr_farm, psr=r.psr, boot_lo5=r.boot_lo5,
-                            regimes=reg, pbo=r.pbo, costs=_cost_curve(getattr(r, "cost_curve", None)))
+        # the excess gate reads the cell's SPA p-value against its universe's equal-weight buy-and-hold, filled and
+        # costed as the cell is (products/farm.py run_cell); a row without one fails it (task 2.5). A cell carried
+        # forward from before the one regime file holds another table's rows: never judged on it, it awaits a re-run.
+        if sorted(reg["regime"]) != current:
+            v = insufficient("REGIMES SCORED ON AN EARLIER TABLE · AWAITS A RE-RUN")
+        else:
+            v = charter_verdict(holdout_return=r.holdout_return, dsr=r.dsr_farm, psr=r.psr, boot_lo5=r.boot_lo5,
+                                regimes=reg, regimes_covered=covered(reg), spa_p=getattr(r, "spa_p", None), pbo=r.pbo,
+                                costs=_cost_curve(getattr(r, "cost_curve", None)))
         rows.append({"cell_id": r.cell_id, "strategy": r.strategy, "universe": r.universe, "verdict": v.value,
                      "detail": v.detail, "dsr_farm": r.dsr_farm, "psr": r.psr, "oos_sharpe_ann": r.oos_sharpe_ann,
-                     "holdout_return": r.holdout_return, "boot_lo5": r.boot_lo5, "pbo": r.pbo, "spa_p": r.spa_p,
+                     "holdout_return": r.holdout_return, "boot_lo5": r.boot_lo5, "pbo": r.pbo,
+                     "spa_p": _num(getattr(r, "spa_p", None)),
                      "n_combos": r.n_combos, "selected_params": r.selected_params, "data_asof": r.data_asof,
                      "ran_at": r.ran_at,
                      # the configuration the row was scored at (task 2.4); None on a row from before it

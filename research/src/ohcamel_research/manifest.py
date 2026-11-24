@@ -95,10 +95,13 @@ UV_LOCK_REL = Path("research/uv.lock")
 # The one cost file (completion task 2.3): battery/gates.py reads capacity's
 # participation from it, so it is evidence like the battery itself.
 COSTS_REL = Path("research/config/costs.yaml")
+# The one regime table (completion task 2.5): battery/gates.py reads the regime
+# gate's windows from it (battery/regimes.py), so it is evidence too.
+REGIMES_REL = Path("research/config/regimes.yaml")
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 _HASH_VALUE_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_VALID_VERDICTS = ("pass", "pass, fragile", "fail")
+_VALID_VERDICTS = ("pass", "pass, fragile", "fail", "insufficient data")
 _GATE_FIELDS = ("name", "passed", "value", "detail")
 
 
@@ -479,11 +482,28 @@ def _validate_hash_value(value: Any, where: str) -> None:
         )
 
 
+def _too_few_regimes(gate: Mapping[str, Any]) -> bool:
+    """A ``regimes_positive`` gate whose record reaches fewer regimes than the
+    gate needs positive (completion task 2.5)."""
+    if gate.get("name") != "regimes_positive":
+        return False
+    detail = gate.get("detail") or {}
+    covered = detail.get("covered")
+    few = isinstance(covered, list) and len(covered) < THRESHOLDS.regime_min_positive
+    return few or detail.get("insufficient_data") is True
+
+
 def compute_verdict(gates: Iterable[Mapping[str, Any]], pbo: float) -> str:
     """The mechanical rule: Task 11 calls this to set ``Manifest.verdict``,
     and ``Manifest.__post_init__`` (so every ``load`` too) calls it again to
     check a manifest's own ``verdict`` agrees.
 
+    - ``"insufficient data"`` if the ``regimes_positive`` gate's record
+      reaches fewer than ``battery.gates.THRESHOLDS.regime_min_positive``
+      regimes (its ``detail["covered"]``, or its ``insufficient_data`` flag):
+      completion task 2.5, owner ruling R3 -- such a record cannot be judged
+      across regimes at all, so it is INSUFFICIENT DATA, not FAIL, whatever
+      else failed (never a pass);
     - ``"fail"`` if any gate whose ``passed`` is not ``None`` has
       ``passed is False``;
     - otherwise ``"pass, fragile"`` if ``pbo`` is over
@@ -500,6 +520,9 @@ def compute_verdict(gates: Iterable[Mapping[str, Any]], pbo: float) -> str:
     """
     if not math.isfinite(pbo):
         raise ValueError(f"compute_verdict: pbo {pbo!r} is not a finite number")
+    gates = list(gates)
+    if any(_too_few_regimes(g) for g in gates):
+        return "insufficient data"
     decided = [g["passed"] for g in gates if g["passed"] is not None]
     if not decided or any(p is False for p in decided):
         return "fail"
@@ -658,7 +681,9 @@ def compute_hashes(
       sidecar when one exists;
     - ``research/uv.lock``, so a dependency change stales the evidence too;
     - the cost file, ``research/config/costs.yaml``, which battery/gates.py
-      reads capacity's participation from (completion task 2.3).
+      reads capacity's participation from (completion task 2.3);
+    - the regime file, ``research/config/regimes.yaml``, which battery/gates.py
+      reads the regime gate's windows from (completion task 2.5).
 
     ``read_fixtures`` must not be empty: a manifest that recorded no fixture
     at all would have nothing pinning it to the data a strategy was actually
@@ -689,6 +714,7 @@ def compute_hashes(
         paths.extend(_fixture_and_sidecar((root / p).resolve()))
     paths.append(root / UV_LOCK_REL)
     paths.append(root / COSTS_REL)
+    paths.append(root / REGIMES_REL)
 
     hashes: dict[str, str] = {}
     for p in paths:
@@ -721,6 +747,8 @@ def _missing_required_reasons(hashes: Mapping[str, str]) -> list[str]:
         reasons.append(f"{UV_LOCK_REL.as_posix()}: required key missing from the manifest")
     if COSTS_REL.as_posix() not in hashes:
         reasons.append(f"{COSTS_REL.as_posix()}: required key missing from the manifest")
+    if REGIMES_REL.as_posix() not in hashes:
+        reasons.append(f"{REGIMES_REL.as_posix()}: required key missing from the manifest")
     if not any(Path(k).name == "config.yaml" for k in hashes):
         reasons.append("config.yaml: required key missing from the manifest")
     if not any("friction" in Path(k).name for k in hashes):
