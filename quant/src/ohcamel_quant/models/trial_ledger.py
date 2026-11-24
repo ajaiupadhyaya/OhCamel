@@ -16,8 +16,10 @@ A line cut short by a crash mid-write is skipped when read (it was never a whole
 on a new line after it, so it is never rewritten.
 
 Who appends: the farm (``products/farm.py``) after each cell, on the worker; the burst door
-(``jobs/burst_door.record_burst_trials``) when it publishes a farm artifact made on a burst machine, from the
-artifact's ``ledger`` table -- the same function, so a burst's trials count on the droplet too.
+(``jobs/burst_door.record_burst_trials``) when it publishes a farm artifact made on a burst machine: the new
+rows of the artifact's ``ledger`` table, each checked to be a trial of this deployment's grid that the upload ran,
+with the Sharpe its trials table holds (a row that is not refuses the upload) -- the same function, so a burst's
+trials count on the droplet too.
 """
 
 from __future__ import annotations

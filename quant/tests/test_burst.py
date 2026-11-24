@@ -967,3 +967,89 @@ def test_the_tool_retries_a_busy_door_after_its_retry_after(made, monkeypatch):
     with pytest.raises(B.BurstError, match="429"):
         B.upload(run, "01JD0000000000000000000000", client=Busy(), base_url="", secret=SECRET, auth=None)
     assert all(s <= B.BUSY_MAX_WAIT_S for s in slept)
+
+
+# --- completion task 2.4: a burst farm run's trials reach the droplet's trial ledger, and nothing else does -------
+
+FARM = {"budget_minutes": 30}
+FARM_CELL = ("sma_trend", "fixture")
+
+
+def _one_farm_cell(mp):
+    """The farm narrowed to one cell on the fixture ETFs, on the burst machine and at the door alike."""
+    from ohcamel_quant.models import farm as mfarm
+    from ohcamel_quant.products import farm as pfarm
+
+    mp.setattr(mfarm, "farm_cells", lambda: [FARM_CELL])
+    mp.setattr(pfarm, "farm_cells", lambda: [FARM_CELL])
+    mp.setattr(pfarm, "_universe", lambda name: ["SPY", "QQQ", "IWM"])
+
+
+@pytest.fixture(scope="module")
+def farm_run(made, tmp_path_factory):
+    _, export, _ = made
+    with pytest.MonkeyPatch.context() as mp:
+        _one_farm_cell(mp)
+        run = B.run_burst("farm.sweep", FARM, export, scratch=tmp_path_factory.mktemp("farm") / "scratch", threads=1)
+    led = pd.read_parquet(run.staging / "ledger.parquet")
+    assert len(led) == 16 and set(led["source"]) == {"burst"}, led
+    return run
+
+
+def _tampered(run, tmp_path, change):
+    staging = tmp_path / "tampered"
+    shutil.copytree(run.staging, staging)
+    led = pd.read_parquet(staging / "ledger.parquet")
+    change(led)
+    led.to_parquet(staging / "ledger.parquet")
+    return B.BurstRun(**{**run.__dict__, "staging": staging})
+
+
+def _droplet_ledger(d):
+    from ohcamel_quant.models import trial_ledger as L
+
+    return L.ledger_path(d.root)
+
+
+def test_a_burst_farm_upload_appends_its_trials_once(door, farm_run, monkeypatch):
+    from ohcamel_quant.models import trial_ledger as L
+
+    client, d = door
+    _one_farm_cell(monkeypatch)
+    jid = _hold(client, "farm.sweep", FARM)
+    r = client_post_raw(client, f"/burst/jobs/{jid}/artifact", _body(farm_run, jid))
+    assert r.status_code == 201, r.text
+    got = L.distinct(_droplet_ledger(d))
+    assert len(got) == 16 and set(got["source"]) == {"burst"}
+    once = _droplet_ledger(d).read_bytes()
+    jid2 = _hold(client, "farm.sweep", {**FARM, "budget_minutes": 31})   # the same trials, another job: nothing new
+    run2 = B.BurstRun(**{**farm_run.__dict__, "params": {**FARM, "budget_minutes": 31}})
+    r = client_post_raw(client, f"/burst/jobs/{jid2}/artifact", _body(run2, jid2, manifest_changes={
+        "params": run2.params, "params_hash": params_hash(run2.params)}))
+    assert r.status_code == 201, r.text
+    assert _droplet_ledger(d).read_bytes() == once
+
+
+def _forge_outside_grid(led):
+    led.loc[0, "params_hash"] = "sha256:" + "0" * 64
+
+
+def _forge_sharpe(led):
+    led.loc[0, "sharpe"] = float(led.loc[0, "sharpe"]) - 0.01
+
+
+def _forge_worker(led):
+    led.loc[0, "source"] = "worker"
+
+
+@pytest.mark.parametrize("forge", [_forge_outside_grid, _forge_sharpe, _forge_worker],
+                         ids=["outside_the_grid", "sharpe_not_the_runs", "says_worker"])
+def test_a_burst_farm_upload_with_a_forged_ledger_row_is_422_and_appends_nothing(door, farm_run, monkeypatch,
+                                                                                tmp_path, forge):
+    client, d = door
+    _one_farm_cell(monkeypatch)
+    jid = _hold(client, "farm.sweep", FARM)
+    r = client_post_raw(client, f"/burst/jobs/{jid}/artifact", _body(_tampered(farm_run, tmp_path, forge), jid))
+    assert r.status_code == 422 and r.json()["error"] == "bad_file", r.text
+    assert not _droplet_ledger(d).exists()
+    assert get_job(connect(d.db), jid).state == "queued"

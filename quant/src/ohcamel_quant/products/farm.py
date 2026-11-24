@@ -29,7 +29,8 @@ as soon as the cell has run, and the leaderboard's DSR takes ``N`` and ``V[SR]``
 distinct trials, every trial the farm has ever run, not tonight's grids. The artifact carries the
 ledger's distinct trials as its ``ledger`` table; a run first seeds its ledger from the previous
 artifact's (a burst machine's ledger starts empty; on the worker it adds nothing), and the burst
-door appends a burst artifact's ``ledger`` to the droplet's. A carried-forward cell from before
+door appends a burst artifact's new ``ledger`` rows to the droplet's once each is shown to be a trial of
+this grid the upload ran (``burst_door.record_burst_trials``). A carried-forward cell from before
 the ledger (trials without ``params_hash``) is counted from the artifact until it runs again.
 """
 
@@ -61,7 +62,14 @@ from ..backtest.validation import (
 from ..data.base import DataUnavailable
 from ..jobs.artifacts import ArtifactSpec
 from ..models import trial_ledger
-from ..models.farm import GRID_MAX, cell_id, farm_cells, leaderboard, strategy_grid
+from ..models.farm import (
+    GRID_MAX,
+    cell_id,
+    farm_cells,
+    leaderboard,
+    strategy_grid,
+    traded_configuration,
+)
 from ..models.verdict import COST_GRID_BPS, regime_table
 from ..signals.contract import params_hash
 
@@ -272,6 +280,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     n_skip = int((cells.get("status") == "skipped").sum()) if len(cells) else 0
     asof = cells.loc[cells.get("status") == "ok", "data_asof"].min() if len(board) else None
     verdict = "INSUFFICIENT DATA" if board.empty else "PASS" if n_pass else "FAIL"
+    traded, scored = traded_configuration(cells)
+    config = (f"{traded} of {scored} scored cells at gross {MAX_GROSS:g}, decided at the close and filled at the next "
+              "open" + (f"; the other {scored - traded} were scored before that (the strategy's default leverage, "
+                        "filled at the close) and await a re-run" if scored - traded else ""))
     return ArtifactSpec(
         tables={"cells": cells, "regimes": regimes, "trials": trials, "leaderboard": board, "ledger": ledger},
         data_asof=None if asof is None or pd.isna(asof) else str(asof),
@@ -281,8 +293,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                      "carried_unledgered": unledgered}],
         notes=[f"{done} cells run tonight; DSR deflated by {len(counted)} trials: every trial the farm has run "
                f"({len(ledger)} distinct in the trial ledger"
-               + (f", {unledgered} carried from before it" if unledgered else "") + "); each cell scored at gross "
-               f"{MAX_GROSS:g}, decided at the close and filled at the next open; walk-forward {WF_IS}/{WF_OOS} "
-               "sessions", _costs_note(cost_file.load())],
+               + (f", {unledgered} carried from before it" if unledgered else "") + f"); {config}; walk-forward "
+               f"{WF_IS}/{WF_OOS} sessions", _costs_note(cost_file.load())],
         verdict=verdict,
         verdict_detail=f"{n_pass} PASS · {n_fail} FAIL · {n_skip} SKIPPED · ADVISORY")

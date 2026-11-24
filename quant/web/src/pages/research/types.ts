@@ -244,6 +244,10 @@ export interface FarmBoardRow {
    *  cell carried forward from before the cost file. */
   turnover?: number | null;
   capacity_usd?: number | null;
+  /** Completion task 2.4: the configuration the row was scored at -- "open" with max_gross 1 is what the desk
+   *  trades; absent on a row scored before it (the strategy's default leverage, filled at the close). */
+  fill?: string | null;
+  max_gross?: number | null;
   /** One column per half-spread multiple in the cost file's ``sweep`` (sr_at_0x, sr_at_1x, ...): read from the row. */
   [sweep: `sr_at_${string}x`]: number | null | undefined;
 }

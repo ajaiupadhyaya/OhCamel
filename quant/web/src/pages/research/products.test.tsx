@@ -8,7 +8,7 @@ vi.mock("../../charts/theme", async (orig) => ({
   useChartTheme: () => new Proxy({}, { get: () => "" }),
 }));
 import { ThemeProvider } from "../../lib/theme";
-import { FarmBoard, costsSource, sweepRows } from "./Farm";
+import { FarmBoard, costsSource, fillLabel, sweepRows } from "./Farm";
 import { ModelsReport } from "./Models";
 import type { FarmBoardRow, FarmCellRow, GateRow, HoldoutRow, RegimeRow } from "./types";
 
@@ -78,6 +78,14 @@ describe("FarmBoard (P4 leaderboard)", () => {
     const out = render(<FarmBoard board={[{ ...board[0], sr_at_0x: 0.5, sr_at_2x: 0.31 }]} cells={cells} regimes={regimes} names={{}} />);
     expect(out).toContain("2×");
     expect(out).toContain("0.31");
+  });
+
+  it("says per row whether it was scored at the open fill and gross 1, never for the whole farm", () => {
+    expect(fillLabel({ fill: "open", max_gross: 1 })).toBe("NEXT OPEN · 1×");
+    expect(fillLabel({})).toBe("CLOSE · DEFAULT");          // a row scored before completion task 2.4
+    const out = render(<FarmBoard board={[{ ...board[0], fill: "open", max_gross: 1 }, board[1]]} cells={cells} regimes={regimes} names={{}} />);
+    expect(out).toContain("NEXT OPEN · 1×");
+    expect(out).toContain("CLOSE · DEFAULT");
   });
 
   it("says the tiers are provisional only while the artifact's provenance counts provisional tiers", () => {

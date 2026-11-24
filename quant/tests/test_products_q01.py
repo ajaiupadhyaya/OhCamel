@@ -167,6 +167,26 @@ def test_q01_feature_panel_reads_the_repaired_series(wh, tmp_path):
     pd.testing.assert_frame_equal(build_features(panel, dates), build_features(clean, dates), check_exact=True)
 
 
+def test_q01_holdout_with_no_finite_trial_sharpe_records_a_failed_dsr_not_a_raise(market, wh, test_cfg, monkeypatch,
+                                                                                  tmp_path):
+    """Completion task 2.4, fix round 1 (M4): expected_max_sharpe now raises on fewer than two finite trial Sharpes.
+    The once-only holdout must not raise mid-evaluation -- a holdout looked at and not recorded is spent -- so its DSR
+    is recorded missing and its gate failed."""
+    import dataclasses
+
+    real = q01.X.run_holdout
+
+    def flat_trials(samples, panel, cfg, sel, threads):
+        return real(samples, panel, cfg, dataclasses.replace(sel, trials=sel.trials.assign(sr_pp=np.nan)), threads)
+
+    monkeypatch.setattr(q01.X, "run_holdout", flat_trials)
+    spec = _run(market, wh, test_cfg, monkeypatch, tmp_path / "jobs.sqlite")
+    h = spec.tables["holdout"].iloc[0]
+    assert np.isnan(h["dsr"]) and h["n_trials"] > 0 and spec.verdict == "FAIL"
+    g = spec.tables["gates"].set_index("gate")
+    assert not bool(g.loc["dsr", "passed"])
+
+
 def test_q01_holdout_is_evaluated_once_and_carried_forward(market, wh, test_cfg, monkeypatch, tmp_path):
     db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
     first = _run(market, wh, test_cfg, monkeypatch, db)

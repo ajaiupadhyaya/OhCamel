@@ -51,8 +51,10 @@ has no route to it at all. Three requests, each signed (jobs/burst.py, SIGNING):
                                    holdout, unchanged: a burst never evaluates the once-only holdout (I2)
   422   schema_mismatch            a table's column names or types are not those of the droplet's newest worker
                                    artifact of the kind (an all-null column matches any type; M3)
-  422   bad_file                   a farm upload's ``ledger`` row without its trial identity; otherwise its trials
-                                   are appended to the droplet's trial ledger (``record_burst_trials``, task 2.4)
+  422   bad_file                   a farm upload's new ``ledger`` row that is not a trial of this deployment's grid,
+                                   not in the upload's own trials table with that Sharpe, or not labelled burst
+                                   (``record_burst_trials``, task 2.4); otherwise its new trials are appended to
+                                   the droplet's trial ledger
   ====  =========================  ===============================================================================
 
   Then the files are written into a fresh staging directory under names from the kind's allow-list and
@@ -700,23 +702,76 @@ def verify_artifact_reads(reads: list[dict[str, Any]], *, db: Path, root: Path, 
 
 
 def record_burst_trials(kind: str, blobs: dict[str, bytes], root: Path) -> int:
-    """Completion task 2.4: a farm run on a burst machine counts on the droplet too. Its artifact's ``ledger`` table
-    (the distinct trials its run knew: the droplet's, mirrored, and its own) is appended to the droplet's trial
-    ledger through ``trial_ledger.append_many``, the function the worker's farm appends with; trials already there
-    add nothing. -> how many were new. Any other kind, or no ledger table: nothing. Done once the upload has passed
-    every check and before it is published: the trials were run whether or not the publish then wins its race, and
-    appending can only add trials -- a larger N deflates more -- so it never loosens a gate. ``ValueError`` for a
-    row without its identity (the door answers 422 bad_file)."""
+    """Completion task 2.4: a farm run on a burst machine counts on the droplet too. -> how many trials were new.
+
+    The upload's ``ledger`` table holds the distinct trials its run knew: the droplet's, mirrored, and its own. A row
+    whose trial the droplet's ledger already holds adds nothing, whatever it says. Every OTHER row must be a trial
+    this deployment's farm can run and this upload ran, or the whole upload is refused (``ValueError``; the door
+    answers 422 bad_file) and nothing is appended:
+
+    * its cell is one of ``farm_cells()``, its ``grid_version`` is ``grid_version(strategy_grid(spec))`` of that
+      cell's strategy, and its ``params_hash`` is the hash of one of that grid's combinations;
+    * the upload's own ``trials`` table holds that trial with the same ``sr_pp`` (and ``n_obs``) -- the Sharpe the
+      run's leaderboard was deflated with;
+    * it says ``source: burst`` -- a burst cannot add a row labelled as the worker's.
+
+    The new rows are then appended through ``trial_ledger.append_many`` (the function the worker's farm appends
+    with) as ``source: burst`` with the door's own ``recorded_at``. Why so strict: the ledger is permanent, and its
+    Sharpes set V[SR] as well as N -- trials added near the mean shrink V faster than they raise
+    ``Phi^-1(1 - 1/N)``, which LOWERS the DSR's benchmark -- so a row that is not a trial this code ran could loosen
+    every farm gate. Any other kind, or no ledger table: nothing."""
     raw = blobs.get("ledger")
     if kind != "farm.sweep" or not raw:
         return 0
     import io
 
+    import numpy as np
     import pandas as pd
 
+    from ..backtest.strategies import STRATEGIES
+    from ..backtest.validation import param_grid
     from ..models import trial_ledger as L
+    from ..models.farm import GRID_MAX, cell_id, farm_cells, strategy_grid
+    from ..signals.contract import params_hash
 
-    return L.append_many(L.ledger_path(root), pd.read_parquet(io.BytesIO(raw)), source=B.HOST)
+    path = L.ledger_path(root)
+    up = pd.read_parquet(io.BytesIO(raw))
+    missing = [c for c in (*L.IDENTITY, "sharpe", "n_obs", "source") if c not in up.columns]
+    if missing:
+        raise ValueError(f"the ledger table has no {', '.join(missing)} column")
+    have = {tuple(r) for r in L.distinct(path)[list(L.IDENTITY)].itertuples(index=False)}
+    new = up[[tuple(r) not in have for r in up[list(L.IDENTITY)].itertuples(index=False)]]
+    if new.empty:
+        return 0
+    trials = pd.read_parquet(io.BytesIO(blobs["trials"])) if blobs.get("trials") else pd.DataFrame()
+    if not {*L.IDENTITY, "sr_pp", "n_obs"} <= set(trials.columns):
+        raise ValueError("new trials, but the upload's trials table does not carry their identities")
+    ran = {tuple(r[:3]): (r[3], r[4]) for r in
+           trials[[*L.IDENTITY, "sr_pp", "n_obs"]].itertuples(index=False)}
+    grids: dict[str, tuple[str, set[str]]] = {}
+    for s, u in farm_cells():
+        g = strategy_grid(STRATEGIES[s])
+        grids[cell_id(s, u)] = (L.grid_version(g), {params_hash(c) for c in param_grid(g, GRID_MAX)} if g else set())
+
+    def same(a: Any, b: Any) -> bool:
+        fa, fb = float(a), float(b)
+        return (np.isnan(fa) and np.isnan(fb)) or fa == fb
+
+    for r in new.itertuples(index=False):
+        key = (r.cell_id, r.grid_version, r.params_hash)
+        if r.cell_id not in grids:
+            raise ValueError(f"{r.cell_id!r} is not a farm cell of this deployment")
+        version, hashes = grids[r.cell_id]
+        if r.grid_version != version or r.params_hash not in hashes:
+            raise ValueError(f"{r.cell_id} trial {str(r.params_hash)[:20]} (grid {r.grid_version}) is not in this "
+                             f"deployment's grid {version}")
+        if r.source != B.HOST:
+            raise ValueError(f"a new {r.cell_id} trial says source {r.source!r}; a burst's own trials are 'burst'")
+        if key not in ran or not same(ran[key][0], r.sharpe) or pd.isna(r.n_obs) or int(ran[key][1]) != int(r.n_obs):
+            raise ValueError(f"{r.cell_id} trial {str(r.params_hash)[:20]} is not in the upload's trials table with "
+                             "that Sharpe and n_obs")
+    rows = new[[*L.IDENTITY, "sharpe", "n_obs"]]          # the door's own recorded_at and source
+    return L.append_many(path, rows, source=B.HOST)
 
 
 def _published(conn: Any, job: Any) -> dict[str, Any] | None:

@@ -110,19 +110,94 @@ def test_grid_version_is_the_grid_and_only_the_grid():
     assert L.grid_version({}) != L.grid_version(g)
 
 
-def test_a_burst_farm_upload_appends_its_trials_to_the_droplets_ledger(tmp_path):
-    """Completion task 3.7's burst door publishes farm artifacts made off the droplet: their trials reach the same
-    ledger through the same function; any other kind leaves it alone."""
+def _burst_blobs(rows: list[dict], trials: list[dict]) -> dict[str, bytes]:
+    out = {}
+    for name, recs in (("ledger", rows), ("trials", trials)):
+        buf = io.BytesIO()
+        pd.DataFrame(recs).to_parquet(buf)
+        out[name] = buf.getvalue()
+    return out
+
+
+def _real_trials(n: int = 4):
+    """``n`` trials of a real farm cell: its grid's version and its combinations' params hashes."""
+    from ohcamel_quant.backtest.strategies import STRATEGIES
+    from ohcamel_quant.backtest.validation import param_grid
+    from ohcamel_quant.models.farm import GRID_MAX, cell_id, farm_cells, strategy_grid
+    from ohcamel_quant.signals.contract import params_hash
+
+    s, u = farm_cells()[0]
+    g = strategy_grid(STRATEGIES[s])
+    combos = param_grid(g, GRID_MAX)[:n]
+    ledger = [{"cell_id": cell_id(s, u), "grid_version": L.grid_version(g), "params_hash": params_hash(c),
+               "sharpe": 0.01 * (i + 1), "n_obs": 1500, "recorded_at": "2020-01-01T00:00:00+00:00", "source": "burst"}
+              for i, c in enumerate(combos)]
+    trials = [{"cell_id": r["cell_id"], "combo": i, "sr_pp": r["sharpe"], "grid_version": r["grid_version"],
+               "params_hash": r["params_hash"], "n_obs": 1500} for i, r in enumerate(ledger)]
+    return ledger, trials
+
+
+def test_a_burst_farm_upload_appends_its_own_trials_to_the_droplets_ledger(tmp_path):
+    """Completion task 2.4's burst door: a farm artifact made off the droplet reaches the same ledger through the same
+    function, as source burst with the door's own clock; trials the droplet holds add nothing; other kinds nothing."""
     from ohcamel_quant.jobs import burst_door as D
 
-    src = tmp_path / "burst.jsonl"
-    for i in range(4):
-        L.append(src, "c@u", "g9", f"sha256:{i}", 0.01 * i, 1200, source="burst")
-    buf = io.BytesIO()
-    L.distinct(src).to_parquet(buf)
+    ledger, trials = _real_trials()
     root = tmp_path / "artifacts"
-    L.append(L.ledger_path(root), "c@u", "g9", "sha256:0", 0.0, 1200)   # the droplet already had one of them
-    assert D.record_burst_trials("risk.mc_atlas", {"ledger": buf.getvalue()}, root) == 0
+    r0 = ledger[0]
+    L.append(L.ledger_path(root), r0["cell_id"], r0["grid_version"], r0["params_hash"], 0.0, 1200)
+    blobs = _burst_blobs(ledger, trials)
+    assert D.record_burst_trials("risk.mc_atlas", blobs, root) == 0
     assert D.record_burst_trials("farm.sweep", {"cells": b""}, root) == 0
-    assert D.record_burst_trials("farm.sweep", {"ledger": buf.getvalue()}, root) == 3
-    assert len(L.distinct(L.ledger_path(root))) == 4
+    assert D.record_burst_trials("farm.sweep", blobs, root) == 3
+    got = L.distinct(L.ledger_path(root))
+    assert len(got) == 4 and list(got["source"]) == ["worker", "burst", "burst", "burst"]
+    assert not (got["recorded_at"] == "2020-01-01T00:00:00+00:00").any()     # the door's clock, not the upload's
+    assert D.record_burst_trials("farm.sweep", blobs, root) == 0
+
+
+@pytest.mark.parametrize("how", ["outside_grid", "other_cell", "sharpe_differs", "not_in_trials", "says_worker"])
+def test_a_burst_ledger_row_that_is_not_a_trial_it_ran_refuses_the_whole_upload(tmp_path, how):
+    from ohcamel_quant.jobs import burst_door as D
+
+    ledger, trials = _real_trials()
+    bad = dict(ledger[1])
+    if how == "outside_grid":
+        bad["params_hash"] = "sha256:" + "0" * 64
+        trials[1]["params_hash"] = bad["params_hash"]
+    elif how == "other_cell":
+        bad["cell_id"] = "made_up@nowhere"
+        trials[1]["cell_id"] = bad["cell_id"]
+    elif how == "sharpe_differs":
+        bad["sharpe"] = 0.0
+    elif how == "not_in_trials":
+        trials = trials[:1]
+    else:
+        bad["source"] = "worker"
+    ledger[1] = bad
+    root = tmp_path / "artifacts"
+    with pytest.raises(ValueError):
+        D.record_burst_trials("farm.sweep", _burst_blobs(ledger, trials), root)
+    assert L.distinct(L.ledger_path(root)).empty                          # nothing appended, not even the good rows
+
+
+def test_two_processes_appending_at_once_lose_nothing_and_double_nothing(tmp_path):
+    """M5: the lock makes read-check-append one step across processes."""
+    import multiprocessing as mp
+
+    p = tmp_path / "trials.jsonl"
+    ctx = mp.get_context("spawn")
+    procs = [ctx.Process(target=_append_range, args=(str(p), lo)) for lo in (0, 100, 0, 100)]
+    for q in procs:
+        q.start()
+    for q in procs:
+        q.join(60)
+        assert q.exitcode == 0
+    d = L.distinct(p)
+    assert len(d) == 300 and p.read_text().count("\n") == 300            # 0..299 once each, every line whole
+
+
+def _append_range(path: str, lo: int) -> None:
+    for i in range(lo, lo + 200, 10):
+        L.append_many(path, [{"cell_id": "c@u", "grid_version": "g1", "params_hash": f"sha256:{j}", "sharpe": 0.0,
+                              "n_obs": 1} for j in range(i, i + 10)])

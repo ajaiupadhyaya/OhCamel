@@ -95,6 +95,31 @@ EXECUTION_NOTES = [
     "the backtest engine fills at the close of d+1 (execution_lag=1); the desk fills at the open of d+1 by "
     "market-on-open: the farm's fill price is not the desk's",
 ]
+
+
+def execution_notes(cells: list[Cell], farm: pd.DataFrame | None) -> list[str]:
+    """What the run's farm verdicts were earned under, read from each cell's own farm row (completion task 2.4, fix
+    round 1): a row with ``fill == "open"`` and ``max_gross == 1`` was scored at the configuration the desk trades;
+    any other row -- one scored before task 2.4, or no row -- was scored as ``EXECUTION_NOTES`` says, and the run
+    says how many of each, so neither statement is false while the farm re-scores its cells."""
+    from ..models.farm import cell_id
+
+    traded = 0
+    if farm is not None and len(farm) and "cell_id" in farm.columns:
+        rows = farm.drop_duplicates("cell_id", keep="last").set_index("cell_id")
+        for c in cells:
+            cid = cell_id(str(c.strategy), str(c.universe))
+            if cid in rows.index and rows.loc[cid].get("fill") == "open" \
+                    and _num(rows.loc[cid].get("max_gross")) == 1.0:
+                traded += 1
+    n = len(cells)
+    if not n:
+        return []
+    said = (f"{traded} of {n} cells' farm verdicts were earned at gross 1, filled at the open of d+1 -- the "
+            "configuration the desk trades")
+    return [said] if traded == n else [said + f"; the other {n - traded}:", *EXECUTION_NOTES]
+
+
 # ``data_source``: what a written document's data_hash covers -- "warehouse", or "providers: <sources>" when the
 # warehouse could not serve the strategy's closes (the run's notes then say why). The v1 document has no field
 # for it (the schema is closed), so the artifact's row is where it is recorded.
@@ -229,8 +254,10 @@ def validation_for(cell: Cell, farm_cells: pd.DataFrame | None, *, manifest: str
 
 # ------------------------------------------------------------------- the inputs
 def _inputs(cell: Cell, ctx: Any) -> tuple[pd.DataFrame, pd.Series | None, pd.Series | None, list[Any]]:
-    """Prices, rf and market exactly as products/farm.py's ``run_cell`` builds them, and the prices'
-    provenance (which says whether the warehouse or the providers served them)."""
+    """Closes, rf and market as products/farm.py's ``run_cell`` reads them (the warehouse first; rf filled with 0;
+    SPY when the strategy needs the market), and the prices' provenance (which says whether the warehouse or the
+    providers served them). One difference: ``run_cell`` also drops a session on which some name has no open print,
+    since the farm fills at the open (completion task 2.4); this keeps it, as the desk decides on closes."""
     from ..backtest.strategies import get_strategy
     from ..data.base import DataUnavailable
 
@@ -570,7 +597,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                   f"size the last), {n['held']} held, {n['already_present']} already present, "
                   f"{len(refused)} refused; parameters frozen for the month (INC-01); documents only on each "
                   "strategy's own decision sessions; validation from the newest farm verdict when it tested "
-                  "the frozen parameters", *run_notes, *EXECUTION_NOTES],
+                  "the frozen parameters", *run_notes, *execution_notes(todo, farm)],
                  provenance=[{"source": "farm.sweep", "artifact": farm_id},
                              _costs_provenance(),
                              {"source": FREEZE_KIND, "artifact": freeze_id(_today())},

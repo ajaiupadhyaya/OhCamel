@@ -287,6 +287,19 @@ class Holdout:
     verdict: Verdict
 
 
+def holdout_dsr(sr: float, n: int, skew: float, kurt: float, trial_srs: np.ndarray) -> float:
+    """The holdout's DSR against the selection's trials; NaN -- recorded, and its gate failed -- when they hold fewer
+    than two trials or fewer than two finite Sharpes, where ``expected_max_sharpe`` raises (completion task 2.4). The
+    once-only evaluation must never raise part-way: a holdout looked at and not recorded is spent."""
+    t = np.asarray(trial_srs, dtype=float)
+    fin = t[np.isfinite(t)]
+    var = float(np.var(fin, ddof=1)) if fin.size > 1 else float("nan")
+    try:
+        return M.deflated_sharpe(sr, n, skew, kurt, int(t.size), var)["dsr"]
+    except ValueError:
+        return float("nan")
+
+
 def run_holdout(samples: pd.DataFrame, panel: Panel, cfg: Q01Config, sel: Selection, threads: int) -> Holdout:
     sessions = panel.adj_close.index
     labelled = samples.dropna(subset=["ret"]).index.get_level_values("date").max()
@@ -301,7 +314,7 @@ def run_holdout(samples: pd.DataFrame, panel: Panel, cfg: Q01Config, sel: Select
     sr = M.sharpe_per_period(net)
     sk, ku = M.moments(net)
     trial_srs = sel.trials["sr_pp"].to_numpy(dtype=float)
-    dsr = M.deflated_sharpe(sr, len(net), sk, ku, len(trial_srs), float(np.nanvar(trial_srs, ddof=1)))["dsr"]
+    dsr = holdout_dsr(sr, len(net), sk, ku, trial_srs)
     boot = bootstrap_sharpe(net, None, reps=1000, alpha=0.10, use_kernels=True, threads=threads)
     if net.index.min() < cfg.holdout_start:
         raise AssertionError("a holdout return is dated before holdout_start")

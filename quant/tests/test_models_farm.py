@@ -97,3 +97,14 @@ def test_a_trial_without_a_sharpe_is_still_a_trial():
 def test_farm_dsr_with_fewer_than_two_trials_is_missing_not_the_psr():
     row = pd.DataFrame([{"sr_pp": 0.06, "n": 1500, "skew": 0.0, "kurt": 3.0}])
     assert farm_dsr(row, _ledger(1)).isna().all() and farm_dsr(row, _ledger(0)).isna().all()
+
+
+def test_the_traded_configuration_is_counted_from_each_row():
+    """Fix round 1 (M2): rows scored before completion task 2.4 carry no fill; the farm's note counts, never claims."""
+    from ohcamel_quant.models.farm import traded_configuration
+
+    cells = pd.DataFrame([{"status": "ok", "fill": "open", "max_gross": 1.0}, {"status": "ok"},
+                          {"status": "skipped", "fill": "open", "max_gross": 1.0}])
+    assert traded_configuration(cells) == (1, 2)
+    assert traded_configuration(pd.DataFrame([{"status": "ok"}])) == (0, 1)
+    assert traded_configuration(pd.DataFrame()) == (0, 0)

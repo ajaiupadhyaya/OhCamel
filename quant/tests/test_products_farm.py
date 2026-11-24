@@ -102,6 +102,8 @@ def test_incremental_run_carries_cells_forward_and_respects_the_budget(market, t
     assert led == [{"source": "trial-ledger", "path": "trial_ledger.jsonl", "distinct_trials": 0,
                     "carried_unledgered": 16}]
     assert "16 trials" in spec.notes[0]
+    assert "1 of 1 scored cells at gross 1" in spec.notes[0] and "await a re-run" not in spec.notes[0]
+    assert spec.tables["leaderboard"][["fill", "max_gross"]].iloc[0].tolist() == ["open", 1.0]
     assert spec.tables["cells"]["cell_id"].tolist() == [row["cell_id"]]
     assert spec.tables["leaderboard"]["verdict"].iloc[0] in ("PASS", "FAIL")
     assert spec.verdict == spec.tables["leaderboard"]["verdict"].iloc[0]

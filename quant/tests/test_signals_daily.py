@@ -749,3 +749,21 @@ def test_a_provider_served_read_is_the_frame_hashed_and_says_so(tmp_path, monkey
         panel, _ = readers.bars_panel(con, ["SPY"], None, None, field="volume")
     assert (panel["SPY"].loc[px.index] != bars["volume"]).any()
     assert hashes[0] != data_hash(_raw_rows(wh, ["SPY"], px.index))   # not the warehouse's rows
+
+
+def test_the_execution_notes_say_what_each_cells_farm_row_was_scored_at():
+    """Completion task 2.4, fix round 1 (M2): the farm re-scores its cells at gross 1 and the next open over several
+    nights; the run counts which verdicts were earned that way, from each row, and keeps the old caveat for the rest."""
+    from ohcamel_quant.signals.roster import Cell
+
+    cells = [Cell(f"farm_{s}", "signals.daily", s, "sectors", ("XLK", "XLF"), 0.025) for s in ("xsmom", "low_beta")]
+    new = {"fill": "open", "max_gross": 1.0}
+    both = pd.DataFrame([{"cell_id": "xsmom@sectors", **new}, {"cell_id": "low_beta@sectors", **new}])
+    assert daily.execution_notes(cells, both) == [
+        "2 of 2 cells' farm verdicts were earned at gross 1, filled at the open of d+1 -- the configuration the desk "
+        "trades"]
+    one = pd.DataFrame([{"cell_id": "xsmom@sectors", **new}, {"cell_id": "low_beta@sectors"}])
+    notes = daily.execution_notes(cells, one)
+    assert notes[0].startswith("1 of 2 cells'") and notes[0].endswith("the other 1:")
+    assert notes[1:] == daily.EXECUTION_NOTES
+    assert daily.execution_notes(cells, None)[1:] == daily.EXECUTION_NOTES and daily.execution_notes([], one) == []

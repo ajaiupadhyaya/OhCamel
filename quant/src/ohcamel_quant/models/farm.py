@@ -111,6 +111,22 @@ def _num(v: Any) -> float:
     return f if math.isfinite(f) else float("nan")
 
 
+def _text(v: Any) -> str | None:
+    return v if isinstance(v, str) else None
+
+
+def traded_configuration(cells: pd.DataFrame) -> tuple[int, int]:
+    """``(scored at the traded configuration, scored)``: how many ok cells carry ``fill == "open"`` and
+    ``max_gross == 1`` (completion task 2.4) of all ok cells; the rest were scored before it and await a re-run."""
+    if not len(cells) or "status" not in cells.columns:
+        return 0, 0
+    ok = cells[cells["status"] == "ok"]
+    fill = ok["fill"] if "fill" in ok.columns else pd.Series(None, index=ok.index, dtype=object)
+    gross = pd.to_numeric(ok["max_gross"], errors="coerce") if "max_gross" in ok.columns else pd.Series(
+        np.nan, index=ok.index)
+    return int(((fill == "open") & (gross == 1.0)).sum()), len(ok)
+
+
 def _cost_curve(raw: Any) -> list[dict[str, Any]] | None:
     """The cell's stored 0/5/15/30 bps curve (JSON records); None when absent or unreadable."""
     if not isinstance(raw, str):
@@ -139,6 +155,8 @@ def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trials: pd.DataFrame
                      "holdout_return": r.holdout_return, "boot_lo5": r.boot_lo5, "pbo": r.pbo, "spa_p": r.spa_p,
                      "n_combos": r.n_combos, "selected_params": r.selected_params, "data_asof": r.data_asof,
                      "ran_at": r.ran_at,
+                     # the configuration the row was scored at (task 2.4); None on a row from before it
+                     "fill": _text(getattr(r, "fill", None)), "max_gross": _num(getattr(r, "max_gross", None)),
                      # a cell carried forward from before the cost file has none: NaN, never a made-up figure
                      **{k: _num(getattr(r, k, None)) for k in extra}})
     return pd.DataFrame(rows).sort_values(["dsr_farm"], ascending=False, na_position="last").reset_index(drop=True)
