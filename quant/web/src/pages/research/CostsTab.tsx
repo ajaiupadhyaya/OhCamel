@@ -33,7 +33,7 @@ function parseBps(text: string, cap: number): { values: number[]; error: string 
 }
 
 export function CostsTab({ base, cap }: { base: BaseBody | null; cap: number }) {
-  const [text, setText] = useState(() => [...new Set([...DEFAULT_BPS, base?.cost_bps ?? 5])].sort((a, b) => a - b).join(", "));
+  const [text, setText] = useState(() => [...new Set([...DEFAULT_BPS, ...(finite(base?.cost_bps) ? [base.cost_bps] : [])])].sort((a, b) => a - b).join(", "));
   const parsed = parseBps(text, cap);
   const [submitted, setSubmitted] = useState<number[]>(parsed.values);
   const body = base ? { ...base, bps: submitted } : null;
@@ -65,7 +65,7 @@ export function CostsTab({ base, cap }: { base: BaseBody | null; cap: number }) 
             items={[
               { k: "LEVELS", v: `${parsed.values.length} / ${cap}` },
               parsed.error ? { k: "INPUT", v: parsed.error, tone: "loss" } : null,
-              { k: "YOURS", v: finite(yours) ? `${fmtNum(yours, 0)} BP` : "—" },
+              { k: "YOURS", v: finite(yours) ? `${fmtNum(yours, 0)} BP` : "BY TIER · COST FILE" },
               { k: "CHARTER", v: CHARTER.costs.join(" / ") + " BP" },
               changed && !parsed.error && { k: "INPUTS", v: "CHANGED", tone: "loss" },
             ]}

@@ -52,6 +52,34 @@ def test_catalog(bt_client):
     assert j["caps"]["grid_combinations"] == 64 and j["caps"]["bootstrap_reps"] == 1000
 
 
+def test_the_public_costs_default_to_the_one_cost_file(bt_client):
+    """Completion task 2.3, fix round 1 (I1): with no cost, borrow or financing given, a public run pays each ticker's
+    tier half-spread and the file's borrow and financing; the catalog reports what the file says; a number given
+    overrides it."""
+    from ohcamel_quant.backtest import costs
+
+    m = costs.load()
+    d = bt_client.get("/api/backtest/strategies").json()["engine_defaults"]
+    assert d["cost_bps"] is None and d["borrow_bps"] == m.borrow_bps and d["financing_bps"] == m.financing_spread_bps
+    assert d["costs_file"] == "research/config/costs.yaml" and d["ticker_tiers"]["UNG"] == 3
+    assert d["tiers_bps"] == {"1": 1.0, "2": 3.0, "3": 8.0}
+    body = {"strategy": "buy_and_hold", "tickers": ["SPY", "TLT"], "bootstrap_reps": 100}
+    eng = bt_client.post("/api/backtest/run", json=body).json()["method"]["engine"]
+    assert eng["half_spread_bps"] == {"SPY": 1.0, "TLT": 3.0}
+    assert eng["borrow_bps_per_year"] == 50.0 and eng["financing_bps_per_year_over_rf_on_gross_above_1"] == 50.0
+    assert eng["cost_source"]["half_spread"].startswith("research/config/costs.yaml")
+    mine = bt_client.post("/api/backtest/run", json={**body, "cost_bps": 7.0, "borrow_bps": 10.0,
+                                                     "financing_bps": 0.0}).json()["method"]["engine"]
+    assert mine["half_spread_bps"] == {"SPY": 7.0, "TLT": 7.0} and mine["borrow_bps_per_year"] == 10.0
+    assert mine["financing_bps_per_year_over_rf_on_gross_above_1"] == 0.0
+    assert mine["cost_source"]["half_spread"] == "cost_bps (yours)"
+
+
+def test_a_ticker_with_no_cost_tier_and_no_cost_is_a_422_naming_it(bt_client):
+    r = bt_client.post("/api/backtest/run", json={"strategy": "buy_and_hold", "tickers": ["SPY", "AAPL"]})
+    assert r.status_code == 422 and "AAPL" in r.json()["detail"] and "cost_bps" in r.json()["detail"]
+
+
 def test_run_tsmom(bt_client):
     r = bt_client.post("/api/backtest/run", json={"strategy": "tsmom", "tickers": NINE, "bootstrap_reps": 200})
     assert r.status_code == 200, r.text
@@ -97,8 +125,11 @@ def test_run_errors(bt_client):
     assert bt_client.post("/api/backtest/run", json={"strategy": "nope", "tickers": NINE}).status_code == 422
     r = bt_client.post("/api/backtest/run", json={"strategy": "tsmom", "tickers": NINE, "params": {"lookback": 9999}})
     assert r.status_code == 422
-    r = bt_client.post("/api/backtest/run", json={"strategy": "tsmom", "tickers": ["NOTATICKER"]})
+    # task 2.3: with a cost given, an unknown ticker is a data failure; with none, it has no cost tier first (422)
+    r = bt_client.post("/api/backtest/run", json={"strategy": "tsmom", "tickers": ["NOTATICKER"], "cost_bps": 5.0})
     assert r.status_code == 503
+    r = bt_client.post("/api/backtest/run", json={"strategy": "tsmom", "tickers": ["NOTATICKER"]})
+    assert r.status_code == 422 and "NOTATICKER" in r.json()["detail"]
     r = bt_client.post("/api/backtest/run", json={"strategy": "tsmom", "tickers": NINE, "execution_lag": 0})
     assert r.status_code == 422
 

@@ -89,6 +89,13 @@ def test_incremental_run_carries_cells_forward_and_respects_the_budget(market, t
     assert spec.tables["leaderboard"]["verdict"].iloc[0] in ("PASS", "FAIL")
     assert spec.verdict == spec.tables["leaderboard"]["verdict"].iloc[0]
     assert spec.verdict_detail.startswith(("0 PASS", "1 PASS")) and is_label(spec.verdict_detail)
+    # fix round 1 (M2): the page says "provisional" from this count, so the word goes when the owner measures
+    from ohcamel_quant.backtest import costs
+
+    m = costs.load()
+    assert [p for p in spec.provenance if p.get("source") == "costs"] == [
+        {"source": "costs", "path": "research/config/costs.yaml", "version": m.version, "tiers": 42,
+         "provisional_tiers": sum(1 for t in m.tickers if m.source(t) == "provisional")}]
 
 
 def test_leaderboard_cost_gate_reads_the_cells_cost_curve(cell):

@@ -59,7 +59,7 @@ def farm_dsr(cells: pd.DataFrame, trial_srs: np.ndarray) -> pd.Series:
                       for r in cells.itertuples()], index=cells.index, dtype=float)
 
 
-def cost_columns() -> tuple[str, ...]:
+def leaderboard_cost_columns() -> tuple[str, ...]:
     """The leaderboard's cost columns (completion task 2.3): one-way annual turnover and capacity of the out-of-sample
     path, and its Sharpe at each of the cost file's half-spread multiples (``sr_at_0x`` ... ``sr_at_6x``)."""
     from ..backtest import costs
@@ -91,7 +91,7 @@ def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trial_srs: np.ndarra
     if ok.empty:
         return pd.DataFrame(columns=["cell_id", "verdict", "detail", "dsr_farm"])
     ok["dsr_farm"] = farm_dsr(ok, trial_srs)
-    extra = cost_columns()
+    extra = leaderboard_cost_columns()
     rows = []
     for r in ok.itertuples():
         reg = regimes[regimes["cell_id"] == r.cell_id]

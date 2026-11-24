@@ -85,6 +85,8 @@ def _targets(px: pd.DataFrame, rows: dict[int, dict[str, float]]) -> pd.DataFram
 
 
 def test_a_ung_round_trip_pays_8bp_a_leg_on_the_traded_notional():
+    """8 bp is UNG's tier-3 half-spread, paid on every fill (spec, "Costs."): a round trip of the whole book crosses it
+    twice, about 16 bp of NAV; a round trip of half the book costs 8 bp of NAV."""
     px = _flat()
     cfg = EngineConfig(rebalance="signal")
     whole = run_weights(px, _targets(px, {0: {"UNG": 1.0}, 10: {"UNG": 0.0}}), cfg)

@@ -8,7 +8,7 @@ vi.mock("../../charts/theme", async (orig) => ({
   useChartTheme: () => new Proxy({}, { get: () => "" }),
 }));
 import { ThemeProvider } from "../../lib/theme";
-import { FarmBoard } from "./Farm";
+import { FarmBoard, costsSource, sweepRows } from "./Farm";
 import { ModelsReport } from "./Models";
 import type { FarmBoardRow, FarmCellRow, GateRow, HoldoutRow, RegimeRow } from "./types";
 
@@ -71,6 +71,21 @@ describe("FarmBoard (P4 leaderboard)", () => {
     expect(out).toContain("6×");
     expect(out).toContain("0.20");
     expect(html).toContain("NO SPREAD SWEEP"); // the fixture rows predate the cost file
+  });
+
+  it("reads the sweep's multiples from the row, so a changed sweep in the cost file renders, never blanks", () => {
+    expect(sweepRows({ ...board[0], sr_at_0x: 0.5, sr_at_2x: 0.3, sr_at_10x: -0.2 }).map((r) => [r.mult, r.sharpe])).toEqual([[0, 0.5], [2, 0.3], [10, -0.2]]);
+    const out = render(<FarmBoard board={[{ ...board[0], sr_at_0x: 0.5, sr_at_2x: 0.31 }]} cells={cells} regimes={regimes} names={{}} />);
+    expect(out).toContain("2×");
+    expect(out).toContain("0.31");
+  });
+
+  it("says the tiers are provisional only while the artifact's provenance counts provisional tiers", () => {
+    const prov = (n: number) => ({ provenance: [{ source: "costs", fetched_at: "", path: "research/config/costs.yaml", version: "1.0.0", tiers: 42, provisional_tiers: n }] });
+    expect(costsSource(prov(42))).toContain("42 of 42 tiers provisional");
+    expect(costsSource(prov(0))).toContain("every tier measured");
+    expect(costsSource(prov(0))).not.toContain("provisional");
+    expect(costsSource(null)).toBe("research/config/costs.yaml");
   });
 });
 

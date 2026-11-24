@@ -44,21 +44,40 @@ function FarmTables({ m, names }: { m: Manifest; names: Record<string, string> }
   const regimes = useTable<RegimeRow>(KINDS.farm, m, "regimes");
   if (board.block) return <>{board.block}</>;
   if (cells.block) return <>{cells.block}</>;
-  return <FarmBoard board={board.rows ?? []} cells={cells.rows ?? []} regimes={regimes.rows ?? []} names={names} />;
+  return <FarmBoard board={board.rows ?? []} cells={cells.rows ?? []} regimes={regimes.rows ?? []} names={names} costs={costsSource(m)} />;
 }
 
-/** Where the cost figures come from: the one cost file (completion task 2.3). */
-const COSTS_SOURCE = "research/config/costs.yaml — half-spread by tier, borrow, financing; tiers provisional until measured";
-const SWEEP = [0, 1, 3, 6] as const;
+/** Where the cost figures come from: the one cost file (completion task 2.3), as the artifact's provenance names
+ *  it -- its version, and how many of its tiers are provisional, so the word goes when the owner measures them. */
+export function costsSource(m: Pick<Manifest, "provenance"> | null | undefined): string {
+  const p = (m?.provenance ?? []).find((r) => r.source === "costs") as Record<string, unknown> | undefined;
+  if (!p) return "research/config/costs.yaml";
+  const prov = typeof p.provisional_tiers === "number" ? p.provisional_tiers : null;
+  const total = typeof p.tiers === "number" ? p.tiers : null;
+  const head = `${String(p.path ?? "research/config/costs.yaml")} v${String(p.version ?? "?")} — half-spread by tier, borrow, financing`;
+  if (prov === null || total === null) return head;
+  return prov > 0 ? `${head}; ${prov} of ${total} tiers provisional (a stated rule, not yet measured on quotes)` : `${head}; every tier measured`;
+}
+
 interface SweepRow {
   mult: number;
   sharpe: number | null;
 }
 
+/** The half-spread multiples a row carries (its ``sr_at_<m>x`` columns), in order: whatever the cost file's sweep was. */
+export function sweepRows(row: FarmBoardRow): SweepRow[] {
+  const out: SweepRow[] = [];
+  for (const [k, v] of Object.entries(row)) {
+    const hit = /^sr_at_(\d+(?:\.\d+)?)x$/.exec(k);
+    if (hit) out.push({ mult: Number(hit[1]), sharpe: typeof v === "number" && Number.isFinite(v) ? v : null });
+  }
+  return out.sort((a, b) => a.mult - b.mult);
+}
+
 const verdictClass = (v: string | null | undefined) => (v === "FAIL" ? "sl-v sl-v-fail" : v === "PASS" ? "sl-v" : "sl-v sl-v-dim");
 const universeLabel = (u: string | null | undefined) => (u ? u.replace(/_/g, " ").toUpperCase() : "—");
 
-export function FarmBoard({ board, cells, regimes, names }: { board: FarmBoardRow[]; cells: FarmCellRow[]; regimes: RegimeRow[]; names: Record<string, string> }) {
+export function FarmBoard({ board, cells, regimes, names, costs = costsSource(null) }: { board: FarmBoardRow[]; cells: FarmCellRow[]; regimes: RegimeRow[]; names: Record<string, string>; costs?: string }) {
   const [sel, setSel] = useState<string | null>(null);
   const counts = farmCounts(board, cells);
   const active = board.find((r) => r.cell_id === sel) ?? board[0];
@@ -76,8 +95,8 @@ export function FarmBoard({ board, cells, regimes, names }: { board: FarmBoardRo
     { key: "boot_lo5", label: "Boot lo 5%", numeric: true, hideBelow: 1200, format: (v) => fmtNum(v, 2), color: "sign", info: { text: "Lower 5th percentile of the stationary-bootstrap Sharpe. Gate > 0." } },
     { key: "pbo", label: "PBO", numeric: true, hideBelow: 900, format: (v) => fmtNum(v, 2), info: { text: `CSCV probability of backtest overfitting, S = 16. Reported; > ${fmtNum(CHARTER.pboHigh, 1)} is marked high.` } },
     { key: "spa_p", label: "SPA p", numeric: true, hideBelow: 1200, format: (v) => fmtNum(v, 3), info: { text: "Hansen's SPA p-value against equal-weight buy-and-hold. Reported." } },
-    { key: "turnover", label: "Turnover", numeric: true, hideBelow: 1200, format: (v) => fmtNum(v, 1), info: { text: "One-way turnover a year (Σ|Δw|) along the out-of-sample record, fold switches included.", reference: COSTS_SOURCE } },
-    { key: "capacity_usd", label: "Capacity", numeric: true, hideBelow: 900, format: (v) => fmtCurrency(v as number | null, { compact: true }), info: { text: "Capital at which the largest out-of-sample trade is 1% of its name's 20-session median dollar volume. Blank: no volume history for a trade.", reference: COSTS_SOURCE } },
+    { key: "turnover", label: "Turnover", numeric: true, hideBelow: 1200, format: (v) => fmtNum(v, 1), info: { text: "One-way turnover a year (Σ|Δw|) along the out-of-sample record, fold switches included.", reference: costs } },
+    { key: "capacity_usd", label: "Capacity", numeric: true, hideBelow: 900, format: (v) => fmtCurrency(v as number | null, { compact: true }), info: { text: "Capital at which the largest out-of-sample trade is 1% of its name's 20-session median dollar volume. Blank: no volume history for a trade.", reference: costs } },
     { key: "failed", label: "Failed", value: (r) => failedGates(r.detail).length, render: (r) => <FailedCell detail={r.detail} /> },
   ];
 
@@ -114,7 +133,7 @@ export function FarmBoard({ board, cells, regimes, names }: { board: FarmBoardRo
         <Absent reason="NO CELL RAN" source={`${KINDS.farm} · leaderboard`} />
       )}
 
-      {active && <CellDetail row={active} cell={cells.find((c) => c.cell_id === active.cell_id)} regimes={regimes.filter((r) => r.cell_id === active.cell_id)} name={nameOf(active.strategy)} />}
+      {active && <CellDetail row={active} cell={cells.find((c) => c.cell_id === active.cell_id)} regimes={regimes.filter((r) => r.cell_id === active.cell_id)} name={nameOf(active.strategy)} costsRef={costs} />}
 
       {skipped.length > 0 && (
         <div>
@@ -148,12 +167,9 @@ function FailedCell({ detail }: { detail: string | null }) {
   );
 }
 
-function CellDetail({ row, cell, regimes, name }: { row: FarmBoardRow; cell?: FarmCellRow; regimes: RegimeRow[]; name: string }) {
+function CellDetail({ row, cell, regimes, name, costsRef }: { row: FarmBoardRow; cell?: FarmCellRow; regimes: RegimeRow[]; name: string; costsRef: string }) {
   const costs = costRows(cell?.cost_curve);
-  const sweep: SweepRow[] = SWEEP.map((m) => {
-    const v = row[`sr_at_${m}x` as keyof FarmBoardRow];
-    return { mult: m, sharpe: typeof v === "number" && Number.isFinite(v) ? v : null };
-  });
+  const sweep = sweepRows(row);
   return (
     <div>
       <Readline
@@ -206,7 +222,7 @@ function CellDetail({ row, cell, regimes, name }: { row: FarmBoardRow; cell?: Fa
             <DataTable<SweepRow>
               columns={[
                 { key: "mult", label: "×", numeric: true, format: (v) => `${fmtNum(v, 0)}×` },
-                { key: "sharpe", label: "SR", numeric: true, format: (v) => fmtNum(v, 2), color: "sign", info: { text: "Annualized Sharpe of the out-of-sample record with every half-spread multiplied.", reference: COSTS_SOURCE } },
+                { key: "sharpe", label: "SR", numeric: true, format: (v) => fmtNum(v, 2), color: "sign", info: { text: "Annualized Sharpe of the out-of-sample record with every half-spread multiplied.", reference: costsRef } },
               ]}
               rows={sweep}
               rowKey={(r) => r.mult}

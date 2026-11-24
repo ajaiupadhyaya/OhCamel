@@ -37,6 +37,8 @@ from pydantic import BaseModel, Field, field_validator
 from ... import kernels
 from ...backtest import metrics as M
 from ...backtest import validation as V
+from ...backtest.costs import COSTS_REL, NoCostTier
+from ...backtest.costs import load as load_costs
 from ...backtest.engine import (
     REBALANCE_CHOICES,
     BacktestResult,
@@ -76,7 +78,8 @@ _TTL_S = 900.0
 
 
 def _cached(name: str, body: BaseModel, fn: Callable[[], Any]) -> Any:
-    key = name + ":" + hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+    # the cost file's version is part of the key: an edited costs.yaml never serves a run priced at the old one
+    key = name + ":" + load_costs().version + ":" + hashlib.sha256(body.model_dump_json().encode()).hexdigest()
     now = time.monotonic()
     with _LOCK:
         hit = _CACHE.get(key)
@@ -100,8 +103,16 @@ class BacktestIn(BaseModel):
     universe: str | None = Field(default=None, description="Preset universe key (universes.json)")
     start: date | None = None
     end: date | None = None
-    cost_bps: float = Field(default=5.0, ge=0, le=500, description="One-way cost per unit traded notional (bps)")
-    borrow_bps: float = Field(default=25.0, ge=0, le=5000, description="Annual fee on short notional (bps)")
+    # Completion task 2.3, fix round 1: omitted costs come from the one cost file, research/config/costs.yaml --
+    # each ticker's tier half-spread, the file's borrow and financing spread. A number given here overrides it.
+    cost_bps: float | None = Field(default=None, ge=0, le=500,
+                                   description="One-way cost per unit traded notional on every name (bps); omitted: "
+                                               "each ticker's tier half-spread from research/config/costs.yaml")
+    borrow_bps: float | None = Field(default=None, ge=0, le=5000,
+                                     description="Annual fee on short notional (bps); omitted: the cost file's")
+    financing_bps: float | None = Field(default=None, ge=0, le=5000,
+                                        description="Annual spread over the risk-free rate on gross exposure above 1 "
+                                                    "(bps); omitted: the cost file's")
     execution_lag: int = Field(default=1, ge=1, le=10)
     rebalance: str | None = None
     max_gross_leverage: float | None = Field(default=None, gt=0, le=10)
@@ -272,6 +283,11 @@ def _prepare(body: BacktestIn, market: MarketData) -> Prepared:
     spec = get_strategy(body.strategy)
     tickers = _resolve_tickers(body, spec)
     params = validate_params(spec, body.params, tickers)
+    if body.cost_bps is None:   # a ticker the cost file holds no tier for, with no cost given: 422 naming it
+        try:
+            load_costs().half_spreads(tickers)
+        except NoCostTier as e:
+            raise ValueError(f"{e}; set cost_bps to cost it") from e
     extra = [p for p in (params.get("safe_asset"),) if p]
     surv = survivorship_label(tickers + extra)
     notes: list[str] = [surv] if surv else []
@@ -308,7 +324,8 @@ def _prepare(body: BacktestIn, market: MarketData) -> Prepared:
                      "the first signal may come later than the requested start.")
     ctx = StrategyContext(prices=panel[tickers], rf=rf, market=panel[body.benchmark])
     config = EngineConfig(
-        cost_bps=body.cost_bps, borrow_bps=body.borrow_bps, execution_lag=body.execution_lag,
+        cost_bps=body.cost_bps, borrow_bps=body.borrow_bps, financing_bps=body.financing_bps,
+        execution_lag=body.execution_lag,
         rebalance=body.rebalance or spec.default_rebalance,
         max_gross_leverage=body.max_gross_leverage or spec.default_max_leverage,
         vol_target=body.vol_target, vol_estimator=body.vol_estimator,
@@ -339,14 +356,23 @@ def _run(p: Prepared, config: EngineConfig | None = None) -> BacktestResult:
 
 def _method(p: Prepared, **extra: Any) -> dict[str, Any]:
     c = p.config
+    spread, borrow, fin = c.resolved(p.tickers)
+    m = c.model()
     return {
         "model": p.spec.name, "strategy": p.spec.key, "reference": p.spec.citation, "params": p.params,
         "engine": {
             "execution": f"decide at close t, execute at close t+{c.execution_lag}",
-            "rebalance": c.rebalance, "cost_bps": c.cost_bps, "borrow_bps_per_year": c.borrow_bps,
-            # completion task 2.3: the form sets cost and borrow; the financing spread is the one cost file's
-            "financing_bps_per_year_over_rf_on_gross_above_1": (
-                c.financing_bps if c.financing_bps is not None else c.model().financing_spread_bps),
+            "rebalance": c.rebalance, "cost_bps": c.cost_bps,
+            # completion task 2.3: what each name paid, and where each number came from
+            "half_spread_bps": {t: float(x) for t, x in zip(p.tickers, spread, strict=True)},
+            "borrow_bps_per_year": borrow,
+            "financing_bps_per_year_over_rf_on_gross_above_1": fin,
+            "cost_source": {
+                "half_spread": "cost_bps (yours)" if c.cost_bps is not None else f"{COSTS_REL} tiers v{m.version}",
+                "borrow": "borrow_bps (yours)" if c.borrow_bps is not None else f"{COSTS_REL} v{m.version}",
+                "financing": "financing_bps (yours)" if c.financing_bps is not None else f"{COSTS_REL} v{m.version}",
+                "provisional_tiers": [t for t in p.tickers if c.cost_bps is None and m.source(t) == "provisional"],
+            },
             "max_gross_leverage": c.max_gross_leverage, "vol_target": c.vol_target,
             "vol_estimator": c.vol_estimator if c.vol_target else None,
             "cash": ("1 - sum(w) earns the daily T-bill return, no look-ahead (source in provenance, timing in notes)"
@@ -390,20 +416,30 @@ def _r(df: pd.DataFrame, nd: int = 6) -> pd.DataFrame:
 @router.get("/strategies")
 def strategies() -> dict[str, Any]:
     uni = load_universes().get("universes", {})
+    cf = load_costs()
     return clean({
         "strategies": catalog(),
         "universes": [{"key": k, "label": v.get("label"), "tickers": [m["ticker"] for m in v.get("members", [])]}
                       for k, v in uni.items()],
         "rebalance_choices": list(REBALANCE_CHOICES),
-        "engine_defaults": {"cost_bps": 5.0, "borrow_bps": 25.0, "execution_lag": 1, "benchmark": "SPY",
+        "engine_defaults": {"cost_bps": None, "tiers_bps": {str(k): v for k, v in sorted(cf.tiers_bps.items())},
+                            "ticker_tiers": dict(sorted(cf.tickers.items())),
+                            "provisional_tiers": sum(1 for t in cf.tickers if cf.source(t) == "provisional"),
+                            "borrow_bps": cf.borrow_bps, "financing_bps": cf.financing_spread_bps,
+                            "costs_file": COSTS_REL, "costs_version": cf.version,
+                            "execution_lag": 1, "benchmark": "SPY",
                             "vol_estimator": "ewma", "vol_halflife": 21, "vol_window": 63},
         "caps": {"grid_combinations": V.MAX_GRID, "bootstrap_reps": V.MAX_REPS, "spa_reps": V.MAX_REPS,
                  "tickers": MAX_TICKERS, "cost_points": MAX_COST_POINTS},
         "method": {"model": "Target-weight daily backtester",
                    "reference": "Bailey, Borwein, Lopez de Prado & Zhu (2017); Bailey & Lopez de Prado (2014); "
                                 "Politis & Romano (1994); Hansen (2005)"},
-        "notes": ["Cost and borrow defaults are user assumptions for liquid US ETFs, not market data; "
-                  "change them to match your broker."],
+        "notes": [f"Costs default to {COSTS_REL}: each ticker pays its tier's half-spread one way, shorts pay the "
+                  "file's borrow and gross above 1 pays its financing spread over the T-bill rate. "
+                  + (f"{sum(1 for t in cf.tickers if cf.source(t) == 'provisional')} of {len(cf.tickers)} tiers are "
+                     "provisional (a stated rule, not yet measured on quotes). " if any(
+                         cf.source(t) == "provisional" for t in cf.tickers) else "")
+                  + "A cost, borrow or financing you set replaces the file's for that run."],
         "provenance": [],
     })
 
@@ -613,7 +649,7 @@ def _do_walkforward(body: WalkForwardIn, market: Market, max_combos: int = V.MAX
     rf = p.rf.reindex(sw.returns.index) if p.rf is not None else None
     ref = next((i for i, c in enumerate(sw.combos) if all(p.params.get(k) == v for k, v in c.items())), None)
     wf = V.walk_forward(sw, body.is_days, body.oos_days, body.anchored, body.objective,
-                        p.config.cost_bps, rf, reference=ref, lag=p.config.execution_lag)
+                        p.config.resolved(sw.weights[0].columns)[0], rf, reference=ref, lag=p.config.execution_lag)
     oos = wf["returns"]
     bench = p.bench_ret.loc[oos.index]
     curves = {"walk_forward": M.equity_curve(oos), "benchmark": M.equity_curve(bench)}
@@ -637,7 +673,8 @@ def _do_walkforward(body: WalkForwardIn, market: Market, max_combos: int = V.MAX
             "objective": body.objective}),
         "notes": list(p.notes) + [
             "Each fold picks the grid combination with the best in-sample objective and applies it to the next "
-            "out-of-sample block; switching between combinations pays cost_bps on the weight change.",
+            "out-of-sample block; switching between combinations pays each name's half-spread (cost_bps when "
+            "set) on its weight change.",
             f"The in-sample block ends execution_lag = {p.config.execution_lag} session(s) before the switch close "
             "(no same-close selection).",
             "Walk-forward efficiency = OOS Sharpe / mean in-sample Sharpe of the chosen combinations."],
@@ -671,7 +708,8 @@ def _do_costs(body: CostsIn, market: Market) -> dict[str, Any]:
         "annual_turnover": cs["annual_turnover"],
         "benchmark": {"ticker": body.benchmark, "summary": M.summary(p.bench_ret.loc[net.index], rf)},
         "window": {"live_start": res.live_start, "end": net.index[-1], "sessions": len(net)},
-        "method": _method(p, costs="1 + net = (1 + gross - borrow)(1 - c * turnover); turnover is cost-invariant"),
+        "method": _method(p, costs="1 + net = (1 + gross - borrow - financing)(1 - c * turnover) at each flat level c; "
+                                   "turnover is cost-invariant"),
         "notes": _std_notes(p, res, len(net)) + [
             "Break-even = proportional cost (bps per unit traded) at which the Sharpe ratio reaches 0 or the "
             "CAGR falls to the benchmark's; null when it is not crossed between 0 and 10,000 bps. "

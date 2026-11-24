@@ -10,6 +10,7 @@ import { Note } from "../../design";
 import { fmtPct } from "../../lib/format";
 import type { Portfolio } from "../../lib/portfolio";
 import { humanize, type LabConfig } from "./config";
+import { INFO } from "./info";
 import type { Availability } from "./shared";
 import type { Catalog, StrategySpec } from "./types";
 
@@ -68,9 +69,10 @@ export function SetupRail({ spec, catalog, cfg, set, avail, portfolio, onReset }
         }
       >
         <div className="sl-pair">
-          <NumberField label="Cost" ariaLabel="Trading cost, basis points one way" value={cfg.cost_bps} unit="bp" min={0} max={500} step={1} onChange={(v) => set({ cost_bps: v })} />
-          <NumberField label="Borrow" ariaLabel="Borrow fee, basis points a year" value={cfg.borrow_bps} unit="bp/y" min={0} max={5000} step={5} onChange={(v) => set({ borrow_bps: v })} />
+          <NumberField label="Cost" ariaLabel="Trading cost, basis points one way" value={cfg.cost_bps} unit="bp" min={0} max={500} step={1} info={INFO.cost_bps} hint={<FileHint on={cfg.cost_bps !== null} file={tierHint(catalog, cfg.tickers)} reset={() => set({ cost_bps: null })} />} onChange={(v) => set({ cost_bps: v })} />
+          <NumberField label="Borrow" ariaLabel="Borrow fee, basis points a year" value={cfg.borrow_bps} unit="bp/y" min={0} max={5000} step={5} info={INFO.borrow_bps} hint={<FileHint on={cfg.borrow_bps !== null} file={`FILE · ${catalog.engine_defaults.borrow_bps} BP/Y`} reset={() => set({ borrow_bps: null })} />} onChange={(v) => set({ borrow_bps: v })} />
         </div>
+        <NumberField label="Financing" ariaLabel="Financing spread over the T-bill rate on gross above 1, basis points a year" value={cfg.financing_bps} unit="bp/y" min={0} max={5000} step={5} info={INFO.financing_bps} hint={<FileHint on={cfg.financing_bps !== null} file={`FILE · ${catalog.engine_defaults.financing_bps} BP/Y OVER T-BILL`} reset={() => set({ financing_bps: null })} />} onChange={(v) => set({ financing_bps: v })} />
         <Field label="Lag">
           <SegmentedControl size="sm" ariaLabel="Execution lag" options={["1", "2", "3", "5"].map((v) => ({ value: v, label: `T+${v}` }))} value={String(cfg.execution_lag)} onChange={(v) => set({ execution_lag: Number(v) })} />
         </Field>
@@ -81,6 +83,27 @@ export function SetupRail({ spec, catalog, cfg, set, avail, portfolio, onReset }
         {cfg.vol_target !== null && <Slider value={cfg.vol_target} min={0.02} max={0.4} step={0.01} format={(v) => `${fmtPct(v, 0)} · ANN`} onChange={(v) => set({ vol_target: v })} />}
       </RailGroup>
     </aside>
+  );
+}
+
+/** What the cost file charges the chosen tickers, e.g. "FILE · TIER 1 BP SPY · 3 BP TLT". */
+export function tierHint(catalog: Catalog, tickers: string[]): string {
+  const d = catalog.engine_defaults;
+  const parts = tickers.map((t) => {
+    const tier = d.ticker_tiers?.[t];
+    const bps = tier === undefined ? undefined : d.tiers_bps?.[String(tier)];
+    return bps === undefined ? `${t} NO TIER` : `${t} ${bps}`;
+  });
+  const prov = d.provisional_tiers > 0 ? " · PROVISIONAL" : "";
+  return `FILE · BP BY TIER · ${parts.slice(0, 4).join(" · ")}${parts.length > 4 ? " …" : ""}${prov}`;
+}
+
+function FileHint({ on, file, reset }: { on: boolean; file: string; reset: () => void }) {
+  if (!on) return <span className="num">{file}</span>;
+  return (
+    <button type="button" className="btn btn-sm" onClick={reset} aria-label="Use the cost file's value">
+      YOURS · USE FILE
+    </button>
   );
 }
 

@@ -1,8 +1,22 @@
 # The one cost file (completion spec, "Costs."): read by the backtest engine
-# (quant backtest/costs.py -> backtest/engine.py), the strategy farm
-# (products/farm.py, models/farm.py), the desk's daily signals
+# (quant backtest/costs.py -> backtest/engine.py), the public Strategy Lab
+# (api/routers/backtest.py: a run that sets no cost, borrow or financing pays
+# this file's; a number the visitor types replaces it for that run), the
+# strategy farm (products/farm.py, models/farm.py), the desk's daily signals
 # (signals/daily.py) and the research battery's capacity figure
-# (research battery/gates.py). No other module holds a cost number.
+# (research battery/gates.py).
+#
+# Cost numbers that deliberately remain elsewhere, and why:
+#   * research/experiments/EXP-Q01/config.yaml (cost_bps_base: 5, its own
+#     accounting in models/xsec.py) and research/config/friction_v1.yaml
+#     (EXP-A01's spreads and fees):
+#     pre-registered experiments, frozen before their results and hashed
+#     into their manifests; moving them would change a registered test.
+#   * quant portfolio/walkforward.py (the optimiser's 10 bp form default):
+#     a portfolio optimiser's turnover cost, not a backtest of a strategy.
+#   * book.example.sexp (spread_bps) and bin/main.ml (half_spread_bps 5.0):
+#     the desk's own paper fill model, OCaml, read by the engine, not by
+#     Python; aligning it with this file is the desk's change to make.
 #
 # Every fill pays the half-spread of its ticker's tier on the traded notional
 # (one way: a round trip pays it twice). A ticker with no row here has no

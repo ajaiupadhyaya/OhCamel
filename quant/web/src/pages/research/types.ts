@@ -25,7 +25,22 @@ export interface Catalog extends Envelope {
   strategies: StrategySpec[];
   universes: { key: string; label: string | null; tickers: string[] }[];
   rebalance_choices: string[];
-  engine_defaults: { cost_bps: number; borrow_bps: number; execution_lag: number; benchmark: string; vol_estimator: string; vol_halflife: number; vol_window: number };
+  /** Completion task 2.3: the cost defaults are the one cost file's; ``cost_bps`` null = each ticker's tier. */
+  engine_defaults: {
+    cost_bps: number | null;
+    tiers_bps: Record<string, number>;
+    ticker_tiers: Record<string, number>;
+    provisional_tiers: number;
+    borrow_bps: number;
+    financing_bps: number;
+    costs_file: string;
+    costs_version: string;
+    execution_lag: number;
+    benchmark: string;
+    vol_estimator: string;
+    vol_halflife: number;
+    vol_window: number;
+  };
   caps: { grid_combinations: number; bootstrap_reps: number; spa_reps: number; tickers: number; cost_points: number };
   method: { model: string; reference: string };
 }
@@ -59,8 +74,11 @@ export interface Method {
   engine: {
     execution: string;
     rebalance: string;
-    cost_bps: number;
+    cost_bps: number | null;
+    half_spread_bps?: Record<string, number>;
     borrow_bps_per_year: number;
+    financing_bps_per_year_over_rf_on_gross_above_1?: number;
+    cost_source?: { half_spread: string; borrow: string; financing: string; provisional_tiers: string[] };
     max_gross_leverage: number | null;
     vol_target: number | null;
     vol_estimator: string | null;
@@ -226,10 +244,8 @@ export interface FarmBoardRow {
    *  cell carried forward from before the cost file. */
   turnover?: number | null;
   capacity_usd?: number | null;
-  sr_at_0x?: number | null;
-  sr_at_1x?: number | null;
-  sr_at_3x?: number | null;
-  sr_at_6x?: number | null;
+  /** One column per half-spread multiple in the cost file's ``sweep`` (sr_at_0x, sr_at_1x, ...): read from the row. */
+  [sweep: `sr_at_${string}x`]: number | null | undefined;
 }
 
 /** farm.sweep · cells: every cell, ok or skipped (with its reason). */

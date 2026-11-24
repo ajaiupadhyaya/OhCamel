@@ -11,8 +11,11 @@ export interface LabConfig {
   tickers: string[];
   start: string | null;
   end: string | null;
-  cost_bps: number;
-  borrow_bps: number;
+  /** null = the one cost file's (research/config/costs.yaml): each ticker's tier half-spread, its borrow, its
+   *  financing spread. A number is the visitor's override for that run (completion task 2.3). */
+  cost_bps: number | null;
+  borrow_bps: number | null;
+  financing_bps: number | null;
   execution_lag: number;
   /** null = the strategy's default rebalance */
   rebalance: string | null;
@@ -36,8 +39,9 @@ export function initialConfig(spec: StrategySpec, prev?: Partial<LabConfig>): La
     tickers: [...spec.default_tickers],
     start: prev?.start ?? null,
     end: prev?.end ?? null,
-    cost_bps: prev?.cost_bps ?? 5,
-    borrow_bps: prev?.borrow_bps ?? 25,
+    cost_bps: prev?.cost_bps ?? null,
+    borrow_bps: prev?.borrow_bps ?? null,
+    financing_bps: prev?.financing_bps ?? null,
     execution_lag: prev?.execution_lag ?? 1,
     rebalance: null,
     vol_target: prev?.vol_target ?? null,
@@ -71,6 +75,7 @@ export function baseBody(cfg: LabConfig, spec: StrategySpec, tickers: string[]) 
     end: cfg.end,
     cost_bps: cfg.cost_bps,
     borrow_bps: cfg.borrow_bps,
+    financing_bps: cfg.financing_bps,
     execution_lag: cfg.execution_lag,
     rebalance: cfg.rebalance,
     vol_target: cfg.vol_target,

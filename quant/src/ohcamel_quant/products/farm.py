@@ -80,7 +80,7 @@ def _curve(r: pd.Series, rf: pd.Series | None, bps: float, turnover: pd.Series) 
             "annual_cost_drag": float((bps / 1e4 * turnover).sum() / max(len(turnover), 1) * M.PERIODS)}
 
 
-def cost_columns(sw: Any, wf: dict[str, Any], px: pd.DataFrame, rf: pd.Series | None, model: cost_file.CostModel,
+def cost_figures(sw: Any, wf: dict[str, Any], px: pd.DataFrame, rf: pd.Series | None, model: cost_file.CostModel,
                  dollar_volume: pd.DataFrame | None) -> dict[str, Any]:
     """The cell's cost figures on its walk-forward out-of-sample path (completion task 2.3): ``sr_at_<m>x`` for each of
     the cost file's half-spread multiples, the charter's 0/5/15/30 bps ``cost_curve``, ``turnover`` (one-way, a
@@ -128,7 +128,7 @@ def run_cell(strategy: str, universe: str, ctx: Any,
         dv = _dollar_volume(ctx, list(px.columns), px.index)
     except (DataUnavailable, KeyError):
         dv = None
-    costs = cost_columns(sw, wf, px, rf, model, dv)
+    costs = cost_figures(sw, wf, px, rf, model, dv)
     seed = ctx.seed(BOOTSTRAP_SEED, "bootstrap")   # the bootstrap's and SPA's fixed seed, recorded (Task 3.3)
     boot = bootstrap_sharpe(oos, rf, reps=1000, alpha=0.10, seed=seed, use_kernels=True, threads=ctx.threads)
     trials = np.array([M.sharpe_per_period(M.excess(sw.returns[c], rf)) for c in sw.returns.columns])
@@ -141,6 +141,12 @@ def run_cell(strategy: str, universe: str, ctx: Any,
            "spa_p": spa_test(bench.fillna(0.0), sw.returns, seed=seed)["pvalue_consistent"],
            "oos_sharpe_ann": M.sharpe(ex), **costs, "selected_params": json.dumps(sw.combos[pick])}
     return row, reg.assign(cell_id=row["cell_id"]), trials
+
+
+def _costs_provenance(m: cost_file.CostModel) -> dict[str, Any]:
+    """The cost file as the page reads it: path, version, and how many tiers are provisional (fix round 1, M2)."""
+    return {"source": "costs", "path": cost_file.COSTS_REL, "version": m.version, "tiers": len(m.tickers),
+            "provisional_tiers": sum(1 for t in m.tickers if m.source(t) == "provisional")}
 
 
 def _costs_note(m: cost_file.CostModel) -> str:
@@ -193,7 +199,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         tables={"cells": cells, "regimes": regimes, "trials": trials, "leaderboard": board},
         data_asof=None if asof is None or pd.isna(asof) else str(asof),
         provenance=[{"source": "ohcamel-farm", "cells_run_tonight": done, "cells_total": len(farm_cells())},
-                    {"source": "costs", "path": cost_file.COSTS_REL, "version": cost_file.load().version}],
+                    _costs_provenance(cost_file.load())],
         notes=[f"{done} cells run tonight; DSR deflated by all {len(trials)} trials in the farm; walk-forward "
                f"{WF_IS}/{WF_OOS} sessions", _costs_note(cost_file.load())],
         verdict=verdict,
