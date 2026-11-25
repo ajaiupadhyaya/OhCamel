@@ -1,5 +1,8 @@
-"""INC-01's roster (research/experiments/INC-01/roster.yaml): the one list every
-producer reads. Loaded strictly -- an unknown key, a fraction outside (0, 1], a
+"""INC-02's roster (research/experiments/INC-02/roster.yaml): the one list every
+producer reads. INC-01 closed at 2026-11-05 and its roster.yaml stays as it
+traded; INC-02 is the agent's draft awaiting the owner's approval, and the
+roster here only names what may be sized once the owner approves it and resets
+the switch. Loaded strictly -- an unknown key, a fraction outside (0, 1], a
 malformed or repeated slug, an unknown producer or fractions summing past
 ``incubation_cap`` is a ``ValueError``, never a silently skipped row."""
 
@@ -16,7 +19,7 @@ from ohcamel_quant.config import REPO_ROOT
 
 __all__ = ["PRODUCERS", "ROSTER_PATH", "Cell", "Roster", "load_roster", "targets_gross_scaled"]
 
-ROSTER_PATH = REPO_ROOT / "research" / "experiments" / "INC-01" / "roster.yaml"
+ROSTER_PATH = REPO_ROOT / "research" / "experiments" / "INC-02" / "roster.yaml"
 PRODUCERS = frozenset({"research-service", "signals.daily", "signals.intraday", "signals.q01"})
 _SLUG = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _TOP_KEYS = frozenset({"version", "incubation_cap", "canary_cap", "vol_target", "strategies"})

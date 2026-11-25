@@ -1,0 +1,48 @@
+INC-02 drawdown cap on the committed fixtures (tools/inc02_ddcap.py)
+data: fixtures/history/*.parquet (Alpaca, unadjusted closes; dividends excluded), offline; costs: research/config/costs.yaml v1.0.0; window 2019-06-03 .. 2026-06-01 (1759 sessions)
+rows:
+  exp_a01_spy                              RUN  SPY                          EXP-A01 proxy: sma_trend(months=10); live from 2017-04-03
+  exp_a01_tlt                              RUN  TLT                          EXP-A01 proxy: sma_trend(months=10); live from 2017-04-03
+  farm_tsmom_us_equity_indices             RUN  SPY,QQQ,IWM                  tsmom on us_equity_indices cut to the fixtures; live from 2017-07-03
+  farm_tsmom_rates                         RUN  IEF,TLT                      tsmom on rates cut to the fixtures; live from 2017-07-03
+  farm_tsmom_commodities                   RUN  GLD                          tsmom on commodities cut to the fixtures; live from 2017-07-03
+  farm_tsmom_international                 CASH -                            cash: 0 fixture ETF(s) of international, tsmom needs 1
+  farm_tsmom_credit                        CASH -                            cash: 0 fixture ETF(s) of credit, tsmom needs 1
+  farm_xsmom_sectors                       RUN  XLK,XLF,XLE                  xsmom on sectors cut to the fixtures; live from 2017-07-03
+  farm_xsmom_international                 CASH -                            cash: 0 fixture ETF(s) of international, xsmom needs 2
+  farm_dual_momentum_us_equity_indices     RUN  SPY,QQQ,IWM                  dual_momentum on us_equity_indices cut to the fixtures; live from 2017-07-03
+  farm_dual_momentum_international         CASH -                            cash: 0 fixture ETF(s) of international, dual_momentum needs 2
+  farm_sma_trend_us_equity_indices         RUN  SPY,QQQ,IWM                  sma_trend on us_equity_indices cut to the fixtures; live from 2017-04-03
+  farm_sma_trend_commodities               RUN  GLD                          sma_trend on commodities cut to the fixtures; live from 2017-04-03
+  farm_sma_trend_international             CASH -                            cash: 0 fixture ETF(s) of international, sma_trend needs 1
+  farm_vol_managed_us_equity_indices       RUN  SPY,QQQ,IWM                  vol_managed on us_equity_indices cut to the fixtures; live from 2017-07-03
+  farm_risk_parity_rates                   RUN  IEF,TLT                      risk_parity on rates cut to the fixtures; live from 2017-07-03
+  farm_risk_parity_credit                  CASH -                            cash: 0 fixture ETF(s) of credit, risk_parity needs 2
+  farm_risk_parity_commodities             CASH GLD                          cash: 1 fixture ETF(s) of commodities, risk_parity needs 2
+  farm_risk_parity_us_equity_indices       RUN  SPY,QQQ,IWM                  risk_parity on us_equity_indices cut to the fixtures; live from 2017-07-03
+  farm_low_beta_sectors                    RUN  XLK,XLF,XLE                  low_beta on sectors cut to the fixtures; live from 2019-06-03
+  farm_st_reversal_sectors                 RUN  XLK,XLF,XLE                  st_reversal on sectors cut to the fixtures; live from 2016-06-13
+  farm_pairs_distance_sectors              RUN  XLK,XLF,XLE                  pairs_distance on sectors cut to the fixtures; live from 2017-06-02
+15 of 22 rows run; 7 hold cash
+
+== cash rows held (0.025 each)
+   realised vol 0.0263 a year; one-year 2-sigma loss at that vol 0.0527 (at the 0.10 vol target: 0.2000); EWMA(0.94) vol above 0.10 on 0.0% of sessions
+   cap    | ungoverned: episodes reaching cap/2, cap; worst 250-close dd | governed: first cut, sessions cut, trip (book flat from then), mean governor to trip
+   0.02   |  35,  13; 0.0493            | 2020-02-26, 837 of 1759, never, 0.619
+   0.05   |  12,   0; 0.0493            | 2020-03-12, 284 of 1759, never, 0.933
+   0.10   |   0,   0; 0.0493            | never, 0 of 1759, never, 1.000
+
+== rows that run rescaled to 0.55
+   realised vol 0.0386 a year; one-year 2-sigma loss at that vol 0.0773 (at the 0.10 vol target: 0.2000); EWMA(0.94) vol above 0.10 on 0.3% of sessions
+   cap    | ungoverned: episodes reaching cap/2, cap; worst 250-close dd | governed: first cut, sessions cut, trip (book flat from then), mean governor to trip
+   0.02   |  44,  24; 0.0716            | 2020-02-26, 3 of 188, 2020-02-28, 0.988
+   0.05   |  16,   4; 0.0716            | 2020-02-28, 449 of 1759, never, 0.851
+   0.10   |   4,   0; 0.0716            | 2020-03-16, 188 of 1759, never, 0.983
+
+== reference: SPY held at 0.55
+   realised vol 0.1075 a year; one-year 2-sigma loss at that vol 0.2149 (at the 0.10 vol target: 0.2000); EWMA(0.94) vol above 0.10 on 30.0% of sessions
+   cap    | ungoverned: episodes reaching cap/2, cap; worst 250-close dd | governed: first cut, sessions cut, trip (book flat from then), mean governor to trip
+   0.02   |  64,  46; 0.2002            | 2019-06-26, 4 of 45, 2019-08-05, 0.959
+   0.05   |  32,  18; 0.2002            | 2019-08-05, 64 of 194, 2020-03-09, 0.865
+   0.10   |  18,  11; 0.2002            | 2020-02-27, 13 of 199, 2020-03-16, 0.961
+

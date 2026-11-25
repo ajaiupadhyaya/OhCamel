@@ -18,7 +18,7 @@
 ;                 (Value_at_risk DOLLARS)    portfolio VaR, Portfolio scope only
 ;                 (Component_var DOLLARS)    a name's or sector's share of portfolio VaR
 ;                 (Max_drawdown FRACTION)    0.10 = 10%, Portfolio scope only
-; Steady-state gross is $575,000; $700,000 is the bug trip; 10% drawdown is the book halt; $30,000 VaR is about three times the 10% target's one-day 95% VaR.
+; Steady-state gross is $550,000; $700,000 is the bug trip; 10% drawdown is the book halt; $30,000 VaR is about three times the 10% target's one-day 95% VaR.
 ;
 ; Value_at_risk and Max_drawdown are portfolio statistics and this engine keeps
 ; no per-name version of either, so a sector- or instrument-scoped one is
@@ -284,7 +284,7 @@
    ; a per-fill half-spread. One cost configuration for the backtest and the
    ; desk; test/test_example_book.ml reads both files and holds them to it.
    (spread_bps ((SPY 1.0) (TLT 1.5)))
-   (incubation_cap 0.60)
+   (incubation_cap 0.55)
    (vol_target 0.10)
    (overlay_max_age_minutes 60)
    (overlay_max_age 4.0)
@@ -350,9 +350,14 @@
  ;
  ; The roster: EXP-A01's two strategies, then one strategy per farm cell --
  ; each strategy in quant/src/ohcamel_quant/backtest/strategies.py on each of
- ; its suggested universes -- every one incubation. Every one at an equal
- ; 0.025: 23 x 0.025 = 0.575, under the incubation_cap of 0.60, the other
- ; 0.025 held for EXP-Q01's portfolio when it joins (INC-01).
+ ; its suggested universes that it can run on -- every one incubation. Every
+ ; one at an equal 0.025: 22 x 0.025 = 0.55, the incubation_cap of 0.55. This
+ ; is INC-02's roster (research/experiments/INC-02/roster.yaml), a DRAFT that
+ ; awaits the owner's approval: INC-01's 23 less farm_pairs_coint_sectors
+ ; (pairs_coint takes two tickers, and sectors is eleven), with no slot held
+ ; for EXP-Q01 (its pre-registration lets nothing reach the desk). INC-01
+ ; closed at 2026-11-05. The stop words below are still INC-01's; INC-02's
+ ; volatility-scaled stop (completion task 2.2) replaces them.
  (signals
   ((strategies
     (((name exp_a01_spy) (symbols (SPY)) (max_age 3) (sizing incubation)
@@ -419,8 +424,5 @@
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
       (stop ((drawdown 0.15) (sessions 250))))
      ((name farm_pairs_distance_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
-      (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
-     ((name farm_pairs_coint_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
       (stop ((drawdown 0.15) (sessions 250)))))))))

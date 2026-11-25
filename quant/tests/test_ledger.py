@@ -418,7 +418,8 @@ def test_a_desk_read_raising_unexpectedly_leaves_the_rest_served(tmp_path, monke
         assert item(led, name).state == "unknown"
     assert item(led, "BOOK LIMITS").state == "unknown"
     assert item(led, "BACKUPS NIGHTLY").state == "ok" and item(led, "ONE BUILD ON BOTH HOSTS").state == "ok"
-    assert item(led, "PRE-REGISTRATIONS").state == "ok"
+    r = item(led, "PRE-REGISTRATIONS")   # served: computed from the repo, where INC-02 awaits the owner
+    assert r.state == "attention" and "Awaiting the owner: INC-02" in r.detail
 
 
 def test_missing_values_in_the_report_do_not_break_the_rows(tmp_path):
@@ -495,11 +496,15 @@ def test_no_preregistration_in_the_build_is_unknown(tmp_path, make):
     assert r.state == "unknown" and r.detail.startswith("Unknown:")
 
 
-def test_the_repositorys_preregistrations_all_read_as_approved(tmp_path):
+def test_the_repositorys_preregistrations_read_as_approved_but_inc02(tmp_path):
+    """INC-02 is the agent's draft (completion ruling R4): the ledger says it awaits the owner until the owner's
+    approval is recorded in it."""
     r = item(build(tmp_path), "PRE-REGISTRATIONS")
-    assert r.state == "ok"
+    assert r.state == "attention"
+    approved, _, waiting = r.detail.partition("Awaiting the owner:")
     for name in ("EXP-Q01", "EXP-Q02", "EXP-K01", "INC-01"):
-        assert name in r.detail
+        assert name in approved
+    assert waiting.split(".")[0].strip() == "INC-02"
 
 
 # ------------------------------------------------------------------ what may not appear

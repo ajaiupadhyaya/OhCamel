@@ -24,7 +24,7 @@ XBRL.
 
 | | What it is | Where |
 |---|---|---|
-| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->2481<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, twelve Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
+| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->2482<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, twelve Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
 | **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental: a tick recomputes only what depends on it. It runs a paper desk behind a password on the live host | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
 
 ---
@@ -82,8 +82,8 @@ never sized), INCUBATION and LIVE -- and the book's `sizing` word sets a strateg
 decides only whether a `live` strategy may be sized (R6); an incubation strategy is sized whatever its status, under
 the cap, and labelled. The charter's amended
 sentence: *On the paper venue, and only there, the owner may register a strategy as `incubation`: it is sized under the book's incubation caps whatever its status, its validation block is carried unchanged, every order, page and report it touches says INCUBATION, its realised record is scored with this charter's statistics and stop rules the owner wrote before it traded, and promotion to `live` never follows from that record by itself.* The tiers, the roster, the producers and the overlay are in the *Autonomous trading* section of
-[`docs/status.md`](docs/status.md); the pre-registration that binds them is
-[INC-01](research/experiments/INC-01/preregistration.md).
+[`docs/status.md`](docs/status.md); [INC-01](research/experiments/INC-01/preregistration.md) bound them until it closed at 2026-11-05; its
+successor, [INC-02](research/experiments/INC-02/preregistration.md), is a draft awaiting the owner's approval.
 
 ## The site: Paper Tape
 

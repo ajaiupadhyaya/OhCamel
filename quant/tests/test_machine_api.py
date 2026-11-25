@@ -95,7 +95,7 @@ def test_an_empty_store_gives_missing_products(store):
     by = nodes(g)
     for kind in PROD:
         assert by[f"p:{kind}"]["status"] == "missing" and by[f"p:{kind}"]["why"]
-    assert len([n for n in g["nodes"] if n["k"] == "strategy"]) == 23 and "book" in by
+    assert len([n for n in g["nodes"] if n["k"] == "strategy"]) == 22 and "book" in by
 
 
 def test_a_fresh_host_with_no_jobs_database_gives_every_product_missing(store):
@@ -568,7 +568,7 @@ def test_a_naive_time_is_refused_not_read_as_local(store, tmp_path):
 
 def test_the_inputs_are_the_repos_own_config(store):
     inp = load_inputs(store.db, store.settings, NOW)
-    assert len(inp.roster.cells) == 23 and "farm.sweep" in inp.clock and inp.world.equities
+    assert len(inp.roster.cells) == 22 and "farm.sweep" in inp.clock and inp.world.equities
     assert set(inp.products) == set(PROD)
 
 

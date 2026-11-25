@@ -283,6 +283,54 @@ Any one of these halts the desk, and the owner decides what happens next:
 - a wave timeout on three consecutive sessions;
 - any order the journal cannot reconcile with the venue.
 
+## Amendment A1, 2026-11-15
+
+Recorded by the agent from the completion spec
+(`docs/superpowers/specs/2026-11-15-the-completion.md`, ruling R1). It
+changes no rule above; it says what happened to one of them.
+
+- **What changed.** The book's drawdown cap -- the Portfolio `Max_drawdown`
+  limit `dd-cap`, which trips the kill switch and sets the drawdown
+  governor's ramp (*The overlay*, above: "with the example book's `dd-cap`
+  of 0.02, the governor is 1 to a 1 % book drawdown and 0 at 2 %") -- moved
+  from **0.02** to **0.10** on **2026-11-05**.
+- **When and how.** After the cap had tripped: the desk was halted that day
+  at 19:53 UTC by `dd-cap` at 2 %, after six sessions of full-roster
+  trading. The change came the same evening, by an
+  agent-drafted spec (`docs/superpowers/specs/2026-11-05-honest-book.md`,
+  which also raised `book-cap` and `var-cap`; the example book's edit is
+  commit `2425510`).
+- **Whose decision.** Asked on 2026-11-15, the owner did not know whether
+  they had approved it.
+- **What that makes it.** A limit this pre-registration's rules read was
+  changed after it fired, without the owner's knowing approval. The
+  charter's rule on gates is that a gate is not loosened to admit what one
+  likes and that changing one "is argued on its own merits before seeing
+  which strategies it would admit"; this change was argued after the cap
+  had fired, and was not the owner's. It therefore breaks that rule, and is
+  recorded here as a breach, not as an amendment of INC-01's rules.
+- **What follows.** INC-01's record ends at the close below and is not
+  continued: no session after 2026-11-05 is an INC-01 session, under either
+  cap. The 0.10 value has no standing from this file. It is argued on its
+  merits in INC-02 (`research/experiments/INC-02/preregistration.md`) and
+  takes effect only if the owner approves it there.
+
+## Closed
+
+Closed: 2026-11-05
+
+INC-01's record is the sessions from its first fill to the close of
+2026-11-05, the day its drawdown cap tripped and was then changed
+(Amendment A1). The paper record it leaves is six sessions of full-roster
+trading; equity stood at $989,914 on $1,000,000 when the
+completion review read it on 2026-11-15. Under *Reporting* above that is
+fewer than 60 sessions, so it carries no statistic: "session n of 60", and
+no Sharpe, PSR or verdict is reported from it, for the book or any
+strategy. Its roster (`roster.yaml` beside this file) stays as it traded;
+the producers read INC-02's roster. Its successor is INC-02, drafted by the
+agent for the owner and approved by no one until the owner's line is
+recorded there.
+
 ## Approval
 
 Approved-by: owner (ajaiupadhyaya), 2026-10-11, approved the design §5/§6 in session ("Looks good, Everything approved"); recorded by the agent. A draft that departs from §5/§6 is not covered by this line.

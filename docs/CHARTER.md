@@ -79,7 +79,14 @@ INCUBATION, its realised record is scored with this charter's statistics
 and stop rules the owner wrote before it traded, and promotion to `live`
 never follows from that record by itself. Incubation exists so that a
 strategy's first out-of-sample test on simulated money is recorded; it is
-not evidence of edge and is never reported as such.
+not evidence of edge and is never reported as such. INC-01, the first
+incubation pre-registration, closed at 2026-11-05, the day its drawdown cap
+was changed after it tripped. Its successor, INC-02
+(`research/experiments/INC-02/preregistration.md`), is drafted for the owner
+and not yet approved, and no incubation session trades until the owner
+approves it; the stop rule it proposes stops a strategy when its drawdown
+exceeds 2.0 × its ex-ante annualised volatility at traded parameters,
+floored at 0.05 and capped at 0.25, or 500 sessions after its first fill.
 
 ## Data
 

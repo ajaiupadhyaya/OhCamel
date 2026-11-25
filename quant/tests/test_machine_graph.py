@@ -394,11 +394,12 @@ def test_every_edge_follows_a_rule():                          # spec §5: "an e
     assert pairs == {(f, t, kind) for kind, r in RULES.items() for f, t in r}   # and the fixture uses every rule
 
 
-def test_the_roster_gives_23_strategies():
+def test_the_roster_gives_22_strategies():
+    """INC-02's draft roster: EXP-A01's two and the farm's 20 cells."""
     g = build_graph(_inputs())
     st = [n for n in g["nodes"] if n["k"] == "strategy"]
-    assert len(st) == 23
-    assert sum(n["m"]["producer"] == "signals.daily" for n in st) == 21
+    assert len(st) == 22
+    assert sum(n["m"]["producer"] == "signals.daily" for n in st) == 20
 
 
 def test_the_book_comes_from_book_summary():
@@ -470,7 +471,7 @@ def test_a_malformed_provenance_degrades_only_its_own_node():
         assert "status" not in n and n["m"]["verdict"] is None and n["m"]["art"]   # present, with its manifest
         assert not _edges_into(g, f"j:{kind}", "read")             # and nothing read from the bad entries
     assert _node(g, "p:kronos.shadow")["status"] == "missing"     # a manifest that is no mapping is no manifest
-    assert _edge(g, "d:NVDA", "j:cov.league", "read") and len(_edges_from(g, "p:signals.daily", "signal")) == 21   # the rest stands
+    assert _edge(g, "d:NVDA", "j:cov.league", "read") and len(_edges_from(g, "p:signals.daily", "signal")) == 20   # the rest stands
     assert provenance_symbols({"provenance": 5}) == provenance_symbols(["x"]) == []
 
 
@@ -514,7 +515,7 @@ def test_the_book_and_its_limits_read_from_the_summary():
     g = build_graph(_inputs())
     _, _, roster = _static()
     assert _node(g, "book")["m"] == {
-        "strategies": 23, "capital": round(sum(c.capital_fraction for c in roster.cells), 6),
+        "strategies": 22, "capital": round(sum(c.capital_fraction for c in roster.cells), 6),
         "incubation_cap": roster.incubation_cap, "canary_cap": roster.canary_cap, "vol_target": roster.vol_target,
         "positions": 5, "kill": "armed", "limits": 3, "summary_asof": "2026-10-28T20:31:07Z"}
     assert _node(g, "lim:aapl-cap")["m"] == {"kind": "gross_notional", "scope": "instrument:AAPL", "trips": False}
@@ -704,9 +705,9 @@ def test_jobs_and_products_sit_on_the_clock():
     r = _node(g, "p:research")
     assert r["at"] == {"beside": "p:signals.daily"} and r["m"] == {"producer": "research-service", "strategies": 2}
     assert sorted(_edges_from(g, "p:research", "signal")) == ["st:exp_a01_spy", "st:exp_a01_tlt"]
-    assert len(_edges_from(g, "p:signals.daily", "signal")) == 21
+    assert len(_edges_from(g, "p:signals.daily", "signal")) == 20
     assert _edges_from(g, "p:signals.overlay", "scale") == ["book"]
-    assert len(_edges_into(g, "book", "trade")) == 23
+    assert len(_edges_into(g, "book", "trade")) == 22
 
 
 def test_a_skipped_cells_exception_text_is_not_its_reason():
