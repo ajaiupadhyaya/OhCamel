@@ -17,7 +17,7 @@ import yaml
 
 from ohcamel_quant.config import REPO_ROOT
 
-__all__ = ["PRODUCERS", "ROSTER_PATH", "Cell", "Roster", "load_roster", "recorded_approval", "roster_draft",
+__all__ = ["PRODUCERS", "ROSTER_PATH", "Cell", "Roster", "load_roster", "preregistration_text", "recorded_approval", "roster_draft",
            "targets_gross_scaled"]
 
 ROSTER_PATH = REPO_ROOT / "research" / "experiments" / "INC-02" / "roster.yaml"
@@ -125,13 +125,20 @@ def recorded_approval(text: str) -> str | None:
     return None
 
 
+def preregistration_text(path: Path = ROSTER_PATH) -> str:
+    """The pre-registration beside the roster at ``path``; empty when it cannot be read (records no approval)."""
+    try:
+        return (Path(path).parent / "preregistration.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def roster_draft(path: Path = ROSTER_PATH) -> str | None:
     """The experiment whose roster ``path`` is, when its pre-registration beside it records no approval (an
     unreadable one records none); None once the owner's approval is recorded there. A page that draws the roster
     says it is a draft while this names one, so the label goes when the ``Approved-by:`` line is written."""
-    try:
-        text = (Path(path).parent / "preregistration.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    text = preregistration_text(path)
+    if not text:
         return Path(path).parent.name
     return None if recorded_approval(text) else Path(path).parent.name
 

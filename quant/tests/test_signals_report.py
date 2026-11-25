@@ -584,5 +584,5 @@ def test_the_report_carries_inc02s_test_as_not_started_while_it_awaits_the_owner
     r = t.iloc[0]
     assert (r["experiment"], r["sessions_required"], r["power_at_1"], r["power_at_half"]) == ("INC-02", 500, 0.41, 0.17)
     assert r["as_of"] == "2026-10-09" and "per-strategy record" in r["source"]
-    if report.roster_draft() is not None:
+    if report.recorded_approval(report.ROSTER_PATH.parent.joinpath("preregistration.md").read_text()) is None:
         assert (r["verdict"], r["sessions_done"], r["reason"]) == ("NOT STARTED", 0, "INC-02 awaits the owner's approval")

@@ -182,10 +182,34 @@ def test_the_served_record_shape_is_read_end_to_end(tmp_path, monkeypatch):
     served = {**RESEARCH, "strategies": [{**RESEARCH["strategies"][0], "record": {"sessions": [
         {"date": "2026-10-09", "allocated": 25_000.0, "pnl": 100.0}]}}, *RESEARCH["strategies"][1:]]}
     routes = {**_full(), "/api/research": _ok(served), "/api/desk/sessions": _ok(SESSIONS)}
-    monkeypatch.setattr(report, "roster_draft", lambda *a, **k: None)
+    monkeypatch.setattr(report, "recorded_approval", lambda text: "2026-10-01")
     with _Engine(routes) as eng:
         spec = report.run({}, _ctx(tmp_path, eng.url))
     r = spec.tables["pooled_test"].iloc[0]
     # one session recorded; the offline test environment has no risk-free rate, so the statistic says so
     assert r["sessions_done"] == 1 and r["verdict"] == "IN PROGRESS"
     assert r["reason"].startswith("statistic not computable this session")
+
+
+def test_only_sessions_on_or_after_the_approval_date_count_not_inc01s(tmp_path):
+    """The journal still holds INC-01's fills (2026-10-21 to 2026-11-05): they are not INC-02's sessions."""
+    (tmp_path / "preregistration.md").write_text("Approved-by: the owner, 2027-01-20\n")
+    research, closes, rf, last = _bodies(100)         # sessions from 2027-01-05
+    early = [r["date"] for r in research["strategies"][0]["record"]["sessions"] if r["date"] < "2027-01-20"]
+    assert early                                       # INC-01-era rows sit before the approval
+    row = _row((research, closes, rf, last), path=tmp_path / "roster.yaml")
+    after = [r for r in research["strategies"][0]["record"]["sessions"] if r["date"] >= "2027-01-20"]
+    assert row["sessions_done"] == len(after) < 100 and row["verdict"] == "IN PROGRESS"
+
+
+def test_only_inc01_sessions_before_approval_is_not_started(tmp_path):
+    (tmp_path / "preregistration.md").write_text("Approved-by: the owner, 2030-01-01\n")
+    row = _row(_bodies(40), path=tmp_path / "roster.yaml")
+    assert row["verdict"] == "NOT STARTED" and row["sessions_done"] == 0 and row["reason"] == "no INC-02 fill yet"
+
+
+def test_an_approval_line_without_a_date_is_not_started_and_says_so(tmp_path):
+    (tmp_path / "preregistration.md").write_text("Approved-by: the owner\n")
+    row = _row(_bodies(40), path=tmp_path / "roster.yaml")
+    assert row["verdict"] == "NOT STARTED" and row["sessions_done"] == 0
+    assert row["reason"] == "INC-02's approval line carries no date"

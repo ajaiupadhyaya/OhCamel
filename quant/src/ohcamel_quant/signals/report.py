@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -70,7 +71,7 @@ import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
 from .pooled import SESSIONS, analytic_power, psr_and_se, verdict_at
-from .roster import ROSTER_PATH, roster_draft
+from .roster import ROSTER_PATH, preregistration_text, recorded_approval
 
 __all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "PAPER_SENTENCE", "ROUTES", "TCA_COLUMNS", "TIMEOUT_S",
            "VAR_SCORE_COLUMNS", "POOLED_COLUMNS", "run"]
@@ -441,7 +442,7 @@ def _var_score(desk: dict[str, Any] | None, notes: list[str]) -> list[dict[str, 
 
 
 def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any,
-                  notes: list[str]) -> tuple[list[float] | None, int, str | None]:
+                  notes: list[str], since: str | None = None) -> tuple[list[float] | None, int, str | None]:
     """INC-02's T1, the proposed statistic: per session ``sum_i (pnl_i - allocated_i * r_f) / prior-close equity``,
     i.e. ``sum_i w_i (r_i - r_f)`` with ``w_i`` the share of the account allocated. Each strategy's ``record`` is
     ``{"sessions": [{date, allocated, pnl}]}`` (desk/record.ml's session, from the strategy's first fill); a
@@ -450,7 +451,10 @@ def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, r
     cause)``: ``recorded`` counts the sessions recorded from the first fill; ``series`` is None, with the
     ``cause``, when a close lacks a prior equity or a rate (the statistic is then not computable, but the
     sessions still happened), and ``(None, 0, None)`` when there is no record at all. ``rf_for()`` reads the
-    rate, and is called only once there is a record to need it."""
+    rate, and is called only once there is a record to need it. ``since`` (an ISO date, INC-02's approval date)
+    is the ONE place the series is cut to INC-02: record rows dated before it (INC-01's sessions, which the
+    journal still holds) are dropped before anything is counted, so the first session is the first fill on or
+    after it. The served record stays full history."""
     rows: dict[str, list[tuple[float, float]]] = {}
     strategies = (research or {}).get("strategies")
     for s in strategies if isinstance(strategies, list) else []:
@@ -462,6 +466,8 @@ def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, r
             alloc, pnl = _num(r.get("allocated")), _num(r.get("pnl"))
             if alloc is not None and pnl is not None:
                 rows.setdefault(r["date"], []).append((alloc, pnl))
+    if since is not None:
+        rows = {d: v for d, v in rows.items() if d >= since}
     if not rows:
         return None, 0, None
     closes = sorted((c["date"], _num(c.get("equity_close"))) for c in sessions or []
@@ -502,12 +508,17 @@ def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf
     until INC-02's first fill; ``IN PROGRESS`` to session 500; then the one evaluation."""
     head = {"experiment": "INC-02", "sessions_required": SESSIONS, "power_at_1": round(analytic_power(1.0), 2),
             "power_at_half": round(analytic_power(0.5), 2), "as_of": session.isoformat(), "source": POOLED_SOURCE}
-    unapproved = roster_draft(roster_path) is not None
+    text = preregistration_text(roster_path)
+    approved_on = recorded_approval(text)
+    unapproved = approved_on is None
     label = "excess return on deployed capital" + (" (proposed, awaiting approval)" if unapproved else "")
     idle = {"sessions_done": 0, "psr": None, "sharpe_se": None, "verdict": "NOT STARTED", "statistic": label}
     if unapproved:
-        return [{**head, **idle, "reason": "INC-02 awaits the owner's approval"}]
-    daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes)
+        # an empty ``Approved-by:`` is the template's blank, still awaiting; one with words but no date is dateless
+        dateless = any(re.match(r"^`?Approved-by:`?\s*\S", line.strip()) for line in text.splitlines())
+        return [{**head, **idle, "reason": "INC-02's approval line carries no date" if dateless
+                 else "INC-02 awaits the owner's approval"}]
+    daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes, since=approved_on)
     if recorded == 0 and cause is None:
         return [{**head, **idle, "reason": "no INC-02 fill yet"}]
     done = min(recorded, SESSIONS)
