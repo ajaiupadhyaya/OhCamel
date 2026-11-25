@@ -14,10 +14,13 @@ K_GRID = np.linspace(-svi.K_MAX, svi.K_MAX, 1201)
 
 
 def _synthetic(p: ssvi.SSVIParams, n_k: int = 41):
-    """Noiseless quotes of a known SSVI surface (CONSTRUCTED; parameter recovery only, nothing reported)."""
+    """Noiseless quotes of a known SSVI surface (CONSTRUCTED; parameter recovery only, nothing reported). No quote
+    within 0.1 of the money, so the fit's theta start (each slice's quoted w interpolated at k = 0) is not the true
+    theta: the recovery is the optimiser's, not the start's."""
     out = []
     for i, T in enumerate(p.T):
         k = np.linspace(-0.6, 0.4, n_k) * np.sqrt(T / 0.25) ** 0.5
+        k = k[np.abs(k) > 0.1]
         w = ssvi.total_variance(p, k, T)
         out.append((float(T), k, np.sqrt(w / T), np.ones_like(k) * (1.0 + 0.1 * i)))
     return out
@@ -66,7 +69,10 @@ def test_total_variance_is_monotone_between_and_beyond_the_fitted_maturities():
 
 
 def test_recovers_known_parameters_from_a_noiseless_synthetic_surface():
-    f = ssvi.fit(_synthetic(TRUE))
+    quotes = _synthetic(TRUE)
+    start = np.array([ssvi._atm_w(T, k, iv) for T, k, iv, _ in quotes])
+    assert np.max(np.abs(start - TRUE.theta)) > 1e-4          # the start is off by more than the tolerance
+    f = ssvi.fit(quotes)
     p = f.params
     assert abs(p.rho - TRUE.rho) < 1e-4 and abs(p.eta - TRUE.eta) < 1e-4 and abs(p.gamma - TRUE.gamma) < 1e-4
     assert np.max(np.abs(p.theta - TRUE.theta)) < 1e-4

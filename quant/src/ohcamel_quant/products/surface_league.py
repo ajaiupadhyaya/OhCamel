@@ -12,16 +12,21 @@ Three scores (verdict ``DESCRIPTIVE ONLY``: a measurement, no model is chosen by
 1. **In-sample RMSE**, implied-vol points, unweighted, every fitted quote of the latest snapshot day pooled.
 2. **Violations**, counted by the same code for every model with SVI-form slices: ``butterfly_violations`` = slices
    failing ``svi.butterfly_check`` (Durrleman's ``g`` on ``[-K_MAX, K_MAX]`` by the refined scan ``svi._g_min``,
-   tolerance ``svi.G_TOL``); ``calendar_violations`` = adjacent fitted expiries failing ``svi.calendar_check``
-   (``w(k, T)`` non-decreasing, tolerance 1e-8) on ``K_GRID`` (``surface.ARB_K_GRID``), 1201 points over ``[-K_MAX, K_MAX]`` -- the range the
-   page's densities integrate over, so a wing crossing beyond the quotes counts.
-3. **Next-day RMSE**, implied-vol points: the previous snapshot day's fitted parameters scored on the latest day's
+   tolerance ``svi.G_TOL``); and two calendar counts of adjacent fitted expiries whose total variance decreases
+   (tolerance 1e-8), kept apart because they answer different questions (``surface.count_violations``):
+   ``calendar_violations_quoted`` of ``calendar_pairs_quoted`` -- on each pair's COMMON QUOTED range
+   ``[max(kmin1, kmin2), min(kmax1, kmax2)]`` (201 points; ``svi.calendar_check_quoted``), where both smiles are
+   pinned by quotes; and ``calendar_violations`` of ``calendar_pairs`` -- on ``K_GRID`` (``surface.ARB_K_GRID``),
+   1201 points over ``[-K_MAX, K_MAX]``, the range the page's densities integrate over, INCLUDING the wings each
+   smile extrapolates beyond its quotes (a short expiry quoted on ``[-0.11, 0.04]`` is extrapolated over most of it).
+3. **Next-day IV RMSE** (vol points): the previous session's fitted parameters scored on the latest day's
    identified quotes (``use_smile``, expiries with ``dte >= MIN_DTE``). Each quote is predicted by its own expiry's
    smile as fitted the day before, at the quote's new log-forward-moneyness (sticky moneyness, same expiry); a quote
    on an expiry the earlier fit did not have is counted in ``next_day_unscored``. Measured in implied vol, not price:
    the chains are American, and an IV is how a quote is identified (an American mid and a Black price differ by the
    early-exercise premium). Blank, with the reason in ``next_day_note``, when there is no earlier snapshot day or
-   the earlier one is more than ``MAX_GAP_DAYS`` calendar days back (not a next-day score).
+   it is not the previous NYSE session (``signals.calendar.previous_session``: weekdays less the rule holidays; a
+   snapshot missed for a day makes the next one unscored, as it is not a next-day score).
 
 Snapshots: each day's pre-close pull, quote time, spot and zero curve are read exactly as ``vol.surface_history``
 reads them (``surface_history._chain`` / ``_curve``).
@@ -39,6 +44,7 @@ import pandas as pd
 
 from ..data.base import DataUnavailable
 from ..jobs.artifacts import ArtifactSpec
+from ..jobs.context import JobCancelled
 from ..options import ssvi, svi
 from ..options.chain import ChainAnalytics, analyze_chain
 from ..options.surface import ARB_K_GRID as K_GRID  # noqa: F401  (the grid the calendar count uses)
@@ -46,9 +52,10 @@ from ..options.surface import VolSurface, build_surface, count_violations, fit_s
 
 KIND = "vol.surface_league"
 MIN_DTE = 1.0              # build_surface's default: expiries under a day are not fitted, nor scored
-MAX_GAP_DAYS = 4           # Friday -> Tuesday over a Monday holiday; further back is not "the next day"
+MAX_GAP_SESSIONS = 1       # the earlier snapshot must be the previous NYSE session: "the next day"
 COLS = ["underlying", "model", "asof", "n_slices", "n_quotes", "rmse_vol_pts", "butterfly_violations",
-        "calendar_violations", "calendar_pairs", "next_day_rmse_vol_pts", "next_day_n", "next_day_unscored",
+        "calendar_violations_quoted", "calendar_pairs_quoted", "calendar_violations", "calendar_pairs",
+        "next_day_rmse_vol_pts", "next_day_n", "next_day_unscored",
         "next_day_fit_asof", "next_day_note", "params", "fit_note"]
 ERR_COLS = ["underlying", "asof", "model", "error"]
 
@@ -76,7 +83,7 @@ def _svi_score(fits: dict[str, svi.SVIFit]) -> dict[str, Any]:
     n = np.array([f.n for f in fits.values()], dtype=float)
     r = np.array([f.rmse_vol_pts for f in fits.values()], dtype=float)
     return {"n_quotes": int(n.sum()), "rmse_vol_pts": float(np.sqrt(np.sum(n * r * r) / n.sum())),
-            **count_violations([(f.T, f.params) for f in fits.values()])}
+            **count_violations([(f.T, f.params, f.k_min, f.k_max) for f in fits.values()])}
 
 
 def _svi_predict(fits: dict[str, svi.SVIFit], sid: str, k: np.ndarray) -> np.ndarray | None:
@@ -88,17 +95,19 @@ def _svi_predict(fits: dict[str, svi.SVIFit], sid: str, k: np.ndarray) -> np.nda
 @dataclass
 class _SSVIFitted:
     fit: ssvi.SSVIFit
-    T_of: dict[str, float]     # slice id -> its fitted maturity
+    T_of: dict[str, float]                        # slice id -> its fitted maturity
+    k_range: dict[float, tuple[float, float]]     # fitted maturity -> the quoted k range it was fitted to
 
 
 def _ssvi_fit(ca: ChainAnalytics, vs: VolSurface) -> _SSVIFitted:
-    return _SSVIFitted(fit=fit_ssvi_surface(ca, vs), T_of={sid: f.T for sid, f in vs.fits.items()})
+    return _SSVIFitted(fit=fit_ssvi_surface(ca, vs), T_of={sid: f.T for sid, f in vs.fits.items()},
+                       k_range={f.T: (f.k_min, f.k_max) for f in vs.fits.values()})
 
 
 def _ssvi_score(m: _SSVIFitted) -> dict[str, Any]:
     p = m.fit.params
     return {"n_quotes": m.fit.n, "rmse_vol_pts": m.fit.rmse_vol_pts,
-            **count_violations([(float(t), ssvi.slice_svi(p, float(t))) for t in p.T])}
+            **count_violations([(float(t), ssvi.slice_svi(p, float(t)), *m.k_range[float(t)]) for t in p.T])}
 
 
 def _ssvi_predict(m: _SSVIFitted, sid: str, k: np.ndarray) -> np.ndarray | None:
@@ -151,6 +160,18 @@ def next_day(fitted: dict[str, Any], ca_next: ChainAnalytics, min_dte: float = M
     return out
 
 
+def sessions_between(prev: str, asof: str) -> int:
+    """NYSE sessions in ``(prev, asof]`` (``signals.calendar``: weekdays less the rule holidays): 1 when ``prev``
+    is the previous session of ``asof`` -- a Friday before a Monday, or before a Tuesday after a Monday holiday."""
+    from ..signals.calendar import next_session
+
+    d, end, n = pd.Timestamp(prev).date(), pd.Timestamp(asof).date(), 0
+    while d < end:
+        d = next_session(d)
+        n += 1
+    return n
+
+
 # --- the job --------------------------------------------------------------------------------------------------------
 def _day(ctx: Any, und: str, asof: str) -> tuple[ChainAnalytics, VolSurface]:
     from .surface_history import _chain, _curve
@@ -174,8 +195,10 @@ def _fit_all(ca: ChainAnalytics, vs: VolSurface, und: str, asof: str, errors: li
     for m in MODELS:
         try:
             out[m.name] = m.fit(ca, vs)
-        except (ValueError, np.linalg.LinAlgError) as e:
-            errors.append({"underlying": und, "asof": asof, "model": m.name, "error": str(e)})
+        except JobCancelled:
+            raise
+        except Exception as e:      # one model's failure is that model's row, never the name's or the night's
+            errors.append({"underlying": und, "asof": asof, "model": m.name, "error": f"{type(e).__name__}: {e}"})
     return out
 
 
@@ -189,9 +212,10 @@ def _underlying(ctx: Any, und: str, dates: list[str], errors: list[dict[str, Any
     if prev is None:
         note = "no earlier snapshot day for this underlying"
     else:
-        gap = (pd.Timestamp(asof) - pd.Timestamp(prev)).days
-        if gap > MAX_GAP_DAYS:
-            note = f"the earlier snapshot day ({prev}) is {gap} days back, beyond {MAX_GAP_DAYS}; not a next-day score"
+        gap = sessions_between(prev, asof)
+        if gap > MAX_GAP_SESSIONS:
+            note = (f"the earlier snapshot day ({prev}) is {gap} sessions back, not the previous session; "
+                    "not a next-day score")
         else:
             try:
                 ca0, vs0 = _day(ctx, und, prev)
@@ -199,8 +223,10 @@ def _underlying(ctx: Any, und: str, dates: list[str], errors: list[dict[str, Any
                 nd = next_day(fitted0, ca)
                 if not fitted0:
                     note = f"no model fitted the {prev} snapshot"
-            except (DataUnavailable, ValueError, KeyError, np.linalg.LinAlgError) as e:
-                note = f"the {prev} snapshot could not be fitted: {e}"
+            except JobCancelled:
+                raise
+            except Exception as e:
+                note = f"the {prev} snapshot could not be fitted: {type(e).__name__}: {e}"
     rows = []
     for m in MODELS:
         row: dict[str, Any] = {"underlying": und, "model": m.name, "asof": asof}
@@ -239,8 +265,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         ctx.check_cancelled()
         try:
             rows += _underlying(ctx, und, dates, errors)
-        except (DataUnavailable, ValueError, KeyError, np.linalg.LinAlgError) as e:   # one name never sinks the night
-            errors.append({"underlying": und, "asof": dates[-1], "model": None, "error": str(e)})
+        except JobCancelled:
+            raise
+        except Exception as e:       # one name never sinks the night: its failure and reason are that name's record
+            errors.append({"underlying": und, "asof": dates[-1], "model": None, "error": f"{type(e).__name__}: {e}"})
         ctx.progress((i + 1) / max(len(days), 1), und)
     league = pd.DataFrame(rows, columns=COLS)
     err = pd.DataFrame(errors, columns=ERR_COLS)
@@ -254,11 +282,12 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         notes=[*notes,
                "in-sample RMSE: implied-vol points, every fitted quote of the latest snapshot day pooled, unweighted",
                f"violations: butterfly = slices with Durrleman g < 0 on k in [-{svi.K_MAX:g}, {svi.K_MAX:g}] "
-               "(refined scan); calendar = adjacent fitted expiries whose total variance decreases at some k of a "
-               "1201-point grid on the same range; one code for both models",
-               "next-day RMSE: the previous snapshot day's fit (same expiry, sticky log-forward-moneyness) on the "
-               "latest day's identified quotes, implied-vol points; blank with its reason when there is no earlier "
-               f"day or it is more than {MAX_GAP_DAYS} days back",
+               "(refined scan); calendar, two counts of adjacent fitted expiries whose total variance decreases: "
+               "within the pair's common quoted k range (201 points), and on a 1201-point grid of the same [-3, 3] "
+               "range including the wings each smile extrapolates beyond its quotes; one code for both models",
+               "next-day IV RMSE (vol pts): the previous session's fit (same expiry, sticky log-forward-moneyness) on "
+               "the latest day's identified quotes; blank with its reason when there is no earlier snapshot day or "
+               "it is not the previous NYSE session",
                "SSVI: power-law phi under eta (1 + |rho|) <= 2, gamma in (0, 1/2], theta non-decreasing "
                "(Gatheral & Jacquier 2014, Thm 4.1, Thm 4.2, Cor. 4.1)"],
         verdict="DESCRIPTIVE ONLY",

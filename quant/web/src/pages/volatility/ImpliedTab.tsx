@@ -293,13 +293,15 @@ function ArbPanel({ d }: { d: Surface }) {
     { key: "T1", label: "Pair", render: (c) => <span className="num">{Tlabel(c.T1)} → {Tlabel(c.T2)}</span> },
     { key: "min_dw", label: <span className="vx-sym">min Δw</span>, numeric: true, format: (v) => fmtSci(v, 2), info: INFO.calendar, color: (v) => (v != null && v < 0 ? "loss" : undefined) },
     { key: "k_at_min", label: <span className="vx-sym">at k</span>, numeric: true, format: (v) => fmtNum(v, 3), hideBelow: 900 },
+    { key: "k_lo", label: <span className="vx-sym">quoted k</span>, numeric: true, sortable: false, render: (c) => <span className="num">{c.overlap === false ? "NO OVERLAP" : `${fmtNum(c.k_lo, 3)} … ${fmtNum(c.k_hi, 3)}`}</span>, hideBelow: 1200 },
   ];
   return (
     <div className="vx-arb">
       <Readline
         items={[
           { k: "BUTTERFLY", v: `${nbOk}/${smiles.length}`, tone: nbOk < smiles.length ? "loss" : "" },
-          { k: "CALENDAR", v: `${ncOk}/${d.calendar.length}`, tone: ncOk < d.calendar.length ? "loss" : "" },
+          { k: "CALENDAR · QUOTED OVERLAP", v: `${ncOk}/${d.calendar.length}`, tone: ncOk < d.calendar.length ? "loss" : "" },
+          ...(d.svi_violations ? [{ k: "CALENDAR · [−3, 3] INCL. WINGS", v: `${d.svi_violations.calendar_pairs - d.svi_violations.calendar_violations}/${d.svi_violations.calendar_pairs}` }] : []),
         ]}
       />
       <div className="vx-arb-grid">
@@ -308,7 +310,7 @@ function ArbPanel({ d }: { d: Surface }) {
           <DataTable columns={bcols} rows={brows} rowKey={(r) => r.slice} />
         </div>
         <div>
-          <h4 className="vx-table-title">Across maturities · adjacent pairs</h4>
+          <h4 className="vx-table-title">Across maturities · adjacent pairs · common quoted range</h4>
           <DataTable columns={ccols} rows={d.calendar} rowKey={(c) => `${c.T1}-${c.T2}`} />
         </div>
       </div>

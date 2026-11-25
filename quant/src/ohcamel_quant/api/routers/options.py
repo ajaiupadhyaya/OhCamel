@@ -43,9 +43,10 @@ from ...options.parity import InsufficientQuotes, exercise_style
 from ...options.surface import (
     VolSurface,
     build_surface,
-    count_violations,
     fit_ssvi_surface,
     ssvi_grid,
+    ssvi_violations,
+    svi_violations,
     svi_weights,
 )
 from ...options.svi import fit_svi
@@ -290,7 +291,7 @@ def surface(ticker: str, market: Market) -> dict[str, Any]:
                  "iv": vs.grid_iv},
         "calendar": vs.calendar,
         # completion task 4.5: the SSVI surface on the same grid, and both models' violations counted one way
-        "svi_violations": count_violations(vs.slices()),
+        "svi_violations": svi_violations(vs),
         "ssvi": _ssvi_block(b, vs),
         "vix_style_30d": vs.vix_style,
         "atm_30d": vs.atm_30d,
@@ -299,7 +300,9 @@ def surface(ticker: str, market: Market) -> dict[str, Any]:
                    "calibration": "quasi-explicit: exact inner box-QP over (a, c, d), outer grid + Nelder-Mead; "
                                   "wing slopes b(1 +- rho) <= 2 (Lee), vertex m inside the quoted k",
                    "arbitrage": "Durrleman g(k) >= 0 on k in [-3, 3], required of every fit (butterfly); "
-                                "w(k,T) non-decreasing in T (calendar), checked",
+                                "w(k,T) non-decreasing in T (calendar), checked on each adjacent pair's common "
+                                "quoted k range (`calendar`); svi_violations / ssvi.violations also count it on "
+                                "[-3, 3] including the extrapolated wings",
                    "interpolation": "total variance linear in T at fixed k = ln(K/F); no extrapolation",
                    "rr_bf": "spot-delta 25/10 RR = iv_call - iv_put; BF = mean - ATMF vol",
                    "model_free": REFS["mfiv"], "reference": REFS["svi"]},
@@ -316,7 +319,7 @@ def _ssvi_block(b: _Bundle, vs: VolSurface) -> dict[str, Any]:
         return {"error": b.ssvi_error, "fit": None, "grid_iv": None, "violations": None}
     p = f.params
     return {"error": None, "fit": f.to_dict(), "grid_iv": ssvi_grid(p, vs.grid_k, vs.grid_T),
-            "violations": count_violations([(float(t), ssvi_mod.slice_svi(p, float(t))) for t in p.T]),
+            "violations": ssvi_violations(p, vs),
             "method": "SSVI, power-law phi, one (rho, eta, gamma) for the surface and theta per expiry, fitted in "
                       "implied vol to the per-slice fit's quotes and weights; eta (1 + |rho|) <= 2, gamma in (0, 1/2], "
                       "theta non-decreasing: free of calendar and butterfly arbitrage (Gatheral & Jacquier 2014)"}

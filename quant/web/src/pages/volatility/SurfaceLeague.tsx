@@ -1,9 +1,10 @@
 /**
  * SURFACE LEAGUE (completion task 4.5, vol.surface_league, weekdays 21:10): per underlying, the per-slice SVI the
  * surface panel has shown against SSVI (power-law phi, free of calendar and butterfly arbitrage by construction),
- * on three scores -- in-sample RMSE (vol points), butterfly and calendar violations (one code for both models),
- * and the next-day RMSE (the previous snapshot day's fit on the latest day's quotes; blank with its reason when
- * there is none). Verdict DESCRIPTIVE ONLY: a measurement, no model is chosen by it. Source and as-of come from
+ * on three scores -- in-sample RMSE (vol points), butterfly and calendar violations (one code for both models;
+ * calendar twice: within each pair's common quoted range, and on [-3, 3] including the extrapolated wings), and
+ * the next-day IV RMSE (the previous session's fit on the latest day's quotes; blank with its reason when there
+ * is none). Verdict DESCRIPTIVE ONLY: a measurement, no model is chosen by it. Source and as-of come from
  * the artifact (ArtifactCell).
  *
  * SurfaceModelLine reads the live surface's two models (GET /api/options/surface/{t}): SSVI's parameters against
@@ -22,7 +23,7 @@ const ratio = (n: number | null | undefined, of: number | null | undefined) => (
 
 /** The short label of a blank next-day cell; the full reason stays beside it. */
 export const nextDayBlank = (note: string | null | undefined): string =>
-  note?.includes("no earlier snapshot") ? "NO EARLIER DAY" : note?.includes("days back") ? "GAP" : "NOT SCORED";
+  note?.includes("no earlier snapshot") ? "NO EARLIER DAY" : note?.includes("sessions back") ? "NOT PREVIOUS SESSION" : "NOT SCORED";
 
 export function SurfaceLeagueView({ ticker }: { ticker: string }) {
   return (
@@ -46,10 +47,11 @@ export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]
     { key: "model", label: "Model", render: (r) => <span title={r.fit_note ?? r.params ?? undefined}>{r.model}</span> },
     { key: "rmse_vol_pts", label: "RMSE · pts", numeric: true, render: (r) => <span className="num">{fmtPts(r.rmse_vol_pts)}</span>, title: "in-sample, implied-vol points, every fitted quote pooled" },
     { key: "butterfly_violations", label: "Butterfly", numeric: true, render: (r) => <span className="num">{ratio(r.butterfly_violations, r.n_slices)}</span>, title: "slices with g < 0 on k in [-3, 3]" },
-    { key: "calendar_violations", label: "Calendar", numeric: true, render: (r) => <span className="num">{ratio(r.calendar_violations, r.calendar_pairs)}</span>, title: "adjacent expiries whose total variance decreases somewhere on k in [-3, 3]" },
+    { key: "calendar_violations_quoted", label: "Calendar · quoted", numeric: true, render: (r) => <span className="num">{ratio(r.calendar_violations_quoted, r.calendar_pairs_quoted)}</span>, title: "adjacent expiries whose total variance decreases within their common quoted k range" },
+    { key: "calendar_violations", label: "Calendar · [−3, 3] incl. wings", numeric: true, render: (r) => <span className="num">{ratio(r.calendar_violations, r.calendar_pairs)}</span>, title: "adjacent expiries whose total variance decreases somewhere on k in [-3, 3], including the wings each smile extrapolates beyond its quotes" },
     {
       key: "next_day_rmse_vol_pts",
-      label: "Next day · pts",
+      label: "Next-day IV RMSE · pts",
       numeric: true,
       render: (r) =>
         r.next_day_rmse_vol_pts == null ? (
@@ -57,8 +59,8 @@ export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]
             {nextDayBlank(r.next_day_note)} · {r.next_day_note ?? "—"}
           </span>
         ) : (
-          <span className="num" title={`${fmtNum(r.next_day_n ?? 0, 0)} quotes scored, ${fmtNum(r.next_day_unscored ?? 0, 0)} on expiries the earlier fit lacked`}>
-            {fmtPts(r.next_day_rmse_vol_pts)} · FIT {fmtDate(r.next_day_fit_asof, "iso")}
+          <span className="num" title={`${fmtNum(r.next_day_unscored ?? 0, 0)} quotes unscored (expiries the earlier fit lacked)`}>
+            {fmtPts(r.next_day_rmse_vol_pts)} · n {fmtNum(r.next_day_n, 0)} · FIT {fmtDate(r.next_day_fit_asof, "iso")}
           </span>
         ),
       wrap: true,
@@ -83,7 +85,8 @@ export function SurfaceModelLine({ ssvi, sviViolations }: { ssvi: SSVIBlock; svi
         { k: "γ", v: fmtNum(p.gamma, 3) },
         { k: "η(1+|ρ|) ≤ 2", v: fmtNum(p.eta_one_plus_abs_rho, 3) },
         { k: "SSVI RMSE", v: `${fmtPts(ssvi.fit.rmse_vol_pts)} PTS` },
-        { k: "CALENDAR SVI · SSVI", v: `${ratio(sviViolations.calendar_violations, sviViolations.calendar_pairs)} · ${ratio(ssvi.violations.calendar_violations, ssvi.violations.calendar_pairs)}` },
+        { k: "CALENDAR · QUOTED SVI · SSVI", v: `${ratio(sviViolations.calendar_violations_quoted, sviViolations.calendar_pairs_quoted)} · ${ratio(ssvi.violations.calendar_violations_quoted, ssvi.violations.calendar_pairs_quoted)}` },
+        { k: "CALENDAR · [−3, 3] INCL. WINGS SVI · SSVI", v: `${ratio(sviViolations.calendar_violations, sviViolations.calendar_pairs)} · ${ratio(ssvi.violations.calendar_violations, ssvi.violations.calendar_pairs)}` },
         { k: "BUTTERFLY SVI · SSVI", v: `${ratio(sviViolations.butterfly_violations, sviViolations.n_slices)} · ${ratio(ssvi.violations.butterfly_violations, ssvi.violations.n_slices)}` },
       ]}
     />

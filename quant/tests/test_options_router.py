@@ -152,7 +152,12 @@ def test_surface_carries_the_ssvi_surface_on_the_same_grid(chain_client):
     assert p["eta"] * (1 + abs(p["rho"])) <= 2.0 and 0 < p["gamma"] <= 0.5 and len(p["T"]) == len(j["smiles"])
     assert s["violations"]["butterfly_violations"] == 0 == s["violations"]["calendar_violations"]
     assert s["fit"]["rmse_vol_pts"] >= 0 and "Gatheral" in s["fit"]["conditions"]["reference"]
-    assert set(j["svi_violations"]) >= {"butterfly_violations", "calendar_violations", "calendar_pairs"}
+    assert set(j["svi_violations"]) >= {"butterfly_violations", "calendar_violations", "calendar_pairs",
+                                        "calendar_violations_quoted", "calendar_pairs_quoted"}
+    assert s["violations"]["calendar_violations_quoted"] == 0
+    # the calendar table is the quoted-overlap check: one definition with svi_violations' quoted count
+    assert j["svi_violations"]["calendar_violations_quoted"] == sum(c["violation"] for c in j["calendar"])
+    assert all("k_lo" in c and "overlap" in c for c in j["calendar"])
 
 
 def test_strategy_endpoint(chain_client):

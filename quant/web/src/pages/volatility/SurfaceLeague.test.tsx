@@ -16,7 +16,7 @@ function render(node: ReactNode) {
 
 const row = (model: string, over: Partial<SurfaceLeagueRow> = {}): SurfaceLeagueRow => ({
   underlying: "SPY", model, asof: "2026-11-24", n_slices: 31, n_quotes: 5000, rmse_vol_pts: 0.48,
-  butterfly_violations: 0, calendar_violations: 3, calendar_pairs: 30, next_day_rmse_vol_pts: 1.25, next_day_n: 4800,
+  butterfly_violations: 0, calendar_violations_quoted: 1, calendar_pairs_quoted: 30, calendar_violations: 3, calendar_pairs: 30, next_day_rmse_vol_pts: 1.25, next_day_n: 4800,
   next_day_unscored: 120, next_day_fit_asof: "2026-11-23", next_day_note: null, params: null, fit_note: null, ...over,
 });
 
@@ -35,8 +35,12 @@ describe("SurfaceLeagueReport (vol.surface_league)", () => {
     expect(html).toContain("3.45");
     expect(html).toContain("3 / 30");
     expect(html).toContain("0 / 30");
-    expect(html).toContain("1.25");
+    expect(html).toContain("1.25 · n 4,800");
     expect(html).toContain("2026-11-23");
+    expect(html).toContain("1 / 30");
+    expect(html).toContain("Calendar · quoted");
+    expect(html).toContain("incl. wings");
+    expect(html).toContain("Next-day IV RMSE");
     expect(html).not.toContain("9.99");
   });
   it("leaves a next-day cell blank with its reason, never a number", () => {
@@ -53,13 +57,15 @@ describe("SurfaceModelLine (live surface)", () => {
   it("reads the SSVI parameters against the condition and both models' live violations", () => {
     const h = render(
       <SurfaceModelLine
-        ssvi={{ error: null, grid_iv: [[0.2]], method: "", violations: { butterfly_violations: 0, calendar_violations: 0, calendar_pairs: 30, n_slices: 31 },
+        ssvi={{ error: null, grid_iv: [[0.2]], method: "", violations: { butterfly_violations: 0, calendar_violations_quoted: 0, calendar_pairs_quoted: 30, calendar_violations: 0, calendar_pairs: 30, n_slices: 31 },
           fit: { params: { rho: -0.61, eta: 1.24, gamma: 0.499, theta: [], T: [], eta_one_plus_abs_rho: 1.996 }, n: 5000, rmse_vol_pts: 3.45, max_abs_err_vol_pts: 12, slice_rmse_vol_pts: [], slice_n: [], cost: 1, nfev: 20, status: 2, conditions: {} } }}
-        sviViolations={{ butterfly_violations: 0, calendar_violations: 2, calendar_pairs: 30, n_slices: 31 }}
+        sviViolations={{ butterfly_violations: 0, calendar_violations_quoted: 4, calendar_pairs_quoted: 30, calendar_violations: 17, calendar_pairs: 30, n_slices: 31 }}
       />,
     );
     expect(h).toContain("1.996");
     expect(h).toContain("3.45");
-    expect(h).toContain("2 / 30");
+    expect(h).toContain("4 / 30 · 0 / 30");
+    expect(h).toContain("17 / 30 · 0 / 30");
+    expect(h).toContain("INCL. WINGS");
   });
 });

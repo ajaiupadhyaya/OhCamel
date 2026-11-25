@@ -28,6 +28,7 @@ from .svi import (
     SVIParams,
     butterfly_check,
     calendar_check,
+    calendar_check_quoted,
     fit_svi,
     implied_vol_surface,
     total_variance_surface,
@@ -103,21 +104,42 @@ def ssvi_grid(p: ssvi.SSVIParams, grid_k: np.ndarray, grid_T: np.ndarray) -> np.
     return np.vstack([ssvi.implied_vol(p, grid_k, float(t)) for t in np.atleast_1d(grid_T)])
 
 
-#: The k grid the calendar check of :func:`count_violations` runs on: 1201 points over [-K_MAX, K_MAX], the range
-#: every fitted smile is held butterfly-free on and the densities integrate over.
+#: The k grid the wide calendar count of :func:`count_violations` runs on: 1201 points over [-K_MAX, K_MAX], the range
+#: every fitted smile is held butterfly-free on and the densities integrate over (wings beyond the quotes included).
 ARB_K_GRID = np.linspace(-K_MAX, K_MAX, 1201)
 
 
-def count_violations(slices: list[tuple[float, SVIParams]]) -> dict[str, int]:
-    """Butterfly and calendar violations of SVI-form slices ``[(T, params), ...]``, by the code the per-slice fits
-    are checked with: slices failing :func:`.svi.butterfly_check` (the refined g scan on [-K_MAX, K_MAX], tolerance
-    G_TOL), and adjacent pairs failing :func:`.svi.calendar_check` on :data:`ARB_K_GRID`. One code for every model
-    whose slices are SVI (per-slice SVI, SSVI), so their counts compare like with like."""
+def count_violations(slices: list[tuple[float, SVIParams, float, float]]) -> dict[str, int]:
+    """Butterfly and calendar violations of SVI-form slices ``[(T, params, k_min, k_max), ...]`` (``k_min``,
+    ``k_max``: the slice's quoted range), by the code the per-slice fits are checked with. One code for every model
+    whose slices are SVI (per-slice SVI, SSVI), so their counts compare like with like.
+
+    * ``butterfly_violations`` of ``n_slices``: slices failing :func:`.svi.butterfly_check` (the refined g scan on
+      [-K_MAX, K_MAX], tolerance G_TOL).
+    * ``calendar_violations_quoted`` of ``calendar_pairs_quoted``: adjacent pairs whose total variance decreases
+      somewhere on their COMMON QUOTED range (:func:`.svi.calendar_check_quoted`) -- the page's calendar table.
+    * ``calendar_violations`` of ``calendar_pairs``: adjacent pairs whose total variance decreases somewhere on
+      :data:`ARB_K_GRID`, [-K_MAX, K_MAX], INCLUDING the extrapolated wings beyond either smile's quotes."""
     ss = sorted(slices, key=lambda s: s[0])
-    cal = calendar_check(ss, ARB_K_GRID) if len(ss) > 1 else []
-    return {"butterfly_violations": int(sum(not butterfly_check(p)["arbitrage_free"] for _, p in ss)),
-            "calendar_violations": int(sum(c["violation"] for c in cal)), "calendar_pairs": len(cal),
-            "n_slices": len(ss)}
+    cal = calendar_check([(t, p) for t, p, _, _ in ss], ARB_K_GRID) if len(ss) > 1 else []
+    calq = calendar_check_quoted(ss)
+    return {"butterfly_violations": int(sum(not butterfly_check(p)["arbitrage_free"] for _, p, _, _ in ss)),
+            "n_slices": len(ss),
+            "calendar_violations_quoted": int(sum(c["violation"] for c in calq)),
+            "calendar_pairs_quoted": int(sum(c["overlap"] for c in calq)),
+            "calendar_violations": int(sum(c["violation"] for c in cal)), "calendar_pairs": len(cal)}
+
+
+def svi_violations(vs: VolSurface) -> dict[str, int]:
+    """:func:`count_violations` of the per-slice SVI fits, each over its own quoted range."""
+    return count_violations([(f.T, f.params, f.k_min, f.k_max) for f in vs.fits.values()])
+
+
+def ssvi_violations(p: ssvi.SSVIParams, vs: VolSurface) -> dict[str, int]:
+    """:func:`count_violations` of the SSVI slices at the fitted maturities, each over the quoted range of the
+    per-slice fit it was fitted to (the same quotes, :func:`fit_ssvi_surface`)."""
+    rng = {f.T: (f.k_min, f.k_max) for f in vs.fits.values()}
+    return count_violations([(float(t), ssvi.slice_svi(p, float(t)), *rng[float(t)]) for t in p.T])
 
 
 def build_surface(
@@ -190,16 +212,17 @@ def build_surface(
     Ts = sorted(t for t, _ in ss)
     grid_T = np.unique(np.concatenate([np.linspace(Ts[0], Ts[-1], n_T), Ts])) if len(Ts) > 1 else np.array(Ts)
     grid_iv = implied_vol_surface(ss, grid_k, grid_T)
-    cal_grid = np.linspace(min(kmins), max(kmaxs), 201)
-    cal = calendar_check(ss, cal_grid)
+    # each adjacent pair on its common quoted range (no extrapolated wing): the definition count_violations reports
+    # as calendar_violations_quoted, so the page's table and the league's quoted count are one check
+    cal = calendar_check_quoted([(f.T, f.params, f.k_min, f.k_max) for f in fits.values()])
     n_cal = sum(c["violation"] for c in cal)
     n_bf = sum(not f.butterfly["arbitrage_free"] for f in fits.values())
     if n_bf:
         notes.append(f"{n_bf} fitted smile(s) fail the Durrleman butterfly condition g(k) >= 0 somewhere "
                      "on the checked range (negative implied density)")
     if n_cal:
-        notes.append(f"{n_cal} adjacent expiry pair(s) show decreasing total variance (calendar arbitrage "
-                     "in the fitted smiles, or quote noise)")
+        notes.append(f"{n_cal} adjacent expiry pair(s) show decreasing total variance within their common quoted "
+                     "range (calendar arbitrage in the fitted smiles, or quote noise)")
 
     vix = None
     terms = [(float(r["T"]), float(r["mf_var"])) for _, r in term.iterrows()

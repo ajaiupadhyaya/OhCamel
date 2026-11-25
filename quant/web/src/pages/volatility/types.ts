@@ -243,14 +243,23 @@ export interface CalendarCheck {
   k_at_min: number | null;
   violation: boolean;
   violation_k: number[];
+  /** The pair's common quoted k range, where the check runs (options.svi.calendar_check_quoted). */
+  k_lo?: number;
+  k_hi?: number;
+  /** False when the two quoted ranges do not overlap: nothing is checked. */
+  overlap?: boolean;
 }
 
 /** Butterfly / calendar violation counts of SVI-form slices (options.surface.count_violations). */
 export interface Violations {
   butterfly_violations: number;
+  n_slices: number;
+  /** Adjacent pairs whose total variance decreases within their common quoted k range. */
+  calendar_violations_quoted: number;
+  calendar_pairs_quoted: number;
+  /** Adjacent pairs whose total variance decreases on k in [-3, 3], including extrapolated wings. */
   calendar_violations: number;
   calendar_pairs: number;
-  n_slices: number;
 }
 
 /** The SSVI surface beside the per-slice one (completion task 4.5; options.ssvi). */
@@ -282,6 +291,8 @@ export interface SurfaceLeagueRow {
   n_quotes: number | null;
   rmse_vol_pts: number | null;
   butterfly_violations: number | null;
+  calendar_violations_quoted: number | null;
+  calendar_pairs_quoted: number | null;
   calendar_violations: number | null;
   calendar_pairs: number | null;
   next_day_rmse_vol_pts: number | null;

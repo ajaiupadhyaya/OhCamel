@@ -26,8 +26,10 @@ from ohcamel_quant.warehouse.ingest.options import INSERT
 
 DATA = Path(__file__).parent / "data"
 D1, D2 = pd.Timestamp("2026-06-01 15:30:00"), pd.Timestamp("2026-06-02 15:30:00")
-CURVES = curves(("2026-05-29", 4.04), ("2026-06-01", 4.04), ("2026-06-02", 4.04), ("2026-06-09", 4.04))
-SCORES = ("rmse_vol_pts", "butterfly_violations", "calendar_violations", "next_day_rmse_vol_pts")
+CURVES = curves(*[(d, 4.04) for d in ("2026-05-29", "2026-06-01", "2026-06-02", "2026-06-05", "2026-06-08",
+                                      "2026-06-09")])
+SCORES = ("rmse_vol_pts", "butterfly_violations", "calendar_violations_quoted", "calendar_violations",
+          "next_day_rmse_vol_pts")
 
 
 SPOT, R, Q = 100.0, 0.04, 0.01
@@ -75,6 +77,7 @@ def test_one_row_per_model_per_underlying_with_the_three_scores(market, tmp_path
     assert (t["next_day_fit_asof"] == "2026-06-01").all() and (t["next_day_n"] > 0).all()
     ss = t[t["model"] == "SSVI (power law)"]
     assert (ss["butterfly_violations"] == 0).all() and (ss["calendar_violations"] == 0).all()
+    assert (ss["calendar_violations_quoted"] == 0).all()
     assert spec.verdict == "DESCRIPTIVE ONLY" and is_label(spec.verdict_detail)
     assert spec.data_asof == "2026-06-02" and spec.provenance
 
@@ -87,10 +90,45 @@ def test_one_day_of_snapshots_leaves_the_next_day_cell_blank_with_its_reason(mar
     assert t["next_day_note"].str.contains("no earlier snapshot").all()
 
 
-def test_a_previous_day_beyond_a_long_weekend_is_not_a_next_day_score(market, tmp_path):
+def test_an_earlier_day_that_is_not_the_previous_session_is_not_a_next_day_score(market, tmp_path):
+    """Monday 06-01 to Tuesday 06-09 is six NYSE sessions: blank, with the count and the reason."""
     spec = L.run({}, ctx(market, _wh(tmp_path, (D1, pd.Timestamp("2026-06-09 15:30:00"))), CURVES))
     t = spec.tables["league"]
-    assert t["next_day_rmse_vol_pts"].isna().all() and t["next_day_note"].str.contains("8 days").all()
+    assert t["next_day_rmse_vol_pts"].isna().all()
+    assert t["next_day_note"].str.contains("6 sessions back, not the previous session").all()
+
+
+def test_friday_to_monday_is_the_next_session(market, tmp_path):
+    days = (pd.Timestamp("2026-06-05 15:30:00"), pd.Timestamp("2026-06-08 15:30:00"))
+    t = L.run({}, ctx(market, _wh(tmp_path, days), CURVES)).tables["league"]
+    assert t["next_day_rmse_vol_pts"].notna().all() and (t["next_day_fit_asof"] == "2026-06-05").all()
+    assert L.sessions_between("2026-11-25", "2026-11-27") == 1        # over Thanksgiving
+    assert L.sessions_between("2026-01-16", "2026-01-20") == 1        # over Martin Luther King Day
+
+
+def test_any_failure_in_one_name_is_that_names_record_and_cancellation_still_stops(market, tmp_path, monkeypatch):
+    """M8: an unexpected exception in one underlying (here a RuntimeError) is recorded as that name's failure with
+    its reason; the other name is scored. A cancellation is not caught."""
+    from ohcamel_quant.jobs.context import JobCancelled, JobContext
+
+    wh = _wh(tmp_path, (D1, D2), unds=("SPY", "QQQ"))
+    real = L._day
+
+    def flaky(c, und, asof):
+        if und == "QQQ":
+            raise RuntimeError("boom")
+        return real(c, und, asof)
+
+    monkeypatch.setattr(L, "_day", flaky)
+    spec = L.run({}, ctx(market, wh, CURVES))
+    assert set(spec.tables["league"]["underlying"]) == {"SPY"}
+    err = spec.tables["errors"]
+    assert err["underlying"].tolist() == ["QQQ"] and err["error"].iloc[0] == "RuntimeError: boom"
+    c = ctx(market, wh, CURVES)
+    stop = JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None, cancelled_fn=lambda: True,
+                      _market=c._market, _warehouse=c._warehouse)
+    with pytest.raises(JobCancelled):
+        L.run({}, stop)
 
 
 def test_no_snapshots_is_insufficient_data(market, tmp_path):
@@ -153,9 +191,21 @@ def test_violations_are_counted_by_the_same_code_for_both_models(spy_2026_11_15)
     sv = sorted(vs.fits.values(), key=lambda f: f.T)
     want_cal = sum(c["violation"] for c in svi.calendar_check([(f.T, f.params) for f in sv], L.K_GRID))
     want_bf = sum(not svi.butterfly_check(f.params)["arbitrage_free"] for f in sv)
-    assert out["SVI (per slice)"]["calendar_violations"] == want_cal
-    assert out["SVI (per slice)"]["butterfly_violations"] == want_bf
-    assert out["SSVI (power law)"]["calendar_violations"] == 0 == out["SSVI (power law)"]["butterfly_violations"]
+    # the quoted-range count, computed here pair by pair: 201 points of the pair's common quoted k range
+    want_q, pairs_q = 0, 0
+    for f1, f2 in zip(sv, sv[1:], strict=False):
+        lo, hi = max(f1.k_min, f2.k_min), min(f1.k_max, f2.k_max)
+        if hi > lo:
+            pairs_q += 1
+            k = np.linspace(lo, hi, 201)
+            want_q += bool(np.min(f2.params.w(k) - f1.params.w(k)) < -1e-8)
+    s = out["SVI (per slice)"]
+    assert s["calendar_violations"] == want_cal and s["butterfly_violations"] == want_bf
+    assert s["calendar_violations_quoted"] == want_q and s["calendar_pairs_quoted"] == pairs_q == len(sv) - 1
+    assert s["calendar_violations_quoted"] == 4 and s["calendar_violations"] == 17   # 2026-11-13 SPY, measured
+    assert s["calendar_violations_quoted"] == sum(c["violation"] for c in vs.calendar)  # the page's table: one check
+    q = out["SSVI (power law)"]
+    assert q["calendar_violations"] == q["calendar_violations_quoted"] == q["butterfly_violations"] == 0
     for s in out.values():
         assert s["n_slices"] == len(vs.fits) and s["calendar_pairs"] == len(vs.fits) - 1
     n = np.array([f.n for f in vs.fits.values()])

@@ -429,6 +429,34 @@ def calendar_check(slices: list[tuple[float, SVIParams]], k_grid: Any, tol: floa
     return out
 
 
+QUOTED_N = 201   # points on each adjacent pair's common quoted k range (calendar_check_quoted)
+
+
+def calendar_check_quoted(slices: list[tuple[float, SVIParams, float, float]], n: int = QUOTED_N,
+                          tol: float = 1e-8) -> list[dict[str, Any]]:
+    """Adjacent-pair calendar check on each pair's COMMON QUOTED range: ``w(k, T2) >= w(k, T1)`` at ``n`` points of
+    ``[max(kmin1, kmin2), min(kmax1, kmax2)]``, where both smiles are pinned by quotes (no extrapolated wing).
+    ``slices`` = ``[(T, params, k_min, k_max), ...]``. One record per adjacent pair, as :func:`calendar_check`, plus
+    ``k_lo``, ``k_hi`` and ``overlap`` (False when the two quoted ranges do not overlap: no point is checked and the
+    pair is not a violation)."""
+    ss = sorted(slices, key=lambda t: t[0])
+    out = []
+    for (T1, p1, lo1, hi1), (T2, p2, lo2, hi2) in itertools.pairwise(ss):
+        lo, hi = max(lo1, lo2), min(hi1, hi2)
+        rec: dict[str, Any] = {"T1": T1, "T2": T2, "k_lo": float(lo), "k_hi": float(hi)}
+        if not hi > lo:
+            out.append({**rec, "overlap": False, "min_dw": None, "k_at_min": None, "violation": False,
+                        "violation_k": []})
+            continue
+        k = np.linspace(lo, hi, n)
+        d = p2.w(k) - p1.w(k)
+        i = int(np.argmin(d))
+        out.append({**rec, "overlap": True, "min_dw": float(d[i]), "k_at_min": float(k[i]),
+                    "violation": bool(d[i] < -tol),
+                    "violation_k": k[d < -tol].tolist()[:: max(1, int((d < -tol).sum()) // 15)]})
+    return out
+
+
 def total_variance_surface(slices: list[tuple[float, SVIParams]], k: Any, T: Any) -> np.ndarray:
     """``w(k, T)`` on a grid (rows = T, columns = k): linear in ``T`` between slices at
     fixed ``k``; NaN outside ``[T_first, T_last]`` (no extrapolation)."""
