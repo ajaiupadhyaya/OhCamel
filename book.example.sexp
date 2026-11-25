@@ -212,7 +212,7 @@
  ; alerting block, this switch included, is inert while alerting is off.
  ; Shipped ON since Task 1.11, to the log only (sinks (Log)); the kill switch is
  ; still a separate decision and ships off. Paging a person is not this block's
- ; job: deploy/watch.sh posts to OHCAMEL_ALERT_URL in deploy/.env.
+ ; job: deploy/watch.sh posts to OHCAMEL_ALERT_URL in /etc/ohcamel/ops.env.
  (alerts
   ((enabled true)
    (sinks (Log))

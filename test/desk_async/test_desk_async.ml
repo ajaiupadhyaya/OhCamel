@@ -6303,6 +6303,682 @@ let test_a_reduction_near_the_drawdown_cap_passes_and_a_raise_does_not () =
     (D.Sim_venue.received f.venue);
   Graph.destroy f.graph
 
+(* THE SOAK (Task 1.12): one simulated week, Monday 14 to Friday 18 September,
+   over the pieces Tasks 1.1-1.11 rebuilt, wired as bin/main.ml wires the live
+   host -- the kernel's alerts held until the first sync, every trip journaled
+   (Oms.journal_trips), the switch built on them (Halt.Source.of_alerts) and
+   restored from the journal (Oms.restore_switch), the order manager over the
+   simulated venue, a reconciliation before the switch is wired
+   (Oms.watch_alerts), the desk's account reads (Desk.sync), the intake's adjust
+   pass with its drawdown governor, and each night's close (Session_close.record
+   then after_recorded: the stop rules and the sub-ledger check). Nothing is a
+   test's switch: the trip is the kernel's, on the book's dd-cap.
+
+   The book: a million in cash at the venue; SPY at 500 and TLT at 90; limits
+   dd-cap (Max_drawdown 1%, the governor's cap too) and book-cap (gross two
+   million), the switch tripping on both; raises debounced at the engine's
+   defaults, 3 breached observations over 30 s; clear_below 0.95. Two live
+   strategies that adjust intraday: soak_gov (SPY 0.5, TLT 0.5, a quarter of the
+   book each) with no stop, and soak_stop (SPY, 30% of the book) whose stop is
+   two sessions since its first fill. The hand buys 2,000 TLT by ticket, which no
+   strategy owns and nothing cuts.
+
+   Monday: the strategies' rebalance and the hand's ticket fill; the close.
+   Tuesday: an adjust pass changes nothing; at the close soak_stop's stop fires
+   (Stop.evaluate, its sessions rule). Wednesday, THE GAP: SPY opens 5% down,
+   the book's drawdown passes 1%, and the switch trips only on the third
+   breached observation 30 s after the first. Then the adjust pass: soak_stop's
+   flatten and soak_gov's governor cut (the drawdown is past the cap, so the
+   governor is 0). Thursday: a held name moves until the drawdown sits inside
+   the hysteresis band (between 95% and 100% of the cap), and the process is
+   rebuilt from the journal file: the new kernel reads the limit as quiet, and
+   the desk's switch comes back tripped all the same. Friday: one more pass and
+   close; still tripped.
+
+   Run with reduce_through_trip on (ruling R2, owner-pending -- on in this
+   soak's book only) and off (every real book until R2 is approved). Every order
+   that reaches the venue after the trip is held to shrinking the account's
+   position in its name, and a raise tried after the trip and after the restart
+   is refused. The trace goes to stdout, which alcotest keeps in the case's
+   output file. *)
+
+let soak_spy = Symbol.of_string "SPY"
+let soak_tlt = Symbol.of_string "TLT"
+let soak_monday = Date.of_string "2026-09-14"
+let soak_date d = Date.add_days soak_monday d
+
+let soak_at d ~hr ~min =
+  Time_ns.of_date_ofday ~zone:Timezone.utc (soak_date d)
+    (Time_ns.Ofday.create ~hr ~min ())
+
+let soak_limits =
+  [
+    { Limit.name = "dd-cap"; scope = Limit.Portfolio; kind = Limit.Max_drawdown 0.01 };
+    {
+      Limit.name = "book-cap";
+      scope = Limit.Portfolio;
+      kind = Limit.Gross_notional (Notional.of_float 2_000_000.0);
+    };
+  ]
+
+let soak_alerts =
+  {
+    Ohcamel.Config.Alerts.enabled = true;
+    sinks = [ Ohcamel.Config.Alerts.Sink.Log ];
+    clear_below = 0.95;
+    kill_switch_enabled = true;
+    kill_switch_trips_on = [ "book-cap"; "dd-cap" ];
+    raise_after_n = Ohcamel.Config.Alerts.default.Ohcamel.Config.Alerts.raise_after_n;
+    raise_after_s = Ohcamel.Config.Alerts.default.Ohcamel.Config.Alerts.raise_after_s;
+  }
+
+let soak_strategy ~name ~symbols ~capital_fraction ~stop =
+  {
+    Ohcamel.Config.Book.Signals_spec.Strategy.name;
+    symbols;
+    max_age = 10;
+    sizing = Ohcamel.Config.Book.Signals_spec.Live;
+    capital_fraction;
+    cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+    adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+    max_age_minutes = 20;
+    horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+    stop;
+    reinstated = None;
+  }
+
+let soak_strategies =
+  [
+    soak_strategy ~name:"soak_gov" ~symbols:[ "SPY"; "TLT" ] ~capital_fraction:0.5
+      ~stop:None;
+    soak_strategy ~name:"soak_stop" ~symbols:[ "SPY" ] ~capital_fraction:0.3
+      ~stop:(Some { Ohcamel.Config.Book.Signals_spec.Stop.drawdown = 0.5; sessions = 2 });
+  ]
+
+(* One process: what bin/main.ml builds at a start, in its order. *)
+type soak_process = {
+  p_graph : Graph.t;
+  p_journal : D.Journal.t;
+  p_alerts : Ohcamel.Alerts.t;
+  p_halt : D.Halt.t;
+  p_oms : D.Oms.t;
+  p_intake : D.Intake.t;
+}
+
+type soak = {
+  s_venue : D.Sim_venue.t;
+  s_marks : float Symbol.Table.t;
+  s_clock : Time_source.Read_write.t;
+  s_events : string Queue.t;
+  mutable s_p : soak_process;
+}
+
+let soak_now clock () = Time_source.now clock
+
+let soak_say s line =
+  Queue.enqueue s.s_events line;
+  printf "  [%s] %s\n%!" (Time_ns.to_string_utc (Time_source.now s.s_clock)) line
+
+let soak_print graph marks symbol =
+  Graph.apply_tick graph
+    {
+      Tick.symbol;
+      price = Price.of_float (Hashtbl.find_exn marks symbol);
+      time = Time.now ();
+    }
+
+(* A start over the journal at [path]: alerts held, trips journaled, the first
+   sync (which restores the closes into the equity trail and releases the
+   alerts on the account's book), the switch restored, the manager, its
+   reconciliation, and only then the switch wired -- with a trip that stood
+   before the wiring cancelling every open order, as bin/main.ml does. *)
+let soak_start ~venue ~marks ~clock ~path ~dir ~r2 ~say =
+  let now = soak_now clock in
+  let journal = Or_error.ok_exn (D.Journal.open_ ~path) in
+  let graph =
+    Graph.create
+      ~starting_cash:(Notional.of_float 1_000_000.0)
+      ~instruments:
+        [
+          { Instrument.symbol = soak_spy; sector = Sector.of_string "EQUITY" };
+          { Instrument.symbol = soak_tlt; sector = Sector.of_string "RATES" };
+        ]
+      ~limits:soak_limits ~confidence:0.95 ~return_window:10 ()
+  in
+  List.iter [ soak_spy; soak_tlt ] ~f:(fun s ->
+      Graph.set_returns graph s
+        [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
+      soak_print graph marks s);
+  Graph.set_now graph (Time.now ());
+  Graph.stabilize graph;
+  let alerts =
+    Option.value_exn
+      (Or_error.ok_exn (Ohcamel.Alerts.attach ~now ~graph ~config:soak_alerts ()))
+  in
+  Ohcamel.Alerts.hold alerts;
+  D.Oms.journal_trips ~journal ~on_event:say alerts;
+  let spec =
+    {
+      Desk_spec.default with
+      Desk_spec.trading = Desk_spec.Enabled;
+      max_order_notional = 1_000_000.0;
+      reduce_through_trip = r2;
+    }
+  in
+  let desk =
+    D.Desk.create ~graph ~journal
+      ~venue:(D.Desk.Reads (D.Sim_venue.read venue))
+      ~spec ~on_change:ignore
+      ~on_first_sync:(fun () ->
+        let restored = D.Session_close.restore ~graph ~journal in
+        say
+          (sprintf "journal   %d session closes restored into the equity trail" restored);
+        Ohcamel.Alerts.release alerts ~graph)
+  in
+  let%bind (_ : unit Or_error.t) = D.Desk.sync desk in
+  let halt = D.Halt.create (D.Halt.Source.of_alerts alerts) in
+  D.Oms.restore_switch ~halt ~journal;
+  incr managers_built;
+  let oms =
+    D.Oms.create ~graph ~journal
+      ~trips_on:soak_alerts.Ohcamel.Config.Alerts.kill_switch_trips_on ~spec
+      ~read:(Some (D.Sim_venue.read venue))
+      ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
+      ~halt ~accepts_tickets:true ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
+      ~rng:(Random.State.make [| 1112; !managers_built |])
+      ~on_change:ignore ~on_event:say
+      ~after_fill:(fun () -> D.Desk.after_fill desk)
+      ~book_is_current:(fun () -> true)
+      ~time_source:(Time_source.read_only clock) ()
+  in
+  D.Desk.set_oms desk oms;
+  D.Oms.set_market oms ~session_open:true ~adv20:[];
+  let%bind () = D.Oms.reconcile oms in
+  D.Oms.watch_alerts oms alerts;
+  (match D.Halt.state halt with
+  | D.Halt.State.Tripped { limit; _ } ->
+      say ("desk      the kill switch tripped on " ^ limit ^ " before it was wired");
+      don't_wait_for (D.Oms.cancel_all oms)
+  | D.Halt.State.Halted _ -> don't_wait_for (D.Oms.cancel_all oms)
+  | D.Halt.State.Clear | D.Halt.State.Stopped _ -> ());
+  don't_wait_for (D.Oms.run oms);
+  let gauge =
+    D.Intake.Gauge.create
+      ~unread_after:
+        ( soak_alerts.Ohcamel.Config.Alerts.raise_after_n,
+          soak_alerts.Ohcamel.Config.Alerts.raise_after_s )
+      ~spec
+      ~venue_now:(fun () -> Some (now ()))
+      ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
+      ~dd_cap:(D.Intake.Gauge.dd_cap_of_limits soak_limits)
+      ()
+  in
+  let intake =
+    D.Intake.create ~gauge ~journal ~dir ~strategies:soak_strategies
+      ~universe:[ soak_spy; soak_tlt ] ~on_event:say ~now ()
+  in
+  let%map () = settle () in
+  {
+    p_graph = graph;
+    p_journal = journal;
+    p_alerts = alerts;
+    p_halt = halt;
+    p_oms = oms;
+    p_intake = intake;
+  }
+
+let soak_switch s = D.Halt.State.name (D.Halt.state s.s_p.p_halt)
+
+let soak_kernel s =
+  match Ohcamel.Alerts.Kill_switch.state (Ohcamel.Alerts.kill_switch s.s_p.p_alerts) with
+  | Ohcamel.Alerts.Kill_switch.Tripped { by; _ } -> "tripped on " ^ by
+  | Ohcamel.Alerts.Kill_switch.Armed -> "armed"
+  | Ohcamel.Alerts.Kill_switch.Disarmed -> "disarmed"
+
+let soak_mark s symbol price =
+  Hashtbl.set s.s_marks ~key:symbol ~data:price;
+  soak_print s.s_p.p_graph s.s_marks symbol;
+  Graph.set_now s.s_p.p_graph (Time.now ());
+  Graph.stabilize s.s_p.p_graph
+
+(* The case's clock to [at], every timer on the way fired. *)
+let soak_advance s at =
+  let%bind () = Time_source.advance_by_alarms ~wait_for:settle s.s_clock ~to_:at in
+  settle ()
+
+(* A deferred driven to its answer: the venue pumped and the clock moved two
+   seconds at a time, as [drive] does. *)
+let soak_drive s d =
+  let rec go n =
+    let%bind () = settle () in
+    match Deferred.peek d with
+    | Some x -> return x
+    | None when n >= 200 -> Alcotest.fail "the soak still waits after 400 s"
+    | None ->
+        D.Sim_venue.pump s.s_venue;
+        let%bind () =
+          soak_advance s
+            (Time_ns.add (Time_source.now s.s_clock) (Time_ns.Span.of_sec 2.0))
+        in
+        go (n + 1)
+  in
+  go 0
+
+(* The venue in day [d]'s session, 09:30-16:00 New York. *)
+let soak_session s d =
+  D.Sim_venue.set_session s.s_venue
+    (D.Sim_venue.Session.Open
+       {
+         next_close = soak_at d ~hr:20 ~min:0;
+         next_open = soak_at (d + 1) ~hr:13 ~min:30;
+       });
+  D.Oms.set_clock s.s_p.p_oms (Some (D.Sim_venue.clock s.s_venue))
+
+let soak_positions s =
+  List.map (D.Sim_venue.positions s.s_venue) ~f:(fun p ->
+      (Symbol.to_string p.D.Venue.Position.symbol, Qty.to_float p.D.Venue.Position.qty))
+  |> List.filter ~f:(fun (_, q) -> Float.( <> ) q 0.0)
+  |> List.sort ~compare:[%compare: string * float]
+
+let soak_own s name =
+  List.map
+    (D.Journal.source_fills s.s_p.p_journal ~prefix:(sprintf "signal:%s:" name))
+    ~f:(fun (sym, q) -> (Symbol.to_string sym, q))
+  |> List.filter ~f:(fun (_, q) -> Float.( <> ) q 0.0)
+  |> List.sort ~compare:[%compare: string * float]
+
+let soak_show s what =
+  soak_say s
+    (sprintf "soak      %s: switch %s, kernel %s, drawdown %.4f, account %s" what
+       (soak_switch s) (soak_kernel s)
+       (Graph.current_drawdown s.s_p.p_graph)
+       (String.concat ~sep:" "
+          (List.map (soak_positions s) ~f:(fun (n, q) -> sprintf "%s %.0f" n q))))
+
+(* One adjust pass, driven until it returns. *)
+let soak_adjust s =
+  ignore (D.Intake.judge_pass s.s_p.p_intake : D.Intake.Accepted.t list);
+  let%map () = soak_drive s (D.Intake.adjust s.s_p.p_intake ~oms:(Some s.s_p.p_oms)) in
+  soak_say s "soak      adjust pass done"
+
+(* The night's close at 16:05 New York: recorded, then the stop rules and the
+   sub-ledger check, as Session_close.run_forever runs them. *)
+let soak_close s d =
+  let%bind () = soak_advance s (soak_at d ~hr:20 ~min:5) in
+  let p = s.s_p in
+  (match
+     D.Session_close.record ~session_bars:Symbol.Map.empty ~graph:p.p_graph
+       ~journal:p.p_journal ~date:(soak_date d) ~returns:[] ~mark_equity:true
+       ~confidence:0.95 ~recorded_at:(Time_source.now s.s_clock)
+   with
+  | `Recorded -> ()
+  | `Already_recorded -> Alcotest.failf "%s recorded twice" (Date.to_string (soak_date d)));
+  let%map () =
+    D.Session_close.after_recorded ~strategies:soak_strategies
+      ~read:(D.Sim_venue.read s.s_venue) ~journal:p.p_journal ~date:(soak_date d)
+      ~adjusted:Symbol.Map.empty ~session_bars:Symbol.Map.empty
+      ~on_recorded:(fun date ->
+        D.Oms.close_subledger p.p_oms ~date ~at:(Time_source.now s.s_clock))
+      ~on_event:(soak_say s)
+  in
+  soak_show s (sprintf "close of %s" (Date.to_string (soak_date d)))
+
+(* The sub-ledger at the close of [d] says no break. *)
+let soak_no_break s d =
+  let day = Date.to_string (soak_date d) in
+  Alcotest.(check bool)
+    (sprintf "the sub-ledger at the close of %s has no break" day)
+    true
+    (List.exists (Queue.to_list s.s_events) ~f:(fun l ->
+         String.is_substring l ~substring:(sprintf "sub-ledger at the close of %s:" day)
+         && String.is_substring l ~substring:"checked, no break"))
+
+let soak_signal s ~name ~targets =
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  D.Journal.record_signal s.s_p.p_journal
+    {
+      D.Journal.Signal.strategy = name;
+      sequence = 1;
+      as_of = Date.of_string "2026-09-11";
+      received_at = soak_at 0 ~hr:13 ~min:0;
+      verdict = D.Journal.Signal.Verdict.Accepted;
+      rule = None;
+      detail = "passed";
+      document =
+        sprintf
+          {|{"schema_version":1,"strategy":"%s","params_hash":"%s","as_of":"2026-09-11","computed_at":"2026-09-11T23:15:00Z","data_hash":"%s","sequence":1,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":%s}|}
+          name zeros zeros targets;
+      rebalance = Some "sent";
+    }
+
+let soak_rebalance s ~name ~legs ~allocated =
+  let source =
+    {
+      D.Rebalance.Source.strategy = name;
+      sequence = 1;
+      as_of = Date.of_string "2026-09-11";
+    }
+  in
+  let%map outcome =
+    soak_drive s
+      (D.Oms.propose_rebalance s.s_p.p_oms ~source
+         ~legs:
+           (List.map legs ~f:(fun (sym, qty) -> rebalance_leg sym D.Order.Side.Buy qty)))
+  in
+  (match outcome with
+  | D.Oms.Rebalance_outcome.Sent (_ :: _) -> ()
+  | other ->
+      Alcotest.failf "%s not bought: %s" name (D.Oms.Rebalance_outcome.to_string other));
+  D.Journal.record_sizing s.s_p.p_journal ~strategy:name ~sequence:1
+    ~at:(Time_source.now s.s_clock) ~tier:"live" ~scale:1.0 ~allocated ~mode:"open"
+    ~factor:1.0 ~governor:1.0
+
+(* A raise tried by hand: a ticket buying 10 SPY. Refused, and nothing reaches
+   the venue. *)
+let soak_raise_refused s what =
+  let received = D.Sim_venue.received s.s_venue in
+  let%map preview, order =
+    soak_drive s
+      (D.Oms.propose s.s_p.p_oms
+         {
+           D.Ticket.symbol = soak_spy;
+           side = D.Order.Side.Buy;
+           qty = 10;
+           kind = D.Order.Kind.Market;
+         })
+  in
+  soak_say s
+    (sprintf "soak      %s: a hand's buy of 10 SPY is %s (%s)" what
+       (D.Order.State.to_string order.D.Order.state)
+       (Option.value order.D.Order.reason ~default:"no reason"));
+  ignore (preview : D.Oms.Preview.t);
+  Alcotest.(check (pair bool int))
+    (sprintf "%s: a raise is refused and nothing reaches the venue" what)
+    (false, received)
+    (Option.is_some order.D.Order.venue_order_id, D.Sim_venue.received s.s_venue)
+
+(* The price of [symbol] at which the book's drawdown is [target], everything
+   else where it stands: equity is linear in it, and the peak is fixed. *)
+let soak_price_for_drawdown s symbol ~target =
+  let g = s.s_p.p_graph in
+  let dd = Graph.current_drawdown g in
+  let equity = Notional.to_float (Graph.equity g) in
+  let peak = equity /. (1.0 -. dd) in
+  let qty = Qty.to_float (Graph.qty g symbol) in
+  let price = Hashtbl.find_exn s.s_marks symbol in
+  price +. (((peak *. (1.0 -. target)) -. equity) /. qty)
+
+let soak_week ~r2 =
+  let clock = Time_source.create ~now:(soak_at 0 ~hr:14 ~min:0) () in
+  let marks = Symbol.Table.create () in
+  Hashtbl.set marks ~key:soak_spy ~data:500.0;
+  Hashtbl.set marks ~key:soak_tlt ~data:90.0;
+  let venue =
+    D.Sim_venue.create ~latency:Time_ns.Span.zero ~opened_at:(soak_at 0 ~hr:13 ~min:30)
+      ~marks:(fun sym -> Option.map (Hashtbl.find marks sym) ~f:Price.of_float)
+      ~now:(soak_now clock)
+      ~half_spread_bps:(fun _ -> 5.0)
+      ~cash:(Notional.of_float 1_000_000.0)
+      ~positions:[] ()
+  in
+  let dir = Filename_unix.temp_dir "ohcamel-soak-" "" in
+  let path = Filename.concat dir "journal.sqlite" in
+  let events = Queue.create () in
+  let say line =
+    Queue.enqueue events line;
+    printf "  [%s] %s\n%!" (Time_ns.to_string_utc (Time_source.now clock)) line
+  in
+  printf "\n  SOAK  reduce_through_trip %b\n%!" r2;
+  let%bind p = soak_start ~venue ~marks ~clock ~path ~dir ~r2 ~say in
+  let s =
+    { s_venue = venue; s_marks = marks; s_clock = clock; s_events = events; s_p = p }
+  in
+  (* The Friday before: the journal's history, one close at the cash it held,
+     so Monday's rebalance has a close to size at. *)
+  ignore
+    (D.Session_close.record ~session_bars:Symbol.Map.empty ~graph:s.s_p.p_graph
+       ~journal:s.s_p.p_journal ~date:(soak_date (-3)) ~returns:[] ~mark_equity:true
+       ~confidence:0.95 ~recorded_at:(soak_at (-3) ~hr:20 ~min:5)
+      : [ `Recorded | `Already_recorded ]);
+  (* MONDAY. *)
+  soak_session s 0;
+  let%bind () = soak_advance s (soak_at 0 ~hr:14 ~min:0) in
+  soak_signal s ~name:"soak_gov"
+    ~targets:{|[{"symbol":"SPY","weight":0.5},{"symbol":"TLT","weight":0.5}]|};
+  soak_signal s ~name:"soak_stop" ~targets:{|[{"symbol":"SPY","weight":1.0}]|};
+  let%bind () =
+    soak_rebalance s ~name:"soak_gov"
+      ~legs:[ (soak_spy, 500); (soak_tlt, 2777) ]
+      ~allocated:500_000.0
+  in
+  let%bind () =
+    soak_rebalance s ~name:"soak_stop" ~legs:[ (soak_spy, 600) ] ~allocated:300_000.0
+  in
+  let%bind _, hand =
+    soak_drive s
+      (D.Oms.propose s.s_p.p_oms
+         {
+           D.Ticket.symbol = soak_tlt;
+           side = D.Order.Side.Buy;
+           qty = 2000;
+           kind = D.Order.Kind.Market;
+         })
+  in
+  D.Sim_venue.pump s.s_venue;
+  let%bind () = soak_advance s (soak_at 0 ~hr:14 ~min:1) in
+  Alcotest.(check bool)
+    "the hand's ticket went" true
+    (Option.is_some hand.D.Order.venue_order_id);
+  soak_show s "Monday, bought";
+  Alcotest.(check (list (pair string (float 0.0))))
+    "Monday: the account holds both strategies' and the hand's"
+    [ ("SPY", 1100.0); ("TLT", 4777.0) ]
+    (soak_positions s);
+  let%bind () = soak_close s 0 in
+  soak_no_break s 0;
+  (* TUESDAY. *)
+  let%bind () = soak_advance s (soak_at 1 ~hr:14 ~min:0) in
+  soak_session s 1;
+  soak_mark s soak_spy 501.0;
+  soak_mark s soak_tlt 90.2;
+  let received = D.Sim_venue.received s.s_venue in
+  let%bind () = soak_adjust s in
+  Alcotest.(check int)
+    "Tuesday: the adjust pass sends nothing" received
+    (D.Sim_venue.received s.s_venue);
+  let%bind () = soak_close s 1 in
+  soak_no_break s 1;
+  Alcotest.(check bool)
+    "Tuesday's close stops soak_stop (two sessions since its first fill)" true
+    (match D.Journal.strategy_state s.s_p.p_journal ~strategy:"soak_stop" with
+    | Some (`Stopped, _, _, _) -> true
+    | Some (`Active, _, _, _) | None -> false);
+  Alcotest.(check string) "Tuesday: the switch is clear" "clear" (soak_switch s);
+  (* WEDNESDAY: THE GAP. *)
+  let%bind () = soak_advance s (soak_at 2 ~hr:13 ~min:31) in
+  soak_session s 2;
+  let held = soak_positions s in
+  soak_mark s soak_spy (501.0 *. 0.95);
+  soak_mark s soak_tlt 90.2;
+  soak_show s "Wednesday, SPY opens 5% down: the first breached observation";
+  Alcotest.(check bool)
+    "the gap takes the drawdown past dd-cap's 1%" true
+    Float.(Graph.current_drawdown s.s_p.p_graph > 0.01);
+  Alcotest.(check (pair string string))
+    "one breached observation: not tripped (debounced)" ("clear", "armed")
+    (soak_switch s, soak_kernel s);
+  let observe secs =
+    let%map () =
+      soak_advance s (Time_ns.add (soak_at 2 ~hr:13 ~min:31) (Time_ns.Span.of_sec secs))
+    in
+    Graph.set_now s.s_p.p_graph (Time.now ());
+    Graph.stabilize s.s_p.p_graph;
+    Ohcamel.Alerts.recheck s.s_p.p_alerts ~graph:s.s_p.p_graph
+  in
+  let%bind () = observe 15.0 in
+  Alcotest.(check (pair string string))
+    "two observations over 15 s: still not tripped" ("clear", "armed")
+    (soak_switch s, soak_kernel s);
+  let%bind () = observe 30.0 in
+  let%bind () = settle () in
+  soak_show s "the third observation, 30 s after the first";
+  Alcotest.(check (pair string string))
+    "three observations over 30 s: tripped on dd-cap"
+    ("tripped", "tripped on dd-cap")
+    (soak_switch s, soak_kernel s);
+  Alcotest.(check (option string))
+    "the trip is on the journal" (Some "dd-cap")
+    (Option.map (D.Journal.standing_trip s.s_p.p_journal) ~f:fst);
+  let tripped_at = Time_source.now s.s_clock in
+  let at_trip = soak_positions s in
+  Alcotest.(check (list (pair string (float 0.0))))
+    "the trip itself sold nothing" held at_trip;
+  let%bind () = soak_raise_refused s "tripped" in
+  let gov_before = soak_own s "soak_gov" and stop_before = soak_own s "soak_stop" in
+  let received = D.Sim_venue.received s.s_venue in
+  let%bind () = soak_advance s (soak_at 2 ~hr:14 ~min:0) in
+  let%bind () = soak_adjust s in
+  soak_show s "Wednesday, after the adjust pass under the trip";
+  Alcotest.(check string) "still tripped after the pass" "tripped" (soak_switch s);
+  if r2 then (
+    Alcotest.(check (list (pair string (float 0.0))))
+      "R2 on: soak_stop's flatten filled through the trip" [] (soak_own s "soak_stop");
+    Alcotest.(check (list (pair string (float 0.0))))
+      "R2 on: soak_gov's governor cut (governor 0) filled through the trip" []
+      (soak_own s "soak_gov");
+    Alcotest.(check (list (pair string (float 0.0))))
+      "R2 on: the account holds the hand's TLT alone"
+      [ ("TLT", 2000.0) ]
+      (soak_positions s))
+  else (
+    Alcotest.(check int)
+      "R2 off: nothing reaches the venue while tripped" received
+      (D.Sim_venue.received s.s_venue);
+    Alcotest.(
+      check (pair (list (pair string (float 0.0))) (list (pair string (float 0.0)))))
+      "R2 off: both strategies hold what they held" (gov_before, stop_before)
+      (soak_own s "soak_gov", soak_own s "soak_stop");
+    Alcotest.(check (list (pair string (float 0.0))))
+      "R2 off: the account is unchanged" at_trip (soak_positions s));
+  let%bind () = soak_close s 2 in
+  soak_no_break s 2;
+  (* THURSDAY: into the hysteresis band, and a restart. *)
+  let%bind () = soak_advance s (soak_at 3 ~hr:14 ~min:0) in
+  soak_session s 3;
+  let biggest =
+    List.max_elt
+      (List.map (D.Sim_venue.positions s.s_venue) ~f:(fun p ->
+           ( Float.abs (Qty.to_float p.D.Venue.Position.qty)
+             *. Hashtbl.find_exn s.s_marks p.D.Venue.Position.symbol,
+             p.D.Venue.Position.symbol )))
+      ~compare:[%compare: float * Symbol.t]
+    |> Option.value_exn |> snd
+  in
+  soak_mark s biggest (soak_price_for_drawdown s biggest ~target:0.00975);
+  let utilisation = Graph.current_drawdown s.s_p.p_graph /. 0.01 in
+  soak_show s
+    (sprintf "Thursday, %s at %.2f: utilisation %.4f, inside the band"
+       (Symbol.to_string biggest)
+       (Hashtbl.find_exn s.s_marks biggest)
+       utilisation);
+  Alcotest.(check bool)
+    "the drawdown sits inside the hysteresis band (0.95 <= u < 1)" true
+    Float.(utilisation >= 0.95 && utilisation < 1.0);
+  soak_say s "soak      RESTART: the process is rebuilt from the journal file";
+  let old = s.s_p in
+  D.Journal.close old.p_journal;
+  let%bind p = soak_start ~venue ~marks ~clock ~path ~dir ~r2 ~say in
+  Graph.destroy old.p_graph;
+  s.s_p <- p;
+  soak_session s 3;
+  soak_show s "after the restart";
+  Alcotest.(check (list string))
+    "after the restart the new kernel's tracker reads dd-cap quiet (inside the band)" []
+    (Ohcamel.Alerts.firing_limits s.s_p.p_alerts);
+  Alcotest.(check (pair string string))
+    "after the restart: the kernel is armed, the desk's switch still tripped"
+    ("tripped", "armed")
+    (soak_switch s, soak_kernel s);
+  Alcotest.(check bool)
+    "and it says it was held across the restart" true
+    (Option.exists (D.Halt.reason s.s_p.p_halt)
+       ~f:(String.is_substring ~substring:"held across a restart"));
+  let%bind () = soak_raise_refused s "restarted" in
+  let%bind () = soak_adjust s in
+  let%bind () = soak_close s 3 in
+  soak_no_break s 3;
+  (* FRIDAY. *)
+  let%bind () = soak_advance s (soak_at 4 ~hr:14 ~min:0) in
+  soak_session s 4;
+  let%bind () = soak_adjust s in
+  let%bind () = soak_close s 4 in
+  soak_no_break s 4;
+  Alcotest.(check (pair string (option string)))
+    "Friday's close: still tripped, on dd-cap, on the journal" ("tripped", Some "dd-cap")
+    (soak_switch s, Option.map (D.Journal.standing_trip s.s_p.p_journal) ~f:fst);
+  Alcotest.(check int)
+    "the Friday before and five sessions recorded" 6
+    (D.Journal.session_count s.s_p.p_journal);
+  (* NO ORDER INCREASES EXPOSURE: every order that reached the venue after the
+     trip sells a name the account held long at the trip (no strategy is short
+     here), and the sales in a name sum to no more than it held. *)
+  let after =
+    List.filter (D.Journal.recent_orders s.s_p.p_journal ~limit:200) ~f:(fun r ->
+        Time_ns.( >= ) r.D.Journal.Order_row.created_at tripped_at
+        && Option.is_some r.D.Journal.Order_row.order.D.Order.venue_order_id)
+  in
+  let held_at_trip sym =
+    List.Assoc.find at_trip (Symbol.to_string sym) ~equal:String.equal
+    |> Option.value ~default:0.0
+  in
+  let sold = Symbol.Table.create () in
+  List.iter after ~f:(fun r ->
+      let q = r.D.Journal.Order_row.order.D.Order.request in
+      soak_say s
+        (sprintf "soak      sent while tripped: %s %d %s (%s), %s"
+           (D.Order.Side.to_string q.D.Order.Request.side)
+           q.D.Order.Request.qty
+           (Symbol.to_string q.D.Order.Request.symbol)
+           r.D.Journal.Order_row.source
+           (D.Order.State.to_string r.D.Journal.Order_row.order.D.Order.state));
+      Alcotest.(check bool)
+        (sprintf "%s %d %s shrinks the account's position"
+           (D.Order.Side.to_string q.D.Order.Request.side)
+           q.D.Order.Request.qty
+           (Symbol.to_string q.D.Order.Request.symbol))
+        true
+        (D.Order.Side.equal q.D.Order.Request.side D.Order.Side.Sell
+        && Float.(held_at_trip q.D.Order.Request.symbol > 0.0));
+      Hashtbl.update sold q.D.Order.Request.symbol ~f:(fun x ->
+          Option.value x ~default:0 + q.D.Order.Request.qty));
+  Hashtbl.iteri sold ~f:(fun ~key ~data ->
+      Alcotest.(check bool)
+        (sprintf "the sales of %s sum to no more than the account held"
+           (Symbol.to_string key))
+        true
+        Float.(of_int data <= held_at_trip key));
+  List.iter (soak_positions s) ~f:(fun (n, q) ->
+      Alcotest.(check bool)
+        (sprintf "%s's position at the week's end is no larger than at the trip" n)
+        true
+        Float.(abs q <= abs (held_at_trip (Symbol.of_string n))));
+  Alcotest.(check int)
+    (sprintf "orders sent while tripped (%s)" (if r2 then "R2 on" else "R2 off"))
+    (if r2 then 3 else 0)
+    (List.length after);
+  soak_show s "the week's end";
+  D.Journal.close s.s_p.p_journal;
+  Graph.destroy s.s_p.p_graph;
+  Array.iter (Sys_unix.readdir dir) ~f:(fun n -> Core_unix.unlink (Filename.concat dir n));
+  Core_unix.rmdir dir;
+  return ()
+
+let test_a_week_with_a_gap_day_trips_cuts_flattens_and_restarts_tripped () =
+  soak_week ~r2:true
+
+let test_the_same_week_with_the_word_off_sends_nothing_while_tripped () =
+  soak_week ~r2:false
+
 let suites =
   [
     ( "transport",
@@ -6530,6 +7206,13 @@ let suites =
       [
         case "a reduction near the drawdown cap passes, and a raise does not"
           test_a_reduction_near_the_drawdown_cap_passes_and_a_raise_does_not;
+      ] );
+    ( "soak",
+      [
+        case "a week with a gap day trips, cuts, flattens and restarts tripped"
+          test_a_week_with_a_gap_day_trips_cuts_flattens_and_restarts_tripped;
+        case "the same week with the word off sends nothing while tripped"
+          test_the_same_week_with_the_word_off_sends_nothing_while_tripped;
       ] );
   ]
 

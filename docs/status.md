@@ -537,7 +537,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->1024<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->107<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->1024<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->109<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -800,6 +800,70 @@ GHCR packages still private and no read token on the droplet -- and for a CI
 outage. A one-image fallback would bring `ohcamel-research` up on a missing
 or stale image, which is why it builds every one. The OCaml build is the slow
 part (about twenty minutes cold) and is what the droplet's 4 GB was sized for.
+
+### Deploying the desk (completion Task 1.12)
+
+*The owner's deploy, and only the owner's.* No agent deploys, resets the switch, or edits `book.sexp`. The kill
+switch has been tripped by `dd-cap` since 2026-11-05, and the desk has been halted by hand since 2026-11-16.
+Lifting either is the owner's decision alone. The steps below assume both still stand after the deploy, and they
+check exactly that.
+
+**Before** (each item points to its own text above):
+
+1. **The INC-02 hold** (*Deploy, by sha*): no sha at or after `594df16` until INC-02 is approved and the live
+   `book.sexp` is regenerated.
+2. **The risk window** (*OWNER-PENDING: the risk window*):
+   - `var-cap` reads 250 sessions instead of 60 unless the book writes `(risk ((var_window 60)))`;
+   - the backfill makes three requests;
+   - class caps need TLT in `RATES`, or a cap of its own.
+3. **The backfill's short series.** After the start, read the `backfill  SYM has only N observations` lines in
+   `docker logs ohcamel-ohcamel-live-1`, SIZE especially. A name short of the window shortens VaR's common window,
+   and an ES limit cannot be evaluated until the window is full.
+4. **`OHCAMEL_ALERT_URL` in `/etc/ohcamel/ops.env`** (*Watching it*). Until it is set, the watch's pages are
+   logged only.
+5. **Outside 09:25-17:10 New York.** The guard refuses a `--live` deploy then; do not pass `--during-market`.
+   The same window rules out any restart of `ohcamel-live`.
+6. **R2 (`reduce_through_trip`) stays `false` on the live book** until the owner approves ruling R2. What
+   approving it means for the trip this desk actually has:
+   - Before `88040b3`, R2 could not let a stop's flatten or a governor's cut out under a `dd-cap` trip. The
+     pre-trade gate refused every such sale, because the sale's own spread pushed the breached drawdown a few
+     basis points further over the line.
+   - `88040b3` judges a reduction's drawdown at the mark, so that refusal is gone.
+   - The soak (`test/desk_async`, suite `soak`) runs one simulated week with a −5% gap day both ways. With R2 on,
+     the stop's flatten and the governor's cut fill while tripped. With R2 off, nothing fills while tripped.
+     Either way, a restart inside the hysteresis band comes back tripped, and no order raises exposure.
+
+**After, read-only** (`ssh ohcamel`; nothing here writes):
+
+```
+# 1. The sha (the deploy's own smoke run checks the same with --expect-sha)
+docker exec ohcamel-ohcamel-live-1 curl -s localhost:8081/api/ops | jq -r '.build.git_sha'
+
+# 2. The switch: "halted" while the hand's halt stands, since it outranks a trip;
+#    the kernel's own switch, firing limits and what it trips on
+docker exec ohcamel-ohcamel-live-1 curl -s localhost:8081/api/desk | jq '.kill_switch, .switch'
+docker exec ohcamel-ohcamel-live-1 curl -s localhost:8081/api/ops | jq '.alerts | {kill_switch, tripped_by, firing, trips_on}'
+
+# 3. The sub-ledger: the latest close says "N names checked, no break", and no break line stands
+docker logs --since 30h ohcamel-ohcamel-live-1 | grep 'sub-ledger'
+
+# 4. Positions: the graph's quantity is the venue's in every name (empty output = equal)
+docker exec ohcamel-ohcamel-live-1 curl -s localhost:8081/api/desk \
+  | jq '.positions[] | select((.venue_qty // 0) != .graph_qty)'
+```
+
+On check 2: the journal's standing trip does not show in `/api/desk` while the hand's halt stands. A fresh kernel
+reads `armed` while the drawdown sits inside the hysteresis band, and it re-trips after its 3-observations/30-second
+debounce once `dd-cap` is over its line again. To see the trip itself, read the `meta` table on the laptop, from a
+copy pulled by `deploy/pull-backups.sh`. The pre-deploy backup is taken just before the new engine starts:
+
+```
+sqlite3 -readonly ~/Backups/ohcamel/pre-deploy-<UTC>-<old sha>.db \
+  "SELECT key, value FROM meta WHERE key IN ('trip_limit','trip_at','halt_why','halt_at')"
+```
+
+`trip_limit` must read `dd-cap`. If anything here reads otherwise, stop and read *Watching it* and
+`docs/runbooks/desk.md`. Never reset the switch to make a check pass.
 
 ### Roll back
 
