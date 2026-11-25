@@ -2041,6 +2041,7 @@ let exit_with (o : Journal_cli.Outcome.t) =
   exit o.Journal_cli.Outcome.status
 
 let run_journal_verify path = exit_with (Journal_cli.verify path)
+let run_journal_subledger path = exit_with (Journal_cli.subledger path)
 
 (* Task 1.8's before and after, per strategy, read-only. New York's zone dates a
    fill as the desk does; a host without it says so and dates in UTC. *)
@@ -2102,6 +2103,9 @@ let usage () =
     \  ohcamel journal-verify FILE\n\
     \                             print FILE's schema version, integrity, row counts\n\
     \                             and newest rows. Non-zero on any problem.\n\
+    \  ohcamel journal-subledger FILE\n\
+    \                             the desk's sub-ledger rule on a journal copy, read-only\n\
+    \                             (strategies' fills against the last close's marks).\n\
     \  ohcamel record-diff --journal FILE [--since DATE] [--dividends CSV] [--book BOOK]\n\
     \                             every strategy's record before and after Task 1.8\n\
     \                             (dividends, fees, cost against the arrival mid),\n\
@@ -2208,6 +2212,10 @@ let () =
       match rest with
       | [ path ] -> run_journal_verify path
       | _ -> bad_usage "journal-verify needs one FILE")
+  | _ :: "journal-subledger" :: rest -> (
+      match rest with
+      | [ path ] -> run_journal_subledger path
+      | _ -> bad_usage "journal-subledger needs one FILE")
   | _ :: "record-diff" :: rest ->
       let rec flags ~journal ~since ~dividends ~book = function
         | [] -> (

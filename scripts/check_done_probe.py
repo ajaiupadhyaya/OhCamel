@@ -2,10 +2,9 @@
 """The Python halves of scripts/check-done.sh (completion Task 5.3): one subcommand per check that needs the code.
 
 Each prints exactly one line -- ``ok``, ``FAIL: <why>`` or ``not checked: <why>`` -- and exits 0; the shell decides
-the exit status from the line. READ-ONLY: a journal is opened ``mode=ro&immutable=1``, artifacts and ledgers are
+the exit status from the line. READ-ONLY: artifacts and ledgers are
 read, nothing is written (the American-chain inversion and the SVI fits run in memory).
 
-    check_done_probe.py ledger  JOURNAL            check 2: the sub-ledger sums, in shares and in dollars
     check_done_probe.py farm    ARTIFACT_DIR [LEDGER]   check 3: the farm's traded configuration and trial count
     check_done_probe.py inc02                       check 4: INC-02's approval line and the pooled_test product
     check_done_probe.py chain                       check 6: the committed SPY chain, the put/call IVs, the target
@@ -16,8 +15,6 @@ Run with the project's own environment (quant/.venv/bin/python), from anywhere.
 from __future__ import annotations
 
 import json
-import re
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -25,10 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "quant" / "src"))
 sys.path.insert(0, str(ROOT / "quant" / "tests"))
 
-#: The tolerance desk/subledger.ml states (``let tolerance = 0.5``): read from the OCaml, not retyped here.
-SUBLEDGER_ML = ROOT / "desk" / "subledger.ml"
-#: Check 2's dollar bound: the plan's "within $1".
-PNL_TOLERANCE_USD = 1.0
 #: Check 6's bounds (Task 4.1's amended density condition; Task 4.2's same-strike condition).
 G_FLOOR = -1e-10
 PUT_CALL_POINTS = 0.5
@@ -38,69 +31,6 @@ RESOLVED_HALF_WIDTH = 0.25   # a leg's IV is pinned by its own bid/ask within th
 def _out(line: str) -> int:
     print(line)
     return 0
-
-
-def subledger_tolerance() -> float:
-    m = re.search(r"^let tolerance\s*=\s*([0-9.]+)", SUBLEDGER_ML.read_text(encoding="utf-8"), re.M)
-    if not m:
-        raise RuntimeError(f"{SUBLEDGER_ML}: no `let tolerance = <float>` line")
-    return float(m.group(1))
-
-
-def _owner(source: str | None) -> str:
-    """Subledger.owner: ``signal:<slug>:<sequence>`` is the strategy <slug>'s; anything else is the hand's."""
-    parts = (source or "").split(":")
-    return ":".join(parts[1:-1]) if parts[0] == "signal" and len(parts) >= 3 else "<hand>"
-
-
-def ledger(path: str) -> int:
-    """Subledger.check as desk/oms.ml feeds it, from the journal alone: per name, every owner's net fills summed
-    against the account's position at the last session close (the marks table, which the close records from the
-    venue); a name beyond the tolerance, or not a finite number, is a break. Then the same sum in dollars:
-    every owner's marked P&L (fills at their prices, the net position at the last close) summed, against the
-    account's marked P&L over the same fills at the account's position -- they differ by break x close, so the
-    dollar figure is the break's value. Fees, dividends and interest are not in this figure (they name no owner)."""
-    p = Path(path)
-    if not p.is_file():
-        return _out(f"not checked: no journal at {path}")
-    tol = subledger_tolerance()
-    con = sqlite3.connect(f"file:{p.resolve()}?mode=ro&immutable=1", uri=True)
-    try:
-        last = con.execute("SELECT max(date) FROM sessions").fetchone()[0]
-        if last is None:
-            return _out("not checked: the journal holds no session close")
-        marks = {s: (c, q) for s, c, q in con.execute("SELECT symbol, close, qty FROM marks WHERE date = ?", (last,))}
-        rows = con.execute("SELECT o.source, f.symbol, f.side, f.qty, f.price FROM fills f "
-                           "LEFT JOIN orders o ON o.client_order_id = f.client_order_id").fetchall()
-    finally:
-        con.close()
-    if not rows:
-        return _out("not checked: the journal holds no fills")
-    own: dict[tuple[str, str], float] = {}
-    cash: dict[tuple[str, str], float] = {}
-    last_price: dict[str, float] = {}
-    for source, sym, side, qty, price in rows:
-        sign = 1.0 if str(side).lower().startswith("b") else -1.0
-        k = (_owner(source), sym)
-        own[k] = own.get(k, 0.0) + sign * qty
-        cash[k] = cash.get(k, 0.0) - sign * qty * price
-        last_price[sym] = price
-    names = sorted({s for _, s in own} | {s for s, (_, q) in marks.items() if q})
-    breaks, strat_pnl, acct_pnl = [], 0.0, 0.0
-    for sym in names:
-        mine = sum(q for (_, s), q in own.items() if s == sym)
-        acct = marks.get(sym, (None, 0.0))[1]
-        close = marks[sym][0] if sym in marks else last_price.get(sym, float("nan"))
-        if not (abs(mine - acct) <= tol):                  # also true of NaN: an unknown is never a sum that holds
-            breaks.append(f"{sym} strategies {mine:g} vs account {acct:g}")
-        strat_pnl += sum(cash[k] + own[k] * close for k in own if k[1] == sym)
-        acct_pnl += sum(c for k, c in cash.items() if k[1] == sym) + acct * close
-    if breaks:
-        return _out(f"FAIL: sub-ledger break at the close of {last}: " + "; ".join(breaks))
-    gap = abs(strat_pnl - acct_pnl)
-    if not gap <= PNL_TOLERANCE_USD:
-        return _out(f"FAIL: strategy P&L {strat_pnl:.2f} against the account's {acct_pnl:.2f} differ by ${gap:.2f}")
-    return _out("ok")
 
 
 def farm(artifact_dir: str, ledger_path: str | None) -> int:
@@ -233,10 +163,8 @@ def chain() -> int:
 
 
 def main(argv: list[str]) -> int:
-    usage = "usage: check_done_probe.py ledger JOURNAL | farm DIR [LEDGER] | inc02 | chain"
+    usage = "usage: check_done_probe.py farm DIR [LEDGER] | inc02 | chain"
     try:
-        if len(argv) >= 2 and argv[0] == "ledger":
-            return ledger(argv[1])
         if len(argv) >= 2 and argv[0] == "farm":
             return farm(argv[1], argv[2] if len(argv) > 2 else None)
         if argv[:1] == ["inc02"]:
@@ -244,8 +172,8 @@ def main(argv: list[str]) -> int:
         if argv[:1] == ["chain"]:
             return chain()
     except Exception as e:  # noqa: BLE001 -- a check that cannot run never passes by raising
-        # the two that read data the caller gives say "not checked"; the two that read the code say FAIL
-        return _out(f"{'not checked' if argv[0] in ('ledger', 'farm') else 'FAIL'}: {type(e).__name__}: {e}")
+        # the one that reads data the caller gives says "not checked"; those that read the code say FAIL
+        return _out(f"{'not checked' if argv[0] in ('farm',) else 'FAIL'}: {type(e).__name__}: {e}")
     print(usage, file=sys.stderr)
     return 2
 

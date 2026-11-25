@@ -17,7 +17,7 @@
 #     is missing or they are out of order; not checked with no log and no built suite;
 #   - check 7 compares the ledger's as_of with today (CHECK_DONE_TODAY) and reads a file; a missing file is not
 #     checked, a stale as_of FAIL;
-#   - check 5 needs all four arguments and names the missing ones; a regenerate exit code is a FAIL naming the
+#   - check 5 needs --atlas, --surface and --warehouse (the farm is not regenerable: check 3 is its evidence) and names the missing ones; a regenerate exit code is a FAIL naming the
 #     artifact;
 #   - the probe's own FAIL and not-checked lines pass through verbatim, and a probe that prints nothing the script
 #     can read is a FAIL, never an ok;
@@ -58,6 +58,13 @@ case "$1" in
 esac
 EOF
 chmod +x "$work/py"
+# the shim ohcamel binary: `bin journal-subledger FILE` prints $SHIM_SUBLEDGER (default: the ok result)
+cat >"$work/ohcamel" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${SHIM_SUBLEDGER-RESULT ok}"
+EOF
+chmod +x "$work/ohcamel"
+export CHECK_DONE_BIN="$work/ohcamel"
 export CHECK_DONE_PY="$work/py"
 export CHECK_DONE_TODAY=2026-11-25
 export CHECK_DONE_SOAK_EXE="$work/no-such-suite"
@@ -72,8 +79,8 @@ ASSERT R2 on: soak_gov's governor cut (governor 0) filled through the trip
 EOF
 grep -v 'RESTART' "$good" >"$work/in/soak-no-restart.output"
 { sed -n 1,2p "$good"; sed -n 4,5p "$good"; sed -n 3p "$good"; } >"$work/in/soak-disorder.output"
-printf '{"as_of": "2026-11-25T06:30:00+00:00", "rows": []}\n' >"$work/in/ledger-today.json"
-printf '{"as_of": "2026-11-24T06:30:00+00:00", "rows": []}\n' >"$work/in/ledger-stale.json"
+printf '{"as_of": "2026-11-25", "stale_after_days": 14, "rows": []}\n' >"$work/in/ledger-today.json"
+printf '{"as_of": "2026-11-24", "stale_after_days": 14, "rows": []}\n' >"$work/in/ledger-stale.json"
 printf '{"rows": []}\n' >"$work/in/ledger-none.json"
 mkdir -p "$work/in/atlas" "$work/in/farm" "$work/in/surface" "$work/in/wh"
 echo x >"$work/in/atlas/manifest.json"
@@ -97,7 +104,7 @@ bad=0
 for n in 1 2 3 4 5 6 7; do
 	l=$(line "$n")
 	case "$l" in
-	"$n. "*": ok" | "$n. "*": FAIL: "* | "$n. "*": not checked: "*) ;;
+	"$n. "*": ok" | "$n. "*": ok ("* | "$n. "*": FAIL: "* | "$n. "*": not checked: "*) ;;
 	*) bad=1 ;;
 	esac
 done
@@ -110,7 +117,7 @@ case "$(line 3)" in *"not checked: no farm artifact given") c=0 ;; *) c=1 ;; esa
 expect "no farm artifact: check 3 says so" "$c"
 case "$(line 4)" in *": FAIL: INC-02 is not approved") c=0 ;; *) c=1 ;; esac
 expect "an unapproved INC-02 is a FAIL line, never ok" "$c"
-case "$(line 5)" in *"not checked: no artifacts given (missing --atlas --farm --surface --warehouse)") c=0 ;; *) c=1 ;; esac
+case "$(line 5)" in *"not checked: no artifacts given (missing --atlas --surface --warehouse)") c=0 ;; *) c=1 ;; esac
 expect "no artifacts: check 5 names what is missing" "$c"
 case "$(line 7)" in *"not checked: no ledger given"*) c=0 ;; *) c=1 ;; esac
 expect "no ledger: check 7 is not checked" "$c"
@@ -141,43 +148,56 @@ case "$(line 1)" in *"not checked: no soak log at"*) c=0 ;; *) c=1 ;; esac
 expect "check 1: a log that is not there is not checked" "$c"
 
 # ---- the probe's lines pass through -----------------------------------------------------------------------------
-SHIM_LEDGER="FAIL: sub-ledger break at the close of 2026-11-24: SPY strategies 10 vs account 0" run --journal "$work/in/journal.db"
-case "$(line 2)" in *"FAIL: sub-ledger break at the close of 2026-11-24: SPY strategies 10 vs account 0") c=0 ;; *) c=1 ;; esac
-expect "check 2: the probe's FAIL passes through verbatim" "$c"
-SHIM_LEDGER="" run --journal "$work/in/journal.db"
-case "$(line 2)" in *"FAIL: the check printed no result"*) c=0 ;; *) c=1 ;; esac
-expect "check 2: a probe that prints nothing is a FAIL, never ok" "$c"
+run --journal "$work/in/journal.db"
+case "$(line 2)" in *": ok (shares: the dollar half is not checked: "*) c=0 ;; *) c=1 ;; esac
+expect "check 2: RESULT ok is ok, and says the dollar half is not checked" "$c"
+SHIM_SUBLEDGER="RESULT break at the close of 2026-11-24: SPY: strategies 10, account 0" run --journal "$work/in/journal.db"
+case "$(line 2)" in *"FAIL: sub-ledger at the close of 2026-11-24: SPY: strategies 10, account 0") c=0 ;; *) c=1 ;; esac
+expect "check 2: a break is a FAIL naming the name" "$c"
+SHIM_SUBLEDGER="RESULT unjudgeable the journal holds no session close" run --journal "$work/in/journal.db"
+case "$(line 2)" in *"not checked: the journal holds no session close") c=0 ;; *) c=1 ;; esac
+expect "check 2: a journal that cannot be judged is not checked" "$c"
+SHIM_SUBLEDGER="" run --journal "$work/in/journal.db"
+case "$(line 2)" in *"FAIL: journal-subledger printed no result"*) c=0 ;; *) c=1 ;; esac
+expect "check 2: a binary that prints no result is a FAIL, never ok" "$c"
+CHECK_DONE_BIN="$work/absent" run --journal "$work/in/journal.db"
+case "$(line 2)" in *"not checked: the ohcamel binary is not built"*) c=0 ;; *) c=1 ;; esac
+expect "check 2: no binary is not checked" "$c"
 SHIM_FARM="not checked: no farm artifact at x" run --farm "$work/in/farm"
 case "$(line 3)" in *"not checked: no farm artifact at x") c=0 ;; *) c=1 ;; esac
 expect "check 3: the probe's not checked passes through" "$c"
 SHIM_INC02=ok SHIM_CHAIN="FAIL: 2026-12-18: density fails mean" run
 case "$(line 6)" in *"FAIL: 2026-12-18: density fails mean") c=0 ;; *) c=1 ;; esac
 expect "check 6: a failing slice is named" "$c"
-SHIM_INC02=ok SHIM_CHAIN=ok SHIM_FARM=ok SHIM_LEDGER=ok run --journal "$work/in/journal.db" --farm "$work/in/farm" \
+SHIM_INC02=ok SHIM_CHAIN=ok SHIM_FARM=ok run --journal "$work/in/journal.db" --farm "$work/in/farm" \
 	--atlas "$work/in/atlas" --surface "$work/in/surface" --warehouse "$work/in/wh" --soak-log "$good" \
 	--ledger "$work/in/ledger-today.json"
 all_ok=0
-for n in 1 2 3 4 5 6 7; do case "$(line "$n")" in "$n. "*": ok") ;; *) all_ok=1 ;; esac; done
+for n in 1 2 3 4 5 6 7; do case "$(line "$n")" in "$n. "*": ok" | "$n. "*": ok ("*) ;; *) all_ok=1 ;; esac; done
 expect "all seven given what they need and passing: seven ok lines" "$all_ok"
 expect "and exit 0, strict or not" "$([ "$rc" = 0 ] && echo 0 || echo 1)"
 
 # ---- check 5: regenerate ----------------------------------------------------------------------------------------
-SHIM_REGEN_surface=4 run --atlas "$work/in/atlas" --farm "$work/in/farm" --surface "$work/in/surface" --warehouse "$work/in/wh"
+SHIM_REGEN_surface=4 run --atlas "$work/in/atlas" --surface "$work/in/surface" --warehouse "$work/in/wh"
 case "$(line 5)" in *"FAIL: regenerate refused or differed: surface (exit 4:"*) c=0 ;; *) c=1 ;; esac
 expect "check 5: a regenerate exit code is a FAIL naming the artifact" "$c"
-run --atlas "$work/in/atlas" --farm "$work/in/farm" --surface "$work/in/surface" --warehouse "$work/in/missing"
+run --atlas "$work/in/atlas" --surface "$work/in/surface" --warehouse "$work/in/missing"
 case "$(line 5)" in *"not checked: no such directory:"*) c=0 ;; *) c=1 ;; esac
 expect "check 5: an export that is not there is not checked" "$c"
-run --atlas "$work/in/atlas" --farm "$work/in/farm"
+run --atlas "$work/in/atlas"
 case "$(line 5)" in *"missing --surface --warehouse"*) c=0 ;; *) c=1 ;; esac
-expect "check 5: names exactly what is missing" "$c"
+expect "check 5: names exactly what is missing (the farm is not an argument: it is not regenerable)" "$c"
+
+run --atlas "$work/in/atlas" --surface "$work/in/surface" --warehouse "$work/in/wh"
+case "$(line 5)" in *": ok") c=0 ;; *) c=1 ;; esac
+expect "check 5: the atlas and the surface are enough; no farm is asked for" "$c"
 
 # ---- check 7: the ledger ----------------------------------------------------------------------------------------
 run --ledger "$work/in/ledger-today.json"
 case "$(line 7)" in *": ok") c=0 ;; *) c=1 ;; esac
 expect "check 7: an as_of of today is ok" "$c"
 run --ledger "$work/in/ledger-stale.json"
-case "$(line 7)" in *"FAIL: the ledger's as_of is 2026-11-24T06:30:00+00:00, not 2026-11-25") c=0 ;; *) c=1 ;; esac
+case "$(line 7)" in *"FAIL: the ledger's as_of is 2026-11-24, not 2026-11-25") c=0 ;; *) c=1 ;; esac
 expect "check 7: yesterday's as_of is a FAIL naming both dates" "$c"
 run --ledger "$work/in/ledger-none.json"
 case "$(line 7)" in *"FAIL: the ledger has no as_of") c=0 ;; *) c=1 ;; esac

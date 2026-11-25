@@ -1793,9 +1793,116 @@ let test_record_diff_says_each_strategy_once () =
         (sprintf "three header lines and two a strategy, in:\n%s" shown)
         7 (List.length o.out))
 
+(* journal-subledger (completion Task 5.3, check 2): the desk's own rule on a journal copy.
+   s_a bought 100 SPY and the hand bought 10 SPY (sources signal:s_a:1 and ticket:7); the
+   last close's marks hold SPY [spy_held], and AAPL 400, which no strategy has traded and
+   which predates the journal. The sum is 110: at 110 it is no break, at 40 it is, and
+   the AAPL holding is a break in neither. *)
+let subledger_journal path ~spy_held =
+  let j = open_exn path in
+  let spy = Symbol.of_string "SPY" and aapl = Symbol.of_string "AAPL" in
+  let fill ~id ~source ~side ~qty =
+    let o =
+      {
+        (Order.create
+           {
+             Order.Request.client_order_id =
+               Option.value_exn (Ids.Client_order_id.of_string id);
+             symbol = spy;
+             side;
+             qty;
+             kind = Order.Kind.Limit (Price.of_float 500.0);
+             tif = Order.Tif.Day;
+           })
+        with
+        Order.state = Order.State.Filled;
+      }
+    in
+    let at = Time_ns.of_string_with_utc_offset "2026-11-02T15:00:00Z" in
+    Journal.insert_order j o ~source ~decision_price:(Price.of_float 500.0) ~arrival:None
+      ~verdict:`Null ~at;
+    ignore
+      (Journal.record_fill j o
+         {
+           Order.Fill.execution_id = "x-" ^ id;
+           qty = Float.of_int qty;
+           price = Price.of_float 500.0;
+           at;
+           position_qty = None;
+         }
+        : bool)
+  in
+  fill ~id:"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ71" ~source:"signal:s_a:1" ~side:Order.Side.Buy
+    ~qty:100;
+  fill ~id:"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ72" ~source:"ticket:7" ~side:Order.Side.Buy
+    ~qty:10;
+  Journal.record_marks j
+    [
+      {
+        Journal.Mark.date = date "2026-11-03";
+        symbol = spy;
+        close = 505.0;
+        qty = spy_held;
+      };
+      { Journal.Mark.date = date "2026-11-03"; symbol = aapl; close = 200.0; qty = 400.0 };
+    ];
+  Journal.record_session j
+    {
+      Journal.Session.date = date "2026-11-03";
+      equity_close = 1_000_000.0;
+      cash_close = 0.0;
+      gross_close = 0.0;
+      net_close = 0.0;
+      recorded_at = Time_ns.of_string_with_utc_offset "2026-11-03T21:05:00Z";
+    };
+  Journal.close j
+
+let last_line (o : Ohcamel_desk.Journal_cli.Outcome.t) = List.last_exn o.out
+
+let test_journal_subledger_judges_the_names_strategies_trade () =
+  with_temp_dir ~f:(fun dir ->
+      let ok = Filename.concat dir "ok.db" and bad = Filename.concat dir "bad.db" in
+      subledger_journal ok ~spy_held:110.0;
+      subledger_journal bad ~spy_held:40.0;
+      let before = In_channel.read_all ok in
+      let o = Ohcamel_desk.Journal_cli.subledger ok in
+      Alcotest.(check int) "balanced: status" 0 o.status;
+      Alcotest.(check string)
+        "balanced: ok, and the pre-journal AAPL is not a break" "RESULT ok" (last_line o);
+      Alcotest.(check bool)
+        "one name was checked: SPY" true
+        (List.exists o.out ~f:(fun l ->
+             String.is_substring l ~substring:"1 names checked"));
+      Alcotest.(check string) "read-only" before (In_channel.read_all ok);
+      let o = Ohcamel_desk.Journal_cli.subledger bad in
+      Alcotest.(check int) "broken: status" 1 o.status;
+      Alcotest.(check bool)
+        (sprintf "the traded name's break is reported, and only it:\n%s"
+           (String.concat ~sep:"\n" o.out))
+        true
+        (String.is_prefix (last_line o)
+           ~prefix:"RESULT break at the close of 2026-11-03: SPY"
+        && not (String.is_substring (last_line o) ~substring:"AAPL")))
+
+let test_journal_subledger_says_when_it_cannot_judge () =
+  with_temp_dir ~f:(fun dir ->
+      let empty = Filename.concat dir "empty.db" in
+      Journal.close (open_exn empty);
+      let o = Ohcamel_desk.Journal_cli.subledger empty in
+      Alcotest.(check int) "no session close: status" 1 o.status;
+      Alcotest.(check string)
+        "and says so" "RESULT unjudgeable the journal holds no session close"
+        (last_line o);
+      let o = Ohcamel_desk.Journal_cli.subledger (Filename.concat dir "absent.db") in
+      Alcotest.(check int) "no file: status" 1 o.status)
+
 let suite =
   ( "journal backup",
     [
+      Alcotest.test_case "journal-subledger judges the names strategies trade" `Quick
+        test_journal_subledger_judges_the_names_strategies_trade;
+      Alcotest.test_case "journal-subledger says when it cannot judge" `Quick
+        test_journal_subledger_says_when_it_cannot_judge;
       Alcotest.test_case "record-diff says each strategy once" `Quick
         test_record_diff_says_each_strategy_once;
       Alcotest.test_case "record-diff reads and never writes" `Quick

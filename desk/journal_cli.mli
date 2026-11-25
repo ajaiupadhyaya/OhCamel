@@ -78,3 +78,13 @@ val record_diff :
     after-state would fire a stop the before-state does not (or the reverse); a strategy
     already stopped says so and stays stopped. Status 1 when the journal or the dividends
     file cannot be read. *)
+
+val subledger : string -> Outcome.t
+(** [ohcamel journal-subledger FILE]: the desk's sub-ledger rule ([Oms.subledger]'s) read
+    from a journal copy, read-only: the names a strategy has a fill in, less those with an
+    order that may still fill, each name's owners' net fills summed against the account's
+    position at the last session's marks, by [Subledger.check]. A name no strategy has
+    traded (a holding that predates the journal) is never judged. The last line of [out]
+    is the result a script reads: [RESULT ok], [RESULT break ...] (status 1) or
+    [RESULT unjudgeable ...] (no session close, or a journal that cannot be read; status
+    1). *)

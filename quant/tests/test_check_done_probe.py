@@ -8,7 +8,6 @@ label is the one the code computes, and the probe's bounds are Task 4.1's and Ta
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -31,64 +30,6 @@ def _say(fn, *args) -> str:
     lines = buf.getvalue().strip().splitlines()
     assert len(lines) == 1, lines                      # one line, always
     return lines[0]
-
-
-def _journal(path: Path, fills, marks, *, sessions=("2026-11-24",)) -> Path:
-    con = sqlite3.connect(path)
-    con.executescript(
-        "CREATE TABLE orders (client_order_id TEXT PRIMARY KEY, source TEXT NOT NULL);"
-        "CREATE TABLE fills (execution_id TEXT PRIMARY KEY, client_order_id TEXT NOT NULL, symbol TEXT NOT NULL,"
-        " side TEXT NOT NULL, qty REAL NOT NULL, price REAL NOT NULL);"
-        "CREATE TABLE sessions (date TEXT PRIMARY KEY);"
-        "CREATE TABLE marks (date TEXT NOT NULL, symbol TEXT NOT NULL, close REAL NOT NULL, qty REAL NOT NULL);")
-    for i, (source, sym, side, qty, price) in enumerate(fills):
-        con.execute("INSERT INTO orders VALUES (?, ?)", (f"o{i}", source))
-        con.execute("INSERT INTO fills VALUES (?, ?, ?, ?, ?, ?)", (f"e{i}", f"o{i}", sym, side, qty, price))
-    for d in sessions:
-        con.execute("INSERT INTO sessions VALUES (?)", (d,))
-    for sym, close, qty in marks:
-        con.execute("INSERT INTO marks VALUES (?, ?, ?, ?)", ("2026-11-24", sym, close, qty))
-    con.commit()
-    con.close()
-    return path
-
-
-def test_the_tolerance_is_the_ocaml_subledgers() -> None:
-    assert P.subledger_tolerance() == 0.5
-
-
-def test_a_sub_ledger_that_sums_is_ok_and_opposite_sides_net(tmp_path) -> None:
-    j = _journal(tmp_path / "j.db",
-                 [("signal:alpha:1", "SPY", "buy", 100, 500.0), ("signal:beta:1", "SPY", "sell", 50, 501.0),
-                  ("ticket:7", "TLT", "buy", 10, 90.0)],
-                 [("SPY", 505.0, 50), ("TLT", 91.0, 10)])
-    assert _say(P.ledger, str(j)) == "ok"
-
-
-def test_a_break_names_the_name_and_both_positions(tmp_path) -> None:
-    j = _journal(tmp_path / "j.db", [("signal:alpha:1", "SPY", "buy", 100, 500.0)], [("SPY", 505.0, 40)])
-    line = _say(P.ledger, str(j))
-    assert line.startswith("FAIL: sub-ledger break at the close of 2026-11-24") and "SPY strategies 100 vs account 40" in line
-
-
-def test_a_name_the_account_holds_that_no_fill_explains_is_a_break(tmp_path) -> None:
-    j = _journal(tmp_path / "j.db", [("signal:alpha:1", "SPY", "buy", 1, 500.0)], [("SPY", 505.0, 1), ("QQQ", 400.0, 7)])
-    assert "QQQ strategies 0 vs account 7" in _say(P.ledger, str(j))
-
-
-def test_a_journal_that_cannot_be_judged_is_not_checked_never_ok(tmp_path) -> None:
-    assert _say(P.ledger, str(tmp_path / "absent.db")).startswith("not checked: no journal at")
-    empty = _journal(tmp_path / "e.db", [], [], sessions=())
-    assert _say(P.ledger, str(empty)) == "not checked: the journal holds no session close"
-    nofills = _journal(tmp_path / "n.db", [], [], sessions=("2026-11-24",))
-    assert _say(P.ledger, str(nofills)) == "not checked: the journal holds no fills"
-
-
-def test_the_journal_is_not_written(tmp_path) -> None:
-    j = _journal(tmp_path / "j.db", [("signal:alpha:1", "SPY", "buy", 1, 500.0)], [("SPY", 505.0, 1)])
-    before = j.read_bytes()
-    _say(P.ledger, str(j))
-    assert j.read_bytes() == before and sorted(p.name for p in tmp_path.iterdir()) == ["j.db"]
 
 
 def _farm_artifact(root: Path, *, fill="open", gross=1.0, capacity=True, manifest_trials=2, table_trials=2) -> Path:
@@ -153,4 +94,4 @@ def test_the_vol_league_note_and_docstring_name_the_target_the_code_computes() -
 
 
 def test_the_bounds_are_the_amended_conditions() -> None:
-    assert P.G_FLOOR == -1e-10 and P.PUT_CALL_POINTS == 0.5 and P.RESOLVED_HALF_WIDTH == 0.25 and P.PNL_TOLERANCE_USD == 1.0
+    assert P.G_FLOOR == -1e-10 and P.PUT_CALL_POINTS == 0.5 and P.RESOLVED_HALF_WIDTH == 0.25

@@ -122,7 +122,7 @@ artifact directories and `trial_ledger.jsonl` out of the worker container with `
 the deployed sha, and run `scripts/check-done.sh --strict` with `--journal`, `--farm`, `--trial-ledger`, `--atlas`,
 `--surface`, `--warehouse` and `--ledger https://ohcamel.ajaiupadhyaya.com/api/ledger`. The exact lines are in
 [`docs/status.md`](../status.md) under *Running the definition of done*. A `FAIL` names what is wrong; `not checked`
-names what the script was not given. Check 4 fails until INC-02 is approved, and that is the owner's to give.
+names what the script was not given. Check 4 fails until INC-02 is approved, and that is the owner's to give. The artifacts the checks read exist on the droplet only after a deploy at or after `b5fabac` (held by the `594df16` rule until INC-02 is approved) and a nightly run at that sha; before then those lines read `FAIL` or `not checked`. Check 5 covers the atlas and the surface league only (`farm.sweep` is not regenerable; check 3 is the farm's evidence). Check 2 needs the `ohcamel` binary (`dune build ./bin/main.exe` in the checkout) and judges the desk's own sub-ledger rule.
 
 ## If the pages stop
 

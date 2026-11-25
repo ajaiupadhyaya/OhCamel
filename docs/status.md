@@ -9,7 +9,7 @@ unchanged under its own dated heading, and the sections after it are as they wer
 The project is **finished as code and checked by a script**: [`scripts/check-done.sh`](../scripts/check-done.sh)
 prints one line for each item of the spec's *What "finished" means*
 ([`superpowers/specs/2026-11-15-the-completion.md`](superpowers/specs/2026-11-15-the-completion.md)), each `ok`,
-`FAIL: <why>` or `not checked: <why>`. It is read-only and never goes near the droplet. What is left is the
+`FAIL: <why>` or `not checked: <why>` (check 2's `ok` adds that its dollar half is not checked). It is read-only and never goes near the droplet. What is left is the
 owner's: approvals, deploys and a few commands that only the droplet can run. They are listed below, and until
 they are done the script says so rather than passing.
 
@@ -37,7 +37,11 @@ It is paper only throughout.
   gates are the charter's, as the spec's default R3 sets them, **awaiting the owner**.
 - **The live experiment can reject something.** INC-02 is a draft with one pooled test (500 sessions, PSR at least
   0.95, power computed), whose verdict reads NOT STARTED until the owner approves it and a first fill follows.
-- **Every published number can be regenerated** from a code SHA, a data hash and a seed (`tools/regenerate.py`).
+- **Every published number that can be regenerated is**, from a code SHA, a data hash and a seed (`tools/regenerate.py`).
+  Not regenerable, and why (`jobs/provenance.py`, `NOT_REGENERABLE`): the ingests (a vendor's answer), the signal
+  producers and overlay (they write the desk's documents), `desk.report` (the live engine's session at 16:30), Kronos and
+  the self-test (wall-clock and process stamps), and `farm.sweep` (which cells it evaluates depends on a wall-clock budget
+  and on the previous artifact's order). The farm's evidence is its manifest instead, check 3.
   Data widened: delisted names, a calendar, French's library and a committed Fama–French slice.
 - **Every formula on the site fits its instrument.** Densities pass Task 4.1's amended condition on the committed
   SPY chain; American options are inverted on a CRR tree; the volatility league scores forecasts of one quantity,
@@ -51,10 +55,14 @@ to a constant for any smile and could never fail (Task 4.1's review), so the scr
 no `DensityError`, negative mass within tolerance, the finite-difference density integrated on the grid within
 1e-3 of the closed form, the mean within 0.5% of the forward, and g at least -1e-10 on a 600,001-point grid. The
 plan's check 6 also said the vol league's note says `close_to_close`; the code's label is
-`close-to-close daily variance of the session` (`vol_league.TARGET_LABEL`), so that is what the script asserts. Check 2's
-dollar test is the sub-ledger break's value (break x close): fees, dividends and interest name no owner and are not
-in it. Reading the journal needs no OCaml: the probe mirrors `Subledger.check` from the journal's fills and last
-session marks and reads the tolerance (0.5) out of `desk/subledger.ml`.
+`close-to-close daily variance of the session` (`vol_league.TARGET_LABEL`), so that is what the script asserts. Check 5 covers the atlas and the surface league, not the farm: `farm.sweep` is not regenerable (above), so
+`tools/regenerate.py` refuses it with exit 2. Check 2 runs the desk's own rule, not a copy of it: `ohcamel
+journal-subledger FILE` (read-only, `desk/journal_cli.ml`) judges the names a strategy has traded, less those with an order
+that may still fill, against the last close's marks, as `Oms.subledger` does, so holdings that predate the journal (the
+droplet's AAPL, MSFT, NVDA, JPM, XOM, CVX) are never breaks. The plan's second half, strategy P&L summing to the account
+within $1, is **not checked**: the journal records the account's equity but not what moved it outside the strategies' names
+(those pre-journal holdings, interest), so a dollar sum would not isolate the sub-ledger; the line says so. Check 7 compares
+with today's date in New York, the date the ledger is built on.
 
 ### Running the definition of done
 
@@ -91,7 +99,7 @@ scripts/check-done.sh --strict \
     --ledger https://ohcamel.ajaiupadhyaya.com/api/ledger
 ```
 
-The checkout must be at the sha the artifacts were made by, or `tools/regenerate.py` refuses (exit 3). Run it from the
+The script's own code (this `scripts/check-done.sh`, the probe and `journal-subledger`) is in the checkout and needs no deploy, but checks 3, 5 and 7 read artifacts and a ledger the droplet made: check 3 needs a farm artifact that carries `capacity_usd`, fill `open` and the trial ledger (Stage 2), check 5 needs the regenerable artifacts made by a sha that has `tools/regenerate.py` (Stage 3), and check 7 needs the served `/api/ledger` (Task 5.1). Those exist on the droplet only after a deploy at or after `b5fabac`, which the `594df16` hold forbids until INC-02 is approved, and then a nightly run at that sha. Until then those lines honestly read `FAIL` or `not checked`. The checkout must be at the sha the artifacts were made by, or `tools/regenerate.py` refuses (exit 3). Run it from the
 laptop's `quant` environment (`quant/.venv`), and build the soak first (`make test`) so check 1 runs the suite.
 The same steps are in [`runbooks/desk.md`](runbooks/desk.md).
 
@@ -99,10 +107,10 @@ The same steps are in [`runbooks/desk.md`](runbooks/desk.md).
 
 ```
 1. the desk can be left alone (soak: trip, reduce, restart tripped): ok
-2. the record is true (sub-ledger, strategy P&L = account): not checked: no journal copy given
+2. the record is true (the desk's sub-ledger rule on a journal copy): not checked: no journal copy given
 3. the farm is scored as traded (fill open, gross 1, capacity, trials): not checked: no farm artifact given
 4. the live experiment can reject something (INC-02 approved, pooled_test): FAIL: INC-02 is not approved: its Approved-by line is empty (the approval is the owner's to give)
-5. every published number regenerates (atlas, farm, surface): not checked: no artifacts given (missing --atlas --farm --surface --warehouse)
+5. every published number regenerates (atlas, surface): not checked: no artifacts given (missing --atlas --surface --warehouse)
 6. every formula fits its instrument (SPY densities, put/call IV, vol target): ok
 7. the site says what is true today (ledger as_of): not checked: no ledger given (--ledger FILE or URL: the /api/ledger answer)
 ```
@@ -119,7 +127,10 @@ None of these is the agent's to do. The order is the order of dependence.
    before the spec records it (`research/tests/test_rulings_attributed.py` fails if one does).
 3. **The deploy hold.** Deploy no sha at or after `594df16`, with `--live` or `--public-only`, until INC-02 is approved
    and `book.sexp` is regenerated (*Deploy, by sha*; *Deploying the desk (completion Task 1.12)*). `main` is at
-   `d788e86`: pushing the completion's branch is the owner's, and the ledger records which earlier deploys were done.
+   `d788e86` (the owner pushed it 2026-11-24); the completion branch beyond it is not pushed to `main`.
+   **Deploys still owed**, per the ledger: the hosts stand at `db54ce8` (`4cd3848 --public-only` and `db54ce8 --live`, both
+   2026-11-16 23:07Z). Day 3's `a14005b --live` and Day 4's `d788e86` (`--public-only`, with `--live` after) are OWNER-PENDING,
+   and both are before the hold, so they may go any time; nothing at or after `594df16` may.
 4. **Regenerate `book.sexp`** with each strategy's ex-ante volatility: run `book_vols` on the droplet, write the vols
    with `tools/book_ex_ante_vol.py --vols`, regenerate the book (*Getting the book's ex-ante volatilities*). A book
    with no `(ex_ante_vol F)` on a strategy fails to load, which is why the hold covers it. Then deploy `--live` and
@@ -194,7 +205,7 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 
 ## Where it runs
 
-*(As of 2026-11-02. Since then the last deploy the completion ledger confirms is `fff8933` on 2026-11-16; every later deploy is OWNER-PENDING, so read the droplet's `/api/health` sha before trusting this table.)*
+*(As of 2026-11-02. Since then the ledger records the owner deploying `4cd3848 --public-only` and `db54ce8 --live` on 2026-11-16 (23:07Z), so the hosts stand at `db54ce8`; Day 3's and Day 4's deploys are OWNER-PENDING. Read the droplet's `/api/health` sha before trusting this table.)*
 
 | | |
 |---|---|
@@ -269,7 +280,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2675<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2669<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -691,7 +702,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->1037<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->113<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->1039<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->113<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

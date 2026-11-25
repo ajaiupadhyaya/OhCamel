@@ -4,12 +4,13 @@
 # (completion Task 5.3). Seven lines, one per item, each `ok`, `FAIL: <why>` or `not checked: <why>`:
 #
 #   1. the desk can be left alone    the sim soak (test/desk_async "soak") shows trip -> reduce -> restart still tripped
-#   2. the record is true            Subledger.check on a journal copy: no break, strategy P&L sums to the account in $1
+#   2. the record is true            the desk's own sub-ledger rule (ohcamel journal-subledger) on a journal copy: no break
 #   3. verdicts are about the trade  the farm artifact: fill open, max_gross 1, capacity_usd, trial count == the ledger's
 #   4. the experiment can reject     INC-02's Approved-by line is filled in and the pooled_test product exists
-#   5. numbers regenerate            tools/regenerate.py on the atlas, farm and surface artifacts
+#   5. numbers regenerate            tools/regenerate.py on the atlas and surface artifacts (the farm is not regenerable:
+#                                    jobs/provenance.py NOT_REGENERABLE; its evidence is check 3)
 #   6. formulas fit the instrument   the committed SPY chain: densities (Task 4.1's condition), put/call IV, vol target
-#   7. the site says what is true    the ledger's as_of is today (UTC)
+#   7. the site says what is true    the ledger's as_of is today (New York, the date the ledger is built on)
 #
 # Usage (from the repository root or anywhere):
 #
@@ -17,9 +18,9 @@
 #                         [--warehouse DIR] [--ledger FILE|URL] [--soak-log FILE] [--strict]
 #
 #   --journal        a COPY of last night's journal (a backup: ohcamel journal-backup writes them)      -> check 2
-#   --farm           the newest farm.sweep artifact directory                                             -> checks 3, 5
+#   --farm           the newest farm.sweep artifact directory                                             -> check 3
 #   --trial-ledger   the farm's trial_ledger.jsonl (default: two levels above --farm, the artifact root)  -> check 3
-#   --atlas, --surface, --warehouse   the newest risk.mc_atlas and options.surface_league artifact
+#   --atlas, --surface, --warehouse   the newest risk.mc_atlas and vol.surface_league artifact
 #                    directories and the warehouse export they regenerate from                            -> check 5
 #   --ledger         the /api/ledger answer, as a saved file or an http(s) URL (one GET)                  -> check 7
 #   --soak-log       a soak case's output file instead of running the suite (alcotest's soak.000.output)  -> check 1
@@ -33,6 +34,7 @@
 #
 # Environment (tests set these; the defaults are right for a checkout): CHECK_DONE_PY (the quant interpreter,
 # default quant/.venv/bin/python), CHECK_DONE_SOAK_EXE (the built test_desk_async.exe), CHECK_DONE_TODAY (YYYY-MM-DD).
+# CHECK_DONE_BIN (the built ohcamel binary, default _build/default/bin/main.exe; built with dune when absent).
 
 set -u
 
@@ -59,13 +61,14 @@ while [ $# -gt 0 ]; do
 done
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/check-done.XXXXXX")" || exit 70
+export TMPDIR="$scratch"
 trap 'rm -rf "$scratch"' EXIT
 
 fails=0 unchecked=0
 # report N NAME RESULT: the one line a check prints; RESULT is ok, FAIL: ... or not checked: ...
 report() {
   case "$3" in
-    ok) ;;
+    ok | "ok ("*) ;;
     FAIL:*) fails=$((fails + 1)) ;;
     "not checked:"*) unchecked=$((unchecked + 1)) ;;
     *) set -- "$1" "$2" "FAIL: the check printed no result: $3"; fails=$((fails + 1)) ;;
@@ -127,18 +130,51 @@ check_soak() {
   fi
 }
 
+# 2 -- the sub-ledger -------------------------------------------------------------------------------------------
+# The desk's own rule, Oms.subledger's, through `ohcamel journal-subledger` (read-only; desk/journal_cli.ml): the names
+# strategies trade, less those with an order in flight, against the last close's marks. The dollar half of the plan's
+# check (strategy P&L against the account's change in equity) is NOT computed: the journal records the account's equity
+# but not what moved it outside the strategies' names (holdings that predate the journal, interest), so a dollar sum would
+# not isolate the sub-ledger; it says so on the line.
+check_subledger() {
+  if [ -z "$journal" ]; then
+    echo "not checked: no journal copy given"
+    return
+  fi
+  if [ ! -f "$journal" ]; then
+    echo "not checked: no journal at $journal"
+    return
+  fi
+  local bin="${CHECK_DONE_BIN:-$ROOT/_build/default/bin/main.exe}"
+  if [ ! -x "$bin" ] && [ -z "${CHECK_DONE_BIN:-}" ] && command -v dune >/dev/null 2>&1; then
+    (cd "$ROOT" && dune build ./bin/main.exe >"$scratch/dune.log" 2>&1)
+  fi
+  if [ ! -x "$bin" ]; then
+    echo "not checked: the ohcamel binary is not built ($bin); run dune build ./bin/main.exe"
+    return
+  fi
+  local out result
+  out="$("$bin" journal-subledger "$journal" 2>&1)"
+  result="$(printf '%s\n' "$out" | grep '^RESULT ' | tail -n 1)"
+  case "$result" in
+    "RESULT ok") echo "ok (shares: the dollar half is not checked: the journal does not hold what moved the account's equity outside the strategies' names)" ;;
+    "RESULT break "*) echo "FAIL: sub-ledger ${result#RESULT break }" ;;
+    "RESULT unjudgeable "*) echo "not checked: ${result#RESULT unjudgeable }" ;;
+    *) echo "FAIL: journal-subledger printed no result: $(printf '%s' "$out" | tail -n 1)" ;;
+  esac
+}
+
 # 5 -- regenerate -----------------------------------------------------------------------------------------------
 check_regenerate() {
   local missing='' d
   [ -n "$atlas" ] || missing="$missing --atlas"
-  [ -n "$farm" ] || missing="$missing --farm"
   [ -n "$surface" ] || missing="$missing --surface"
   [ -n "$warehouse" ] || missing="$missing --warehouse"
   if [ -n "$missing" ]; then
     echo "not checked: no artifacts given (missing$missing)"
     return
   fi
-  for d in "$atlas" "$farm" "$surface" "$warehouse"; do
+  for d in "$atlas" "$surface" "$warehouse"; do
     if [ ! -d "$d" ]; then
       echo "not checked: no such directory: $d"
       return
@@ -149,7 +185,7 @@ check_regenerate() {
     return
   fi
   local bad='' out rc n=0
-  for d in "$atlas" "$farm" "$surface"; do
+  for d in "$atlas" "$surface"; do
     n=$((n + 1))
     out="$("$PY" "$ROOT/tools/regenerate.py" "$d" --warehouse "$warehouse" --scratch "$scratch/regen$n" 2>&1)"
     rc=$?
@@ -160,7 +196,7 @@ check_regenerate() {
 
 # 7 -- the ledger's as_of ---------------------------------------------------------------------------------------
 check_ledger() {
-  local today="${CHECK_DONE_TODAY:-$(date -u +%Y-%m-%d)}" body="$scratch/ledger.json"
+  local today="${CHECK_DONE_TODAY:-$(TZ=America/New_York date +%Y-%m-%d)}" body="$scratch/ledger.json"
   if [ -z "$ledger" ]; then
     echo "not checked: no ledger given (--ledger FILE or URL: the /api/ledger answer)"
     return
@@ -182,7 +218,7 @@ check_ledger() {
   as_of="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["as_of"])' "$body" 2>/dev/null)"
   if [ -z "$as_of" ]; then
     echo "FAIL: the ledger has no as_of"
-  elif [ "${as_of%%T*}" = "$today" ]; then
+  elif [ "$as_of" = "$today" ]; then
     echo "ok"
   else
     echo "FAIL: the ledger's as_of is $as_of, not $today"
@@ -191,12 +227,8 @@ check_ledger() {
 
 report 1 "the desk can be left alone (soak: trip, reduce, restart tripped)" "$(check_soak)"
 
-if [ -z "$journal" ]; then
-  r2="not checked: no journal copy given"
-else
-  r2="$(probe ledger "$journal")"
-fi
-report 2 "the record is true (sub-ledger, strategy P&L = account)" "$r2"
+r2="$(check_subledger)"
+report 2 "the record is true (the desk's sub-ledger rule on a journal copy)" "$r2"
 
 if [ -z "$farm" ]; then
   r3="not checked: no farm artifact given"
@@ -206,7 +238,7 @@ fi
 report 3 "the farm is scored as traded (fill open, gross 1, capacity, trials)" "$r3"
 
 report 4 "the live experiment can reject something (INC-02 approved, pooled_test)" "$(probe inc02)"
-report 5 "every published number regenerates (atlas, farm, surface)" "$(check_regenerate)"
+report 5 "every published number regenerates (atlas, surface)" "$(check_regenerate)"
 report 6 "every formula fits its instrument (SPY densities, put/call IV, vol target)" "$(probe chain)"
 report 7 "the site says what is true today (ledger as_of)" "$(check_ledger)"
 

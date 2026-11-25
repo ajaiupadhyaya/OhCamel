@@ -166,6 +166,99 @@ let parse_dividends text : (Record.dividend list, string) Result.t =
               Error (sprintf "line %d: %S is not SYMBOL,EX_DATE,PER_SHARE" (i + 1) line)))
   |> Result.all
 
+(* [ohcamel journal-subledger FILE] (completion Task 5.3's check 2): the desk's own
+   sub-ledger rule, Oms.subledger's, read from a journal copy. The same names (those a
+   strategy has a fill in, minus those with an order that may still fill), the same
+   figures (Journal.fills_by_source, grouped by Subledger.owner), the same judge
+   (Subledger.check at Subledger.tolerance); the account is the last session's marks,
+   which is what the close recorded the check against. Read-only by construction. The
+   last line is the result a script reads: RESULT ok, RESULT break ..., or
+   RESULT unjudgeable ... (status 1 unless ok). *)
+let subledger path =
+  let say, all = lines () in
+  match Journal.open_read_only path with
+  | Error e -> fail all e
+  | Ok journal ->
+      Exn.protect
+        ~finally:(fun () -> Journal.close journal)
+        ~f:(fun () ->
+          match
+            Or_error.try_with (fun () ->
+                match List.last (Journal.sessions journal) with
+                | None -> `Unjudgeable "the journal holds no session close"
+                | Some last ->
+                    let rows = Journal.fills_by_source journal in
+                    let since = Some last.Journal.Session.date in
+                    let pending (r : Journal.Order_row.t) =
+                      Float.( > ) (Order.remaining_qty r.order) Order.epsilon
+                    in
+                    let in_flight =
+                      Ohcamel.Types.Symbol.Set.of_list
+                        (List.filter_map
+                           (List.filter (Journal.open_orders journal) ~f:pending
+                           @ List.filter
+                               (Journal.unfinished_failed_orders journal ~since)
+                               ~f:pending)
+                           ~f:(fun r -> Some r.order.Order.request.Order.Request.symbol))
+                    in
+                    let own =
+                      List.map rows ~f:(fun (source, symbol, q) ->
+                          (Subledger.owner ~source, symbol, q))
+                    in
+                    let traded =
+                      Ohcamel.Types.Symbol.Set.of_list
+                        (List.filter_map own ~f:(fun (owner, symbol, _) ->
+                             Option.some_if
+                               (not (String.equal owner Subledger.hand))
+                               symbol))
+                    in
+                    let checked = Set.diff traded in_flight in
+                    let account =
+                      let held =
+                        Ohcamel.Types.Symbol.Map.of_alist_reduce
+                          (List.map (Journal.marks journal last.date) ~f:(fun m ->
+                               (m.Journal.Mark.symbol, m.qty)))
+                          ~f:( +. )
+                      in
+                      List.map (Set.to_list checked) ~f:(fun s ->
+                          (s, Option.value (Map.find held s) ~default:0.0))
+                    in
+                    let breaks =
+                      Subledger.check
+                        ~own:
+                          (List.filter own ~f:(fun (_, symbol, _) ->
+                               Set.mem checked symbol))
+                        ~account ~tolerance:Subledger.tolerance
+                    in
+                    `Judged (last.date, checked, Set.inter traded in_flight, breaks))
+          with
+          | Error e ->
+              say (sprintf "RESULT unjudgeable %s" (Error.to_string_hum e));
+              fail all (sprintf "ohcamel: %s could not be read as a journal" path)
+          | Ok (`Unjudgeable why) ->
+              say (sprintf "RESULT unjudgeable %s" why);
+              fail all (sprintf "ohcamel: %s" why)
+          | Ok (`Judged (date, checked, unsettled, breaks)) ->
+              say
+                (sprintf
+                   "journal-subledger: %s, read-only; the account is the marks at the \
+                    close of %s"
+                   path (Date.to_string date));
+              say
+                (sprintf
+                   "%d names checked (the names strategies trade), %d left unjudged for \
+                    an order that may still fill"
+                   (Set.length checked) (Set.length unsettled));
+              if List.is_empty breaks then (
+                say "RESULT ok";
+                finish all)
+              else (
+                List.iter breaks ~f:(fun b -> say ("break: " ^ Subledger.describe b));
+                say
+                  (sprintf "RESULT break at the close of %s: %s" (Date.to_string date)
+                     (String.concat ~sep:"; " (List.map breaks ~f:Subledger.describe)));
+                fail all "ohcamel: the sub-ledger does not sum"))
+
 (* The strategies the journal has orders for, by their source's slug
    (signal:<slug>:<sequence>), in order. *)
 let strategies_of journal =
