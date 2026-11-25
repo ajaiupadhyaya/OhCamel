@@ -576,7 +576,10 @@ module Book = struct
        book writes them as flat strategy words -- (stop_vol_multiple 2.0)
        (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500) (ex_ante_vol F) --
        the first four defaulting to those values; [ex_ante_vol] has no default,
-       and a strategy without one does not load. *)
+       and a strategy without one does not load. A row may add
+       (ex_ante_vol_source placeholder) to say its [ex_ante_vol] is a stand-in
+       (book.example.sexp's farm rows are): such a book loads while trading is
+       disabled and is refused, naming the strategy, once it is enabled. *)
     module Stop = struct
       type t = {
         vol_multiple : float;
@@ -584,6 +587,10 @@ module Book = struct
         cap : float;
         sessions : int;
         ex_ante_vol : float;
+        (* True for a row the book marks (ex_ante_vol_source placeholder): a
+           stand-in, not a measurement. Never quoted as one, and refused by
+           [validate] when the book trades. *)
+        placeholder : bool;
       }
       [@@deriving sexp, compare, equal]
     end
@@ -608,6 +615,8 @@ module Book = struct
       }
       [@@deriving compare, equal]
 
+      type vol_source = Placeholder [@@deriving sexp]
+
       (* The book's spelling: flat words, no (stop ...). [@sexp.option], so
          (reinstated DATE) and (ex_ante_vol F) are written bare and an absent
          one is None. *)
@@ -626,6 +635,7 @@ module Book = struct
         stop_cap : float; [@sexp.default 0.25]
         stop_sessions : int; [@sexp.default 500]
         ex_ante_vol : float option; [@sexp.option]
+        ex_ante_vol_source : vol_source option; [@sexp.option]
         reinstated : Date.t option; [@sexp.option]
       }
       [@@deriving sexp]
@@ -649,6 +659,7 @@ module Book = struct
                   cap = w.stop_cap;
                   sessions = w.stop_sessions;
                   ex_ante_vol;
+                  placeholder = Option.is_some w.ex_ante_vol_source;
                 });
           reinstated = w.reinstated;
         }
@@ -663,6 +674,7 @@ module Book = struct
                 cap = 0.25;
                 sessions = 500;
                 ex_ante_vol = Float.nan;
+                placeholder = false;
               }
         in
         {
@@ -680,6 +692,8 @@ module Book = struct
           stop_cap = st.cap;
           stop_sessions = st.sessions;
           ex_ante_vol = Option.map t.stop ~f:(fun s -> s.Stop.ex_ante_vol);
+          ex_ante_vol_source =
+            Option.bind t.stop ~f:(fun s -> Option.some_if s.Stop.placeholder Placeholder);
           reinstated = t.reinstated;
         }
 
@@ -704,7 +718,7 @@ module Book = struct
        "f <= 0 || f > 1" would let it through. The live sum carries R7's own
        1e-9, so that fractions like 0.1 x 10 are not refused for the last bit
        of a float, and so do the incubation sum and the two tiers' together. *)
-    let validate ~(universe : string list) (t : t) : unit Or_error.t =
+    let validate ?(trading = false) ~(universe : string list) (t : t) : unit Or_error.t =
       let fail name fmt =
         Printf.ksprintf (fun s -> Or_error.errorf "signals: %s: %s" name s) fmt
       in
@@ -748,6 +762,12 @@ module Book = struct
                          && Float.(stop.Stop.ex_ante_vol > 0.0)) ->
                     fail s.name "ex_ante_vol must be a positive number, got %g"
                       stop.Stop.ex_ante_vol
+                | Some stop when stop.Stop.placeholder && trading ->
+                    fail s.name
+                      "ex_ante_vol is a placeholder (ex_ante_vol_source placeholder), \
+                       not a measurement, and the book has (trading enabled): replace it \
+                       with the freeze's figure (tools/book_ex_ante_vol.py) before the \
+                       desk trades"
                 | Some stop when not Float.(stop.Stop.vol_multiple > 0.0) ->
                     fail s.name "stop_vol_multiple must be positive, got %g"
                       stop.Stop.vol_multiple
@@ -975,6 +995,9 @@ module Book = struct
      list does not see until it is restated here; round 1's review found the
      universe's three exactly that way, after an earlier version of this comment
      had claimed there were none. *)
+  let trading_enabled (t : t) =
+    Desk_spec.equal_trading t.desk.Desk_spec.trading Desk_spec.Enabled
+
   let errors (t : t) : string list =
     (* [invalid_argf], which is what Limits.validate raises: the message alone,
        because [Error.of_exn] would print it inside its constructor and this list
@@ -1067,7 +1090,9 @@ module Book = struct
       | None -> []
       | Some signals ->
           let whole strategies =
-            returned (Signals_spec.validate ~universe { Signals_spec.strategies })
+            returned
+              (Signals_spec.validate ~trading:(trading_enabled t) ~universe
+                 { Signals_spec.strategies })
           in
           let verdicts =
             List.map signals.Signals_spec.strategies ~f:(fun s -> (s, whole [ s ]))
@@ -1101,7 +1126,8 @@ module Book = struct
     let%map () =
       match book.signals with
       | None -> Ok ()
-      | Some signals -> Signals_spec.validate ~universe signals
+      | Some signals ->
+          Signals_spec.validate ~trading:(trading_enabled book) ~universe signals
     in
     book
 

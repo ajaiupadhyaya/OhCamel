@@ -15,7 +15,14 @@ let d = Date.of_string
 let zone = Time_float.Zone.of_utc_offset ~hours:(-4)
 
 let stop_words ?(sessions = 500) ?(floor = 0.05) ?(cap = 0.25) vol =
-  { Spec.Stop.vol_multiple = 2.0; floor; cap; sessions; ex_ante_vol = vol }
+  {
+    Spec.Stop.vol_multiple = 2.0;
+    floor;
+    cap;
+    sessions;
+    ex_ante_vol = vol;
+    placeholder = false;
+  }
 
 (* 2.0 x 0.075 = 0.15: the line INC-01 drew for everyone, so the fixtures below keep
    their arithmetic. *)
@@ -95,6 +102,7 @@ let test_the_book_words_load_with_their_defaults () =
                 cap = 0.25;
                 sessions = 500;
                 ex_ante_vol = 0.04;
+                placeholder = false;
               }))
   | Ok _ | Error _ -> Alcotest.fail "a strategy with an ex_ante_vol did not load");
   match
@@ -116,6 +124,7 @@ let test_the_book_words_load_with_their_defaults () =
                 cap = 0.2;
                 sessions = 400;
                 ex_ante_vol = 0.05;
+                placeholder = false;
               }));
       Alcotest.(check bool)
         "and round-trip through the book's spelling" true
@@ -148,6 +157,56 @@ let test_a_bad_stop_word_does_not_load () =
      with
     | Ok _ -> false
     | Error _ -> true)
+
+(* Task 2.2 round 1: a placeholder is a stand-in, never a measurement. *)
+let test_a_placeholder_loads_while_trading_is_disabled_and_is_refused_when_enabled () =
+  let text =
+    strategy_text ~extra:"(ex_ante_vol 0.075) (ex_ante_vol_source placeholder)" "s_ph"
+  in
+  (match load text with
+  | Ok { Spec.strategies = [ s ] } ->
+      Alcotest.(check bool)
+        "marked" true
+        (match s.Spec.Strategy.stop with
+        | Some st -> st.Spec.Stop.placeholder
+        | None -> false);
+      Alcotest.(check bool)
+        "and round-trips" true
+        (Spec.Strategy.equal s (Spec.Strategy.t_of_sexp (Spec.Strategy.sexp_of_t s)))
+  | Ok _ | Error _ -> Alcotest.fail "a placeholder did not load with trading disabled");
+  let sig_text = sprintf "((strategies (%s)))" text in
+  let book trading =
+    sprintf
+      "((cash 1000.0) (positions (((symbol SPY) (sector INDEX) (qty 0.0)))) (limits ()) \
+       (desk ((trading %s))) (signals %s))"
+      trading sig_text
+  in
+  (match Ohcamel.Config.Book.of_string (book "disabled") with
+  | Ok _ -> ()
+  | Error e -> Alcotest.failf "disabled book refused: %s" (Error.to_string_hum e));
+  match Ohcamel.Config.Book.of_string (book "enabled") with
+  | Ok _ -> Alcotest.fail "a placeholder loaded under (trading enabled)"
+  | Error e ->
+      let msg = Error.to_string_hum e in
+      Alcotest.(check bool)
+        "refused, naming the strategy and the word" true
+        (String.is_substring msg ~substring:"s_ph"
+        && String.is_substring msg ~substring:"placeholder")
+
+let test_a_placeholder_is_never_quoted_as_a_volatility () =
+  let spec = { (stop_words 0.075) with Spec.Stop.placeholder = true } in
+  match D.Stop.check ~spec ~record:(summary ~drawdown:0.2) ~sessions:10 with
+  | `Stop (_, detail) ->
+      Alcotest.(check bool)
+        "says placeholder, quotes no volatility" true
+        (String.is_substring detail ~substring:"placeholder"
+        && not (String.is_substring detail ~substring:"7.5%"))
+  | `Continue -> Alcotest.fail "20% did not stop"
+
+let test_the_threshold_is_total () =
+  let t vol = D.Stop.threshold ~ex_ante_vol:vol ~multiple:2.0 ~floor:0.05 ~cap:0.25 in
+  Alcotest.(check (float 1e-12)) "nan reads the floor" 0.05 (t Float.nan);
+  Alcotest.(check (float 1e-12)) "infinity reads the floor" 0.05 (t Float.infinity)
 
 (* Two strategies on one journal, each with its own name and fills. s_dd buys 10 AAPL
    at 100 on its first session and AAPL closes 100 then 80: -200 on 1,000 allocated,
@@ -618,6 +677,11 @@ let suite =
         test_the_book_words_load_with_their_defaults;
       Alcotest.test_case "no ex_ante_vol does not load, and is named" `Quick
         test_a_strategy_with_no_ex_ante_vol_does_not_load_and_is_named;
+      Alcotest.test_case "a placeholder loads disabled, is refused enabled" `Quick
+        test_a_placeholder_loads_while_trading_is_disabled_and_is_refused_when_enabled;
+      Alcotest.test_case "a placeholder is never quoted as a volatility" `Quick
+        test_a_placeholder_is_never_quoted_as_a_volatility;
+      Alcotest.test_case "the threshold is total" `Quick test_the_threshold_is_total;
       Alcotest.test_case "a bad stop word does not load" `Quick
         test_a_bad_stop_word_does_not_load;
       Alcotest.test_case "the drawdown rule fires at its line" `Quick

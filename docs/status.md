@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2498<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2500<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -537,7 +537,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->1029<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->111<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->1032<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->111<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -745,7 +745,8 @@ deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant, ohcamel-wor
 ```
 
 **Hold: INC-02.** Deploy no sha at or after `594df16` (completion task 2.1) with `--live` until the owner has
-approved INC-02 and regenerated the live `book.sexp` from `book.example.sexp`. The same applies to `--public-only`,
+approved INC-02 and regenerated the live `book.sexp` from `book.example.sexp` **and replaced its placeholder
+`ex_ante_vol` values with the freeze's measurements** (*Getting the book's ex-ante volatilities*, below). The same applies to `--public-only`,
 which also moves `ohcamel-worker`, whose producers would then read INC-02's draft roster.
 
 **OWNER-PENDING: the risk window (completion Task 1.9).** A `--live` deploy at or after Task 1.9 changes three
@@ -801,6 +802,33 @@ outage. A one-image fallback would bring `ohcamel-research` up on a missing
 or stale image, which is why it builds every one. The OCaml build is the slow
 part (about twenty minutes cold) and is what the droplet's 4 GB was sized for.
 
+### Getting the book's ex-ante volatilities (completion Task 2.2)
+
+INC-02's stop is twice each strategy's ex-ante volatility. The figures come from `ohcamel_quant.signals.book_vols`,
+which calls the freeze's own computation (252-session annualised volatility of the cell's backtest at its
+parameters, gross 1, next-open fill) directly, so it needs no freeze row and works on a month frozen before Task 2.2
+(the monthly freeze never re-takes a month). Its parameters are the month's `signals.freeze` row when there is one,
+else the newest worker `farm.sweep` artifact's `selected_params`; every figure's `params_source` says which.
+It is read-only (no artifact, no deploy). It must run where `quant_data` and the warehouse are, and the quant image
+does not carry `tools/`, so the module is run from a checkout of the sha mounted over the running image's source
+(chosen over a new job kind: no schedule, no retention, nothing to deploy). **Untested against Docker: run it once
+and read `vols.json` (every farm row a number, no `why`) before relying on it.**
+
+```
+# on the droplet, in a checkout of the sha; the running worker's image supplies the dependencies
+TAG=$(docker inspect --format '{{.Config.Image}}' ohcamel-ohcamel-worker-1)
+docker run --rm --user 10002 -v ohcamel_quant_data:/data -v "$PWD/quant/src":/src:ro \
+  -e PYTHONPATH=/src -e OHCAMEL_QUANT_DATA_DIR=/data -e OHCAMEL_QUANT_WAREHOUSE_PATH=/data/warehouse.duckdb \
+  --entrypoint python "$TAG" -m ohcamel_quant.signals.book_vols > ~/vols.json
+# on the laptop: copy vols.json over, then rewrite the farm rows (drops each placeholder mark)
+python tools/book_ex_ante_vol.py book.sexp --vols vols.json --write
+```
+
+Timing: run it after the farm has re-run at the traded configuration (Task 2.4: `fill == open`, `max_gross == 1` in
+the farm's cells), or the parameters it reads are an older row's; run it immediately before generating the book,
+since a later farm re-selection or freeze moves the parameters it measured. A cell it cannot compute (`why`) is
+refused by the tool and keeps its placeholder, which `check-book` then refuses under `(trading enabled)`.
+
 ### Deploying the desk (completion Task 1.12)
 
 *The owner's deploy, and only the owner's.* No agent deploys, resets the switch, or edits `book.sexp`.
@@ -816,6 +844,7 @@ the deploy, and they check exactly that.
 1. **The INC-02 hold** (*Deploy, by sha*): no sha at or after `594df16` until INC-02 is approved and the live
    `book.sexp` is regenerated.
    - After Task 2.2 a `book.sexp` with no `(ex_ante_vol F)` on a strategy FAILS TO LOAD, naming it: the droplet's INC-01 book would; the `594df16` hold covers it.
+   - `book.example.sexp`'s 20 farm rows carry `(ex_ante_vol 0.075) (ex_ante_vol_source placeholder)`, a stand-in. The loader refuses a placeholder-marked row under `(trading enabled)`, naming it, so `check-book` fails on a live book that still has one. Replace them first (next section).
 2. **The risk window** (*OWNER-PENDING: the risk window*):
    - `var-cap` reads 250 sessions instead of 60 unless the book writes `(risk ((var_window 60)))`;
    - the backfill makes three requests;

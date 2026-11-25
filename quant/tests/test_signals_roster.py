@@ -122,6 +122,9 @@ def test_the_example_book_gives_every_roster_row_an_ex_ante_vol_and_says_which_a
     for slug, row in measured.items():
         assert vols[slug] == pytest.approx(row["ex_ante_vol"], abs=5e-7), slug
     assert all(v == 0.075 for s, v in vols.items() if s.startswith("farm_")), "a farm row that is neither measured nor the placeholder"
+    for b in blocks:
+        slug = re.match(r"\(\(name (\w+)\)", b).group(1)
+        assert ("(ex_ante_vol_source placeholder)" in b) == slug.startswith("farm_"), slug
 
 
 def test_book_ex_ante_vol_rewrites_farm_rows_from_the_freeze_and_refuses_a_missing_one():
@@ -132,9 +135,11 @@ def test_book_ex_ante_vol_rewrites_farm_rows_from_the_freeze_and_refuses_a_missi
     spec = importlib.util.spec_from_file_location("book_ex_ante_vol", REPO_ROOT / "tools" / "book_ex_ante_vol.py")
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
-    book = ("((name exp_a01_spy) (ex_ante_vol 0.0957))\n((name farm_a) (ex_ante_vol 0.075))\n"
-            "((name farm_b) (ex_ante_vol 0.075))")
+    book = ("((name exp_a01_spy) (ex_ante_vol 0.0957))\n"
+            "((name farm_a) (ex_ante_vol 0.075) (ex_ante_vol_source placeholder))\n"
+            "((name farm_b) (ex_ante_vol 0.075) (ex_ante_vol_source placeholder))")
     new, done, refused = tool.rewrite(book, {"farm_a": 0.0421, "exp_a01_spy": 9.0})
     assert done == ["farm_a"] and refused == ["farm_b"]
     assert "(ex_ante_vol 0.042100)" in new and "(ex_ante_vol 0.0957)" in new   # EXP-A01 untouched
-    assert new.count("(ex_ante_vol 0.075)") == 1   # the refused row keeps what it held
+    assert new.count("(ex_ante_vol 0.075)") == 1   # the refused row keeps what it held ...
+    assert new.count("(ex_ante_vol_source placeholder)") == 1   # ... and its placeholder mark; farm_a's is gone

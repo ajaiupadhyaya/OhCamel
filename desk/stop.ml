@@ -26,8 +26,11 @@
 open Core
 module Spec = Ohcamel.Config.Book.Signals_spec
 
+(* Total: a volatility that is not a number (or an infinite product) is no
+   evidence of a wide line, so it reads as the floor. *)
 let threshold ~ex_ante_vol ~multiple ~floor ~cap =
-  Float.min cap (Float.max floor (multiple *. ex_ante_vol))
+  let raw = multiple *. ex_ante_vol in
+  if not (Float.is_finite raw) then floor else Float.min cap (Float.max floor raw)
 
 let line (spec : Spec.Stop.t) =
   threshold ~ex_ante_vol:spec.Spec.Stop.ex_ante_vol ~multiple:spec.Spec.Stop.vol_multiple
@@ -36,14 +39,22 @@ let line (spec : Spec.Stop.t) =
 let check ~(spec : Spec.Stop.t) ~(record : Record.summary) ~sessions =
   let line = line spec in
   if Float.( >= ) record.Record.max_drawdown line then
+    let basis =
+      (* A placeholder is never quoted as a volatility. *)
+      if spec.Spec.Stop.placeholder then
+        sprintf "a placeholder line, not measured: %g x a stand-in volatility"
+          spec.Spec.Stop.vol_multiple
+      else
+        sprintf "%g x its ex-ante volatility of %.1f%%" spec.Spec.Stop.vol_multiple
+          (100.0 *. spec.Spec.Stop.ex_ante_vol)
+    in
     `Stop
       ( "drawdown",
         sprintf
-          "drawdown %.1f%% reached its line of %.1f%% (%g x its ex-ante volatility of \
-           %.1f%%, floored at %.1f%%, capped at %.1f%%)"
+          "drawdown %.1f%% reached its line of %.1f%% (%s, floored at %.1f%%, capped at \
+           %.1f%%)"
           (100.0 *. record.Record.max_drawdown)
-          (100.0 *. line) spec.Spec.Stop.vol_multiple
-          (100.0 *. spec.Spec.Stop.ex_ante_vol)
+          (100.0 *. line) basis
           (100.0 *. spec.Spec.Stop.floor)
           (100.0 *. spec.Spec.Stop.cap) )
   else if sessions >= spec.Spec.Stop.sessions then

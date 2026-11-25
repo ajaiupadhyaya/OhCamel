@@ -53,7 +53,7 @@ def main() -> int:
         vol = float(last.std(ddof=1)) * math.sqrt(252)
         out[slug] = {"ex_ante_vol": vol, "strategy": manifest["strategy"], "params": params,
                      "sessions": SESSIONS, "first": str(last.index[0].date()), "last": str(last.index[-1].date()),
-                     "source": "battery.run.holdout_returns on fixtures/history, EXP-A01 friction, tier "
+                     "source": "battery.run.holdout_returns on fixtures/history (bars to 2026-06-01, so the window ends 2026-06-01), EXP-A01 friction, tier "
                                f"{cfg.tier:g}"}
         print(f"{slug}  {manifest['strategy']} {params}  ex_ante_vol {vol:.6f}  ({last.index[0].date()} .. "
               f"{last.index[-1].date()})")

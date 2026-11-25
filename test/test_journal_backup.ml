@@ -1641,6 +1641,7 @@ let test_record_diff_reads_and_never_writes () =
                 cap = 0.25;
                 sessions = 250;
                 ex_ante_vol = 0.001;
+                placeholder = false;
               };
           reinstated = None;
         }
@@ -1771,6 +1772,7 @@ let test_record_diff_says_each_strategy_once () =
                 cap = 0.25;
                 sessions = 250;
                 ex_ante_vol = 0.075;
+                placeholder = false;
               };
           reinstated = None;
         }

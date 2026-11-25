@@ -311,6 +311,51 @@ def test_a_cell_with_fewer_than_252_live_sessions_has_no_vol_and_is_not_emitted(
     assert freeze.frozen_ex_ante_vol(month=date(2026, 6, 1), cells=[cell]) == {}
 
 
+def test_book_vols_computes_at_the_frozen_params_and_falls_back_to_the_farm_when_the_month_has_no_freeze(world):
+    """Round 1: the compute mode needs no freeze row, so it works on a month frozen before task 2.2."""
+    from types import SimpleNamespace
+
+    from ohcamel_quant.signals import book_vols
+
+    cell = Cell("farm_sma_trend_fixture", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)
+    ctx = _ctx(world, signals_dir=None)
+    try:
+        c2 = SimpleNamespace(market=ctx.market)
+        frozen = book_vols.compute(c2, month=date(2026, 6, 1), cells=[cell])["farm_sma_trend_fixture"]
+        farm = book_vols.compute(c2, month=date(2026, 7, 1), cells=[cell])["farm_sma_trend_fixture"]
+    finally:
+        ctx.close()
+    want = _freeze_row(world, "farm_sma_trend_fixture")["ex_ante_vol"]
+    assert frozen["ex_ante_vol"] == pytest.approx(want, rel=1e-9) and frozen["params_source"] == "freeze 2026-06"
+    assert farm["ex_ante_vol"] == pytest.approx(want, rel=1e-9)   # the farm row selects the same {"months": 10}
+    assert farm["params_source"].startswith("farm.sweep ") and "no freeze row for the month" in farm["params_source"]
+
+
+def test_a_failed_backtest_is_not_persisted_and_retries_within_the_month(tmp_path, monkeypatch, world):
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    monkeypatch.setattr(freeze, "DB_PATH", db)
+    publish_artifact(db, root, "farm.sweep", _farm_tables(FARM_ROWS), verdict="PASS",
+                     finished=datetime(2026, 5, 29, 23, 0, tzinfo=UTC))
+    cell = Cell("farm_sma_trend_fixture", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)
+    real = freeze.ex_ante_vol
+    monkeypatch.setattr(freeze, "ex_ante_vol", lambda c, p, ctx: (None, 0, None, freeze.ERROR_PREFIX + "OSError: transient"))
+    ctx = _ctx(world, signals_dir=None)
+    try:
+        got, refused = freeze.frozen_params(ctx, month=date(2026, 6, 1), cells=[cell])
+        assert got == {} and "transient" in refused[0]["reason"]
+        # the freeze kept the parameters: the failure is not what the month remembers
+        from ohcamel_quant.products.io import previous_artifact, read_table
+
+        art = previous_artifact(freeze.FREEZE_KIND, freeze._phash("2026-06"), db_path=db, worker_only=True)
+        row = read_table(art[1], "params").iloc[0]
+        assert json.loads(row["selected_params"]) == {"months": 10} and not row["reason"]
+        monkeypatch.setattr(freeze, "ex_ante_vol", real)
+        got, refused = freeze.frozen_params(ctx, month=date(2026, 6, 1), cells=[cell])
+        assert got == {cell.slug: {"months": 10}} and refused == []
+    finally:
+        ctx.close()
+
+
 def test_cell_without_params_is_refused_with_reason(world):
     reason = _refused(world["spec"])["farm_tsmom_fixture"]
     assert "not emitted" in reason and "no 2026-05 parameters" in reason

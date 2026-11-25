@@ -5796,6 +5796,7 @@ let tlt_strategies =
             cap = 0.25;
             sessions = 250;
             ex_ante_vol = 0.001;
+            placeholder = false;
           };
       reinstated = None;
     };
@@ -6554,6 +6555,7 @@ let soak_strategies =
              cap = 0.5;
              sessions = 2;
              ex_ante_vol = 0.25;
+             placeholder = false;
            });
   ]
 

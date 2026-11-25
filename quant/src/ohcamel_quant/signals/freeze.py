@@ -59,6 +59,7 @@ COLUMNS = ["slug", "strategy", "universe", "selected_params", "source_artifact",
 #: own, which ``api/routers/artifacts.PUBLIC_TABLES`` does not serve (the ``params`` table is).
 VOL_TABLE = "volatility"
 VOL_COLUMNS = ["slug", "ex_ante_vol", "vol_sessions", "vol_asof"]
+ERROR_PREFIX = "error: "   # a ``why`` that begins so is a failure to run the backtest (transient), not a short history
 VOL_SESSIONS = 252   # INC-02: the realised volatility is measured over a trading year of live sessions
 
 
@@ -130,7 +131,7 @@ def ex_ante_vol(cell: Cell, params: dict[str, Any], ctx: Any) -> tuple[float | N
                            execution_lag=EXECUTION_LAG)
         res = run_backtest(sctx, spec.fn, ran, cfg)
     except Exception as e:  # noqa: BLE001 - a cell that cannot be backtested has no volatility; its reason is recorded
-        return None, 0, None, f"{type(e).__name__}: {e}"[:300]
+        return None, 0, None, f"{ERROR_PREFIX}{type(e).__name__}: {e}"[:300]
     live = res.live(res.returns_net).dropna()
     vol = realised_vol(live)
     if vol is None:
@@ -216,9 +217,10 @@ def _take(key: str, cells: list[Cell], db: Path,
             if row["selected_params"] is None:
                 continue
             vol, n, asof, why = ex_ante_vol(c, json.loads(row["selected_params"]), ctx)
-            if vol is None:
+            if vol is None and not str(why).startswith(ERROR_PREFIX):
+                # persisted: the history is short, and stays short for the month
                 row.update(selected_params=None, reason=f"no ex-ante volatility, so not emitted: {why}")
-            else:
+            elif vol is not None:
                 vols.append({"slug": c.slug, "ex_ante_vol": vol, "vol_sessions": n, "vol_asof": asof})
     return pd.DataFrame(rows, columns=COLUMNS), farm_id, pd.DataFrame(vols, columns=VOL_COLUMNS)
 
@@ -255,6 +257,15 @@ def _publish(db: Path, key: str, table: pd.DataFrame, farm_id: str | None, vols:
     return job.id
 
 
+def vol_table_slugs(got: Any) -> set[str]:
+    """The slugs with a row in a freeze artifact's ``volatility`` table (``got`` as ``previous_artifact`` returns it;
+    None, or an artifact frozen before the table existed, has none)."""
+    from ..products.io import read_table
+
+    t = read_table(got[1], VOL_TABLE) if got else None
+    return set(t["slug"]) if t is not None and len(t) else set()
+
+
 def frozen_params(ctx: Any, *, month: date, cells: list[Cell]) -> tuple[dict[str, dict], list[dict]]:
     """``({slug: selected_params}, [{slug, reason}])`` for ``cells`` in ``month``: the
     month's ``signals.freeze`` artifact, taken now (from the newest farm artifact) when
@@ -270,6 +281,7 @@ def frozen_params(ctx: Any, *, month: date, cells: list[Cell]) -> tuple[dict[str
             ctx.progress(0.0, f"taking the {key} parameter freeze")
         table, farm_id, vols = _take(key, cells, db, ctx)
         _publish(db, key, table, farm_id, vols)
+        got = previous_artifact(FREEZE_KIND, _phash(key), db_path=db, worker_only=True)
     else:
         table = read_table(got[1], "params")
         table = table if table is not None else pd.DataFrame(columns=COLUMNS)
@@ -285,6 +297,17 @@ def frozen_params(ctx: Any, *, month: date, cells: list[Cell]) -> tuple[dict[str
             refused.append({"slug": c.slug, "reason": _str(r.get("reason")) or "no frozen parameters"})
         else:
             params[c.slug] = json.loads(sel)
+    if ctx is not None:
+        # A cell whose volatility row is missing -- its backtest failed when the month was frozen (a transient
+        # error is not persisted, so it can retry within the month), or the month was frozen before task 2.2 --
+        # is measured now; one that still cannot be is refused this run only.
+        have = vol_table_slugs(got)
+        for c in cells:
+            if c.slug in params and c.slug not in have:
+                vol, _, _, why = ex_ante_vol(c, params[c.slug], ctx)
+                if vol is None:
+                    del params[c.slug]
+                    refused.append({"slug": c.slug, "reason": f"no ex-ante volatility, so not emitted this run: {why}"})
     return params, refused
 
 

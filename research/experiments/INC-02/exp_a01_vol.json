@@ -9,7 +9,7 @@
       "symbol": "SPY"
     },
     "sessions": 252,
-    "source": "battery.run.holdout_returns on fixtures/history, EXP-A01 friction, tier 50000",
+    "source": "battery.run.holdout_returns on fixtures/history (bars to 2026-06-01, so the window ends 2026-06-01), EXP-A01 friction, tier 50000",
     "strategy": "ma_crossover"
   },
   "exp_a01_tlt": {
@@ -22,7 +22,7 @@
       "symbol": "TLT"
     },
     "sessions": 252,
-    "source": "battery.run.holdout_returns on fixtures/history, EXP-A01 friction, tier 50000",
+    "source": "battery.run.holdout_returns on fixtures/history (bars to 2026-06-01, so the window ends 2026-06-01), EXP-A01 friction, tier 50000",
     "strategy": "ma_crossover"
   }
 }
