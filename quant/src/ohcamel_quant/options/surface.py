@@ -20,10 +20,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import metrics, ssvi
+from . import heston, metrics, ssvi
+from .bsm import black76_price
 from .chain import ChainAnalytics
 from .svi import (
+    G_TOL,
     K_MAX,
+    QUOTED_N,
     SVIFit,
     SVIParams,
     butterfly_check,
@@ -140,6 +143,72 @@ def ssvi_violations(p: ssvi.SSVIParams, vs: VolSurface) -> dict[str, int]:
     per-slice fit it was fitted to (the same quotes, :func:`fit_ssvi_surface`)."""
     rng = {f.T: (f.k_min, f.k_max) for f in vs.fits.values()}
     return count_violations([(float(t), ssvi.slice_svi(p, float(t)), *rng[float(t)]) for t in p.T])
+
+
+def heston_quotes(ca: ChainAnalytics, vs: VolSurface) -> pd.DataFrame:
+    """The quotes Heston is calibrated to: exactly the identified-IV quotes per-slice SVI and SSVI fit
+    (:func:`smile_inputs`, the expiries of ``vs``), each IV turned into a EUROPEAN Black-76 price of the
+    out-of-the-money option on its expiry's forward and discount factor. The chains are American; pricing the
+    identified IV as European keeps all three league models on one footing (SVI and SSVI fit those same IVs)."""
+    rows = []
+    for sid in vs.fits:
+        T, k, iv, _ = smile_inputs(ca, sid)
+        F, D = float(ca.slices.loc[sid, "forward"]), float(ca.slices.loc[sid, "discount"])
+        K, call = F * np.exp(k), k >= 0
+        rows.append(pd.DataFrame({"T": T, "F": F, "df": D, "K": K, "iv": iv, "is_call": call,
+                                  "price": black76_price(F, K, T, iv, D, np.where(call, "C", "P"))}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def fit_heston_surface(ca: ChainAnalytics, vs: VolSurface) -> heston.HestonFit:
+    """Heston (:mod:`.heston`, COS) calibrated to :func:`heston_quotes`, vega-weighted."""
+    return heston.calibrate(heston_quotes(ca, vs), weights="vega")
+
+
+def heston_violations(p: heston.HestonParams, slices: list[tuple[float, float, float]]) -> dict[str, int]:
+    """Butterfly and calendar violations of a Heston surface at the maturities ``[(T, k_min, k_max), ...]``, by the
+    definitions :func:`count_violations` applies to SVI-form slices, measured on the COS-priced surface's implied
+    total variance ``w(k, T)`` (:func:`.heston.implied_vol`). Heston is free of static arbitrage in exact
+    arithmetic; COS truncation and rounding are what these counts can catch.
+
+    * butterfly: Durrleman's ``g < -G_TOL`` on the 1201-point scan of [-K_MAX, K_MAX] (no zoom refinement), with
+      ``g`` from the COS density ``f`` and ``w`` (Gatheral & Jacquier 2014, eq. 2.2 inverted:
+      ``g = f sqrt(2 pi w) / exp(-d2^2 / 2)``, ``d2 = -k / sqrt(w) - sqrt(w) / 2``), whose sign is the sign of the
+      COS-priced put's second strike derivative;
+    * calendar: ``w(k, T2) < w(k, T1) - 1e-8`` on each adjacent pair's common quoted range (201 points) and on
+      :data:`ARB_K_GRID`.
+
+    Only points where ``w`` exists count: a price below ``heston.PRICE_FLOOR`` (a wing past the COS range, most of
+    [-3, 3] at a 1-day expiry) has no implied vol, so no ``g`` and no ``w`` to compare there."""
+    from .svi import _K_GRID
+
+    ss = sorted(slices, key=lambda s: s[0])
+    bf = 0
+    W: dict[float, np.ndarray] = {}
+    for T, _, _ in ss:
+        iv = heston.implied_vol(p, _K_GRID, T)
+        w = iv * iv * T
+        W[T] = heston.implied_vol(p, ARB_K_GRID, T) ** 2 * T
+        ok = np.isfinite(w) & (w > 0)
+        if ok.any():
+            k, ww = _K_GRID[ok], w[ok]
+            sw = np.sqrt(ww)
+            d2 = -k / sw - 0.5 * sw
+            g = heston.density(p, k, T) * np.sqrt(2.0 * np.pi * ww) * np.exp(0.5 * d2 * d2)
+            bf += bool(np.min(g) < -G_TOL)
+    cal = calq = pairs_q = 0
+    for (T1, lo1, hi1), (T2, lo2, hi2) in zip(ss, ss[1:], strict=False):
+        dw = W[T2] - W[T1]
+        cal += bool(np.nanmin(dw) < -1e-8) if np.isfinite(dw).any() else 0
+        lo, hi = max(lo1, lo2), min(hi1, hi2)
+        if hi > lo:
+            pairs_q += 1
+            k = np.linspace(lo, hi, QUOTED_N)
+            d = heston.implied_vol(p, k, T2) ** 2 * T2 - heston.implied_vol(p, k, T1) ** 2 * T1
+            calq += bool(np.nanmin(d) < -1e-8) if np.isfinite(d).any() else 0
+    return {"butterfly_violations": int(bf), "n_slices": len(ss), "calendar_violations_quoted": int(calq),
+            "calendar_pairs_quoted": int(pairs_q), "calendar_violations": int(cal),
+            "calendar_pairs": max(len(ss) - 1, 0)}
 
 
 def build_surface(

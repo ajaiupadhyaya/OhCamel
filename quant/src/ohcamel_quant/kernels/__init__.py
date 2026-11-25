@@ -40,12 +40,12 @@ log = logging.getLogger(__name__)
 
 ENV = "OHCAMEL_QUANT_KERNELS"
 #: The wheel API this dispatcher speaks (native/kernels/src/lib.rs API_VERSION).
-API_VERSION = 4
+API_VERSION = 5
 #: Contract II.4's functions, in its order.
 API: tuple[str, ...] = (
     "fhs_paths", "copula_t_paths", "var_es_from_pnl", "stationary_bootstrap_means", "cscv_pbo",
     "garch_nll", "garch_fit", "backtest_weights", "svi_fit", "realized_vol_minute",
-    "american_price", "american_iv",
+    "american_price", "american_iv", "heston_price",
 )
 MAX_THREADS = 64
 #: Largest simulation output accepted (80 MB of float64); Rust refuses more too.
@@ -467,6 +467,33 @@ def american_iv(price: Any, S: Any, K: Any, T: Any, r: Any, q: Any, is_call: Any
     return np.asarray(out).reshape(shape)
 
 
+#: Series lengths heston_price accepts.
+HESTON_MIN_TERMS, HESTON_MAX_TERMS = 16, 16_384
+
+
+def heston_price(F: Any, K: Any, T: Any, df: Any, is_call: Any, kappa: float, theta: float, sigma: float,
+                 rho: float, v0: float, n_terms: int = 160, L: float = reference.HESTON_L) -> np.ndarray:
+    """European prices under Heston by the COS method (options/heston.py has the model), broadcast over the
+    contract inputs (forward, strike, years, discount factor, call flag); one parameter set for all. NaN for an
+    invalid contract. See native/kernels/src/heston.rs and reference.heston_price."""
+    from ..options.bsm import option_sign
+
+    phi = option_sign(np.asarray(is_call))
+    arrs = np.broadcast_arrays(*(np.asarray(v, dtype=np.float64) for v in (F, K, T, df)), phi)
+    F_, K_, T_, d_, ph = (np.ascontiguousarray(a.reshape(-1), dtype=np.float64) for a in arrs)
+    ka, th, sg, rh, v = (float(x) for x in (kappa, theta, sigma, rho, v0))
+    if not (ka > 0 and th > 0 and sg > 0 and v > 0 and -1.0 < rh < 1.0
+            and all(math.isfinite(x) for x in (ka, th, sg, rh, v))):
+        raise ValueError("Heston needs kappa, theta, sigma, v0 > 0 and |rho| < 1, all finite")
+    n = int(n_terms)
+    if not HESTON_MIN_TERMS <= n <= HESTON_MAX_TERMS:
+        raise ValueError(f"n_terms must be in {HESTON_MIN_TERMS}..{HESTON_MAX_TERMS}; got {n_terms!r}")
+    if not (math.isfinite(float(L)) and float(L) > 0):
+        raise ValueError(f"L must be finite and positive; got {L!r}")
+    out = _impl("heston_price")(F_, K_, T_, d_, ph, ka, th, sg, rh, v, n, float(L))
+    return np.asarray(out).reshape(arrs[0].shape)
+
+
 def realized_vol_minute(ts_ns: Any, px: Any, session_bounds: Any) -> np.ndarray:
     """Daily realized VARIANCE (sum of squared intraday log returns; Andersen &
     Bollerslev 1998) per session [open, close) in nanosecond epoch time; NaN for a
@@ -486,9 +513,9 @@ def realized_vol_minute(ts_ns: Any, px: Any, session_bounds: Any) -> np.ndarray:
 
 
 __all__ = [
-    "AM_MAX_STEPS", "AM_MIN_STEPS", "API", "API_VERSION", "ENGINE", "ENV", "GARCH_KINDS", "MAX_HORIZON",
+    "AM_MAX_STEPS", "AM_MIN_STEPS", "API", "HESTON_MAX_TERMS", "HESTON_MIN_TERMS", "API_VERSION", "ENGINE", "ENV", "GARCH_KINDS", "MAX_HORIZON",
     "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "american_iv", "american_price", "backtest_weights", "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "realized_vol_minute", "stationary_bootstrap_means",
+    "american_iv", "american_price", "backtest_weights", "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "heston_price", "realized_vol_minute", "stationary_bootstrap_means",
     "svi_fit", "tail_count", "var_es_from_pnl",
 ]

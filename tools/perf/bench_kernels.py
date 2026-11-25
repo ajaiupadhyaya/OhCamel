@@ -94,6 +94,11 @@ def cases() -> dict[str, Case]:
     out["american_price"] = (lambda t: kernels.american_price(750.0, ka, ta, 0.045, 0.013, 0.18, ca_, threads=t), True)
     out["american_iv"] = (lambda t: kernels.american_iv(pa, 750.0, ka, ta, 0.045, 0.013, ca_, threads=t), True)
 
+    th = np.repeat(np.linspace(0.02, 2.0, 25), 200)
+    kh = np.tile(np.linspace(450.0, 1050.0, 200), 25)
+    hp = (1.5768, 0.0398, 0.5751, -0.5711, 0.0175)
+    out["heston_price"] = (lambda t: kernels.heston_price(750.0, kh, th, 1.0, kh >= 750.0, *hp), False)
+
     return out
 
 

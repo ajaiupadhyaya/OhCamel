@@ -475,3 +475,26 @@ def test_shipped_american_ivs_match_a_full_width_unscreened_inversion(monkeypatc
     assert np.isfinite(got[ident]).all()
     worst = float(np.abs(got - truth)[ident].max())
     assert worst < 1e-6, worst
+
+
+# ---------------------------------------------------------------- Task 4.6: Heston by COS
+def _heston_grid():
+    """Strikes over both wings and seven maturities (2 days to 3 years), mixed calls and puts."""
+    T = np.repeat([2 / 365, 0.02, 0.1, 0.25, 0.5, 1.0, 3.0], 25)
+    F = 100.0 * np.exp(0.03 * T)
+    sd = 0.25 * np.sqrt(T)
+    K = F * np.exp(np.tile(np.linspace(-4.0, 3.0, 25), 7) * sd)
+    call = (np.arange(T.size) % 3) != 0
+    return F, K, T, np.exp(-0.04 * T), call
+
+
+@pytest.mark.parametrize("p", [(1.5768, 0.0398, 0.5751, -0.5711, 0.0175), (3.0, 0.09, 1.2, 0.2, 0.2),
+                               (0.5, 0.02, 1e-4, -0.9, 0.05)], ids=["reference", "high-vol", "sigma-small"])
+@pytest.mark.parametrize("n_terms", [160, 512])
+def test_heston_price_parity(both, p, n_terms):
+    """Rust and the reference agree to 1e-9 on every price of the grid (same cumulant range, same series)."""
+    F, K, T, df, call = _heston_grid()
+    r = on("rust", kernels.heston_price, F, K, T, df, call, *p, n_terms=n_terms)
+    q = on("python", kernels.heston_price, F, K, T, df, call, *p, n_terms=n_terms)
+    assert np.isfinite(q).all()
+    np.testing.assert_allclose(r, q, rtol=0, atol=1e-9)

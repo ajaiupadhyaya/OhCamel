@@ -7,6 +7,10 @@
  * is none). Verdict DESCRIPTIVE ONLY: a measurement, no model is chosen by it. Source and as-of come from
  * the artifact (ArtifactCell).
  *
+ * Heston (task 4.6, COS) is a third row: calibrated to the same identified-IV quotes, each priced as a European
+ * Black-76 option on its expiry's forward (the chains are American), scored in IV points; its violations are
+ * measured on its COS-priced implied total variance, so wing counts there are numerics of the expansion.
+ *
  * SurfaceModelLine reads the live surface's two models (GET /api/options/surface/{t}): SSVI's parameters against
  * the condition eta (1 + |rho|) <= 2, its RMSE, and both models' violations on this chain.
  */
@@ -27,7 +31,7 @@ export const nextDayBlank = (note: string | null | undefined): string =>
 
 export function SurfaceLeagueView({ ticker }: { ticker: string }) {
   return (
-    <ArtifactCell title="Surface league · SVI vs SSVI" kind={KINDS.surfaceLeague} span="all">
+    <ArtifactCell title="Surface league · SVI vs SSVI vs Heston" kind={KINDS.surfaceLeague} span="all">
       {(m) => <League m={m} ticker={ticker} />}
     </ArtifactCell>
   );
@@ -70,6 +74,11 @@ export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]
     <div className="vx-art-body">
       <Readline items={[{ k: "UNDERLYING", v: t }, { k: "SNAPSHOT", v: fmtDate(mine[0].asof, "iso") }, { k: "QUOTES", v: fmtNum(mine[0].n_quotes, 0) }]} />
       <DataTable<SurfaceLeagueRow> columns={cols} rows={mine} rowKey={(r) => r.model} />
+      {mine.some((r) => r.model.startsWith("Heston")) && (
+        <p className="vx-note">
+          HESTON (COS, 160 TERMS) IS FITTED TO THE SAME IDENTIFIED-IV QUOTES, EACH PRICED AS A EUROPEAN BLACK-76 OPTION ON ITS EXPIRY&apos;S FORWARD (THE CHAINS ARE AMERICAN); ITS VIOLATIONS ARE MEASURED ON THE COS-PRICED SURFACE, SO WING COUNTS ARE NUMERICS OF THE EXPANSION, NOT OF THE MODEL · {KINDS.surfaceLeague} · AS OF {fmtDate(mine[0].asof, "iso")}
+        </p>
+      )}
     </div>
   );
 }

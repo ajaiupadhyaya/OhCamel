@@ -710,3 +710,120 @@ def realized_vol_minute(ts_ns: np.ndarray, px: np.ndarray, session_bounds: np.nd
             r = np.diff(lp[a:b])
             out[d] = float(np.sum(r * r))
     return out
+
+
+# ------------------------------------------------------------------ Heston by COS (completion task 4.6)
+HESTON_L = 12.0          # truncation half-width in standard deviations of ln(S_T / F) (cumulant c2)
+
+
+def heston_cumulants(T: float, kappa: float, theta: float, sigma: float, rho: float, v0: float) -> tuple[float, float]:
+    """Mean and variance (first two cumulants) of ``X = ln(S_T / F)`` under Heston, the forward a martingale:
+    ``X = -Y/2 + M`` with ``Y = int_0^T v dt`` and ``M = int_0^T sqrt(v) dW_1``, so ``c1 = -E[Y]/2`` and
+    ``c2 = E[Y] + Var(Y)/4 - Cov(Y, M)``, each in closed form from the CIR moments
+    (``E v_s = theta + (v0 - theta) e^{-kappa s}``, ``Var v_s = sigma^2/kappa [theta/2 + (v0 - theta) e^{-kappa s}
+    + (theta/2 - v0) e^{-2 kappa s}]``, ``Cov(v_s, v_t) = e^{-kappa (t - s)} Var v_s``, ``d E[v M] = (-kappa E[v M]
+    + rho sigma E v) dt``). Derived here, not transcribed: it equals ``-d^2/du^2 ln phi(0)`` of :func:`heston_cf`
+    (tests), and ``c2`` -> the integrated variance ``theta T + (v0 - theta)(1 - e^{-kappa T})/kappa`` as
+    ``sigma -> 0``."""
+    e1 = math.exp(-kappa * T)
+    d = v0 - theta
+    i1 = (1.0 - e1) / kappa
+    i2 = (1.0 - math.exp(-2.0 * kappa * T)) / (2.0 * kappa)
+    ey = theta * T + d * i1
+    cov = rho * sigma * (theta * (T - i1) / kappa + d * (1.0 - e1 * (1.0 + kappa * T)) / (kappa * kappa))
+    s2k = sigma * sigma / kappa
+    int_var = s2k * (0.5 * theta * T + d * i1 + (0.5 * theta - v0) * i2)
+    int_var_e = s2k * (0.5 * theta * i1 + d * T * e1 + (0.5 * theta - v0) * e1 * i1)
+    var_y = 2.0 / kappa * (int_var - int_var_e)
+    return -0.5 * ey, ey + 0.25 * var_y - cov
+
+
+def heston_range(T: float, kappa: float, theta: float, sigma: float, rho: float, v0: float,
+                 L: float = HESTON_L) -> tuple[float, float]:
+    """The COS truncation range of ``ln(S_T / F)``: ``c1 -/+ L sqrt(c2)`` (Fang & Oosterlee 2008, eq. 49, the
+    ``c4`` term left out; ``c2`` is a variance, positive for valid parameters, held at ``abs`` against rounding)."""
+    c1, c2 = heston_cumulants(T, kappa, theta, sigma, rho, v0)
+    h = L * math.sqrt(abs(c2))
+    return c1 - h, c1 + h
+
+
+def _clog1p(z: np.ndarray) -> np.ndarray:
+    """Complex ``log(1 + z)``, accurate for small ``|z|``: ``log|1+z| = log1p(2x + x^2 + y^2) / 2``,
+    ``arg = atan2(y, 1 + x)`` (heston.rs repeats it)."""
+    x, y = z.real, z.imag
+    return 0.5 * np.log1p(2.0 * x + x * x + y * y) + 1j * np.arctan2(y, 1.0 + x)
+
+
+def heston_cf(u: np.ndarray, T: float, kappa: float, theta: float, sigma: float, rho: float,
+              v0: float) -> np.ndarray:
+    """``E[exp(i u ln(S_T / F))]``, Albrecher, Mayer, Schoutens & Tistaert (2007), "The little Heston trap":
+    ``beta = kappa - i rho sigma u``, ``d = sqrt(beta^2 + sigma^2 (i u + u^2))`` (principal root),
+    ``g = (beta - d) / (beta + d)``, ``e^{-dT}``, so the complex log stays on its principal branch::
+
+        ln phi = kappa theta / sigma^2 [(beta - d) T - 2 ln((1 - g e^{-dT}) / (1 - g))]
+                 + v0 (beta - d) / sigma^2 (1 - e^{-dT}) / (1 - g e^{-dT})
+
+    Evaluated without the cancellation in ``beta - d`` as ``sigma -> 0``: ``(beta - d) / sigma^2 = -(i u + u^2) /
+    (beta + d)``, and the log as ``log1p(g (1 - e^{-dT}) / (1 - g))`` (:func:`_clog1p`), so a vanishing vol of vol
+    leaves the CF accurate (to the Black-76 limit)."""
+    iu = 1j * u
+    beta = kappa - rho * sigma * iu
+    s2 = sigma * sigma
+    d = np.sqrt(beta * beta + s2 * (iu + u * u))
+    bd = beta + d
+    r = -(iu + u * u) / bd                    # (beta - d) / sigma^2
+    g = s2 * r / bd                           # (beta - d) / (beta + d)
+    e = np.exp(-d * T)
+    lg = _clog1p(g * (1.0 - e) / (1.0 - g))   # ln((1 - g e) / (1 - g))
+    C = kappa * theta * (r * T - 2.0 * lg / s2)
+    D = r * (1.0 - e) / (1.0 - g * e)
+    return np.exp(C + D * v0)
+
+
+def heston_series(T: float, kappa: float, theta: float, sigma: float, rho: float, v0: float, n_terms: int,
+                  L: float = HESTON_L) -> tuple[float, float, np.ndarray, np.ndarray]:
+    """``(a, b, u_k, A_k)``: the range, ``u_k = k pi / (b - a)`` and ``A_k = Re(phi(u_k) e^{-i u_k a})`` with
+    ``A_0`` halved (the primed sum), so the density of ``ln(S_T/F)`` is ``2/(b-a) sum_k A_k cos(u_k (x - a))``."""
+    a, b = heston_range(T, kappa, theta, sigma, rho, v0, L)
+    u = np.arange(n_terms) * (math.pi / (b - a))
+    A = (heston_cf(u, T, kappa, theta, sigma, rho, v0) * np.exp(-1j * u * a)).real
+    A[0] *= 0.5
+    return a, b, u, A
+
+
+def heston_price(F: np.ndarray, K: np.ndarray, T: np.ndarray, df: np.ndarray, phi: np.ndarray, kappa: float,
+                 theta: float, sigma: float, rho: float, v0: float, n_terms: int, L: float = HESTON_L) -> np.ndarray:
+    """European prices under Heston by COS (Fang & Oosterlee 2008). Per contract the OUT-of-the-money option is
+    the cosine series (a put for ``K <= F``, a call above) and the other one is put-call parity, so parity holds to
+    rounding and no wing price is a difference of two large numbers. With ``x = ln(F/K)``, ``y = x + ln(S_T/F)``
+    on ``[x + a, x + b]``, the payoff coefficients are ``V_k = 2/(b-a) K (psi_k - chi_k)`` over ``[x + a, 0]``
+    (put) and ``2/(b-a) K (chi_k - psi_k)`` over ``[0, x + b]`` (call); price ``= df sum' A_k V_k``. NaN for an
+    invalid contract (non-positive F, K, T or df)."""
+    out = np.full(F.shape, np.nan)
+    ok = np.isfinite(F) & np.isfinite(K) & np.isfinite(T) & np.isfinite(df) & (F > 0) & (K > 0) & (T > 0) & (df > 0)
+    for t in np.unique(T[ok]):
+        j = np.flatnonzero(ok & (T == t))
+        a, b, u, A = heston_series(float(t), kappa, theta, sigma, rho, v0, n_terms, L)
+        f, k, d, ph = F[j], K[j], df[j], phi[j]
+        x = np.log(f / k)
+        otm_call = k > f
+        ya = x + a
+        lo = np.where(otm_call, 0.0, ya)                       # the OTM option's payoff interval in y
+        hi = np.where(otm_call, x + b, 0.0)
+        live = hi > lo
+        lo, hi = np.where(live, lo, 0.0), np.where(live, hi, 0.0)
+        tc, td = np.outer(lo - ya, u), np.outer(hi - ya, u)    # u_k (c - a_y), u_k (d - a_y)
+        cc, sc, cd, sd = np.cos(tc), np.sin(tc), np.cos(td), np.sin(td)
+        elo, ehi = np.exp(lo)[:, None], np.exp(hi)[:, None]
+        chi = (cd * ehi - cc * elo + u * (sd * ehi - sc * elo)) / (1.0 + u * u)
+        psi = np.empty_like(chi)
+        psi[:, 0] = hi - lo
+        psi[:, 1:] = (sd[:, 1:] - sc[:, 1:]) / u[1:]
+        sgn = np.where(otm_call, 1.0, -1.0)[:, None]           # call: chi - psi; put: psi - chi
+        V = sgn * (chi - psi) * (2.0 / (b - a)) * k[:, None]
+        otm = d * (V @ A)
+        otm = np.where(live, np.maximum(otm, 0.0), 0.0)
+        is_call = ph > 0
+        # OTM call -> put by parity, OTM put -> call by parity
+        out[j] = np.where(is_call == otm_call, otm, otm + np.where(is_call, 1.0, -1.0) * d * (f - k))
+    return out

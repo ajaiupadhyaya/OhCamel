@@ -807,3 +807,11 @@
     font-size: var(--fs-xl);
   }
 }
+
+/* SurfaceLeague: the Heston row's footing and provenance line (task 4.6) */
+.vx-note {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}

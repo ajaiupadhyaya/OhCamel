@@ -25,6 +25,7 @@ describe("SurfaceLeagueReport (vol.surface_league)", () => {
     row("SVI (per slice)"),
     row("SSVI (power law)", { rmse_vol_pts: 3.45, calendar_violations: 0, next_day_rmse_vol_pts: 3.6, params: '{"rho": -0.61, "eta": 1.24, "gamma": 0.499}' }),
     row("SVI (per slice)", { underlying: "QQQ", rmse_vol_pts: 9.99 }),
+    row("Heston (COS)", { rmse_vol_pts: 3.61, butterfly_violations: 30, params: '{"kappa": 6.8, "feller_ratio": 0.086}' }),
   ];
   const html = render(<SurfaceLeagueReport rows={rows} ticker="spy" />);
 
@@ -42,6 +43,14 @@ describe("SurfaceLeagueReport (vol.surface_league)", () => {
     expect(html).toContain("incl. wings");
     expect(html).toContain("Next-day IV RMSE");
     expect(html).not.toContain("9.99");
+  });
+  it("shows the Heston row with its footing: European Black-76 prices of the same quotes, source and as-of", () => {
+    expect(html).toContain("Heston (COS)");
+    expect(html).toContain("3.61");
+    expect(html).toContain("30 / 31");
+    expect(html).toContain("EUROPEAN BLACK-76");
+    expect(html).toContain("vol.surface_league");
+    expect(html).toContain("AS OF 2026-11-24");
   });
   it("leaves a next-day cell blank with its reason, never a number", () => {
     const h = render(<SurfaceLeagueReport rows={[row("SVI (per slice)", { next_day_rmse_vol_pts: null, next_day_n: null, next_day_fit_asof: null, next_day_note: "no earlier snapshot day for this underlying" })]} ticker="SPY" />);

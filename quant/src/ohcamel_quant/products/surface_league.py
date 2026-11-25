@@ -1,11 +1,16 @@
 """Completion task 4.5: ``vol.surface_league`` (weekdays 21:10 New York, heavy, class M) -- per underlying, the
 surfaces the Volatility page can show, scored against each other on the warehouse's option snapshots.
 
-Rows: one per model per underlying (``MODELS``; Task 4.6 adds Heston by COS as one more entry). Models now:
+Rows: one per model per underlying (``MODELS``). Models:
 
 * ``SVI (per slice)`` -- raw SVI fitted expiry by expiry (``options.svi``; what the page's surface has shown);
 * ``SSVI (power law)`` -- one surface free of calendar and butterfly arbitrage by construction (``options.ssvi``),
-  fitted to the same expiries, quotes and weights (``options.surface.smile_inputs``).
+  fitted to the same expiries, quotes and weights (``options.surface.smile_inputs``);
+* ``Heston (COS)`` (Task 4.6) -- five parameters for the whole surface, priced by the COS method and calibrated
+  nightly (``options.heston``) to the SAME identified-IV quotes, each IV turned into a European Black-76 price on its
+  expiry's forward and discount factor (``surface.heston_quotes``; the chains are American, and this keeps the three
+  models on one footing), vega-weighted. Scored in IV points (its prices inverted to Black vols); its violations
+  are counted on the same grids and definitions from its implied total variance (``surface.heston_violations``).
 
 Three scores (verdict ``DESCRIPTIVE ONLY``: a measurement, no model is chosen by it):
 
@@ -45,10 +50,17 @@ import pandas as pd
 from ..data.base import DataUnavailable
 from ..jobs.artifacts import ArtifactSpec
 from ..jobs.context import JobCancelled
-from ..options import ssvi, svi
+from ..options import heston, ssvi, svi
 from ..options.chain import ChainAnalytics, analyze_chain
 from ..options.surface import ARB_K_GRID as K_GRID  # noqa: F401  (the grid the calendar count uses)
-from ..options.surface import VolSurface, build_surface, count_violations, fit_ssvi_surface
+from ..options.surface import (
+    VolSurface,
+    build_surface,
+    count_violations,
+    fit_heston_surface,
+    fit_ssvi_surface,
+    heston_violations,
+)
 
 KIND = "vol.surface_league"
 MIN_DTE = 1.0              # build_surface's default: expiries under a day are not fitted, nor scored
@@ -120,9 +132,37 @@ def _ssvi_params(m: _SSVIFitted) -> dict[str, Any]:
     return {"rho": p.rho, "eta": p.eta, "gamma": p.gamma, "eta_one_plus_abs_rho": p.eta * (1 + abs(p.rho))}
 
 
+# --- Heston by COS (Task 4.6) ---------------------------------------------------------------------------------------
+@dataclass
+class _HestonFitted:
+    fit: heston.HestonFit
+    T_of: dict[str, float]
+    k_range: dict[float, tuple[float, float]]
+
+
+def _heston_fit(ca: ChainAnalytics, vs: VolSurface) -> _HestonFitted:
+    return _HestonFitted(fit=fit_heston_surface(ca, vs), T_of={sid: f.T for sid, f in vs.fits.items()},
+                         k_range={f.T: (f.k_min, f.k_max) for f in vs.fits.values()})
+
+
+def _heston_score(m: _HestonFitted) -> dict[str, Any]:
+    return {"n_quotes": m.fit.n, "rmse_vol_pts": m.fit.rmse_vol_pts,
+            **heston_violations(m.fit.params, [(T, *r) for T, r in m.k_range.items()])}
+
+
+def _heston_predict(m: _HestonFitted, sid: str, k: np.ndarray) -> np.ndarray | None:
+    T = m.T_of.get(sid)
+    return None if T is None else heston.implied_vol(m.fit.params, k, T)
+
+
+def _heston_params(m: _HestonFitted) -> dict[str, Any]:
+    return {**m.fit.params.to_dict(), "feller_ratio": m.fit.feller_ratio, "n_iv_failed": m.fit.n_iv_failed}
+
+
 MODELS: tuple[Model, ...] = (
     Model("SVI (per slice)", _svi_fit, _svi_score, _svi_predict, lambda f: None),
     Model("SSVI (power law)", _ssvi_fit, _ssvi_score, _ssvi_predict, _ssvi_params),
+    Model("Heston (COS)", _heston_fit, _heston_score, _heston_predict, _heston_params),
 )
 
 
@@ -289,6 +329,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                "the latest day's identified quotes; blank with its reason when there is no earlier snapshot day or "
                "it is not the previous NYSE session",
                "SSVI: power-law phi under eta (1 + |rho|) <= 2, gamma in (0, 1/2], theta non-decreasing "
-               "(Gatheral & Jacquier 2014, Thm 4.1, Thm 4.2, Cor. 4.1)"],
+               "(Gatheral & Jacquier 2014, Thm 4.1, Thm 4.2, Cor. 4.1)",
+               "Heston: COS (Fang & Oosterlee 2008; 160 terms, range c1 -/+ 12 sqrt(c2)), little-trap CF (Albrecher "
+               "et al. 2007), calibrated by least squares on European Black-76 prices of the same identified-IV "
+               "quotes (the chains are American), vega-weighted; Feller 2 kappa theta >= sigma^2 reported in params, "
+               "not enforced; violations from its implied total variance on the same grids"],
         verdict="DESCRIPTIVE ONLY",
         verdict_detail=f"{n_und} UNDERLYING{'S' if n_und != 1 else ''} · {len(MODELS)} MODELS · MEASUREMENT")

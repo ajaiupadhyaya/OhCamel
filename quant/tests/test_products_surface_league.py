@@ -18,7 +18,7 @@ import pytest
 from lane_m_harness import is_label
 from test_products_surface_history import ctx, curves
 
-from ohcamel_quant.options import bsm, ssvi, svi
+from ohcamel_quant.options import bsm, heston, ssvi, svi
 from ohcamel_quant.products import surface_league as L
 from ohcamel_quant.warehouse.db import open_rw
 from ohcamel_quant.warehouse.ingest.base import insert_frame
@@ -71,7 +71,7 @@ def test_one_row_per_model_per_underlying_with_the_three_scores(market, tmp_path
     t = spec.tables["league"]
     assert sorted(zip(t["underlying"], t["model"], strict=True)) == sorted(
         (u, m.name) for u in ("QQQ", "SPY") for m in L.MODELS)
-    assert len(L.MODELS) == 2 and {m.name for m in L.MODELS} == {"SVI (per slice)", "SSVI (power law)"}
+    assert len(L.MODELS) == 3 and {m.name for m in L.MODELS} == {"SVI (per slice)", "SSVI (power law)", "Heston (COS)"}
     assert set(SCORES) <= set(t.columns)
     assert t[list(SCORES)].notna().all().all() and (t["asof"] == "2026-06-02").all()
     assert (t["next_day_fit_asof"] == "2026-06-01").all() and (t["next_day_n"] > 0).all()
@@ -168,7 +168,8 @@ def test_next_day_scorer_on_committed_days(spy_2026_11_15, spy_next):
     k, iv = float(q["k"].iloc[0]), float(q["iv"].iloc[0])
     f = vs.fits["2026-11-20"]
     want = {"SVI (per slice)": float(f.params.implied_vol(k, f.T)),
-            "SSVI (power law)": float(ssvi.implied_vol(fitted["SSVI (power law)"].fit.params, k, f.T))}
+            "SSVI (power law)": float(ssvi.implied_vol(fitted["SSVI (power law)"].fit.params, k, f.T)),
+            "Heston (COS)": float(heston.implied_vol(fitted["Heston (COS)"].fit.params, np.array([k]), f.T)[0])}
     for name, s in out.items():
         assert s["n"] == 1 and s["unscored"] == 0
         assert s["rmse_vol_pts"] == pytest.approx(abs(want[name] - iv) * 100.0, rel=1e-12)
@@ -212,3 +213,29 @@ def test_violations_are_counted_by_the_same_code_for_both_models(spy_2026_11_15)
     pooled = np.sqrt(np.sum(n * np.array([f.rmse_vol_pts for f in vs.fits.values()]) ** 2) / n.sum())
     assert out["SVI (per slice)"]["rmse_vol_pts"] == pytest.approx(pooled)
     assert out["SVI (per slice)"]["n_quotes"] == out["SSVI (power law)"]["n_quotes"] == n.sum()
+
+
+def test_heston_is_fitted_to_the_same_quotes_and_its_violations_are_counted_on_the_same_grids(spy_2026_11_15):
+    """Task 4.6: Heston (COS) on the identified-IV quotes per-slice SVI and SSVI fit (surface.smile_inputs), each
+    IV turned into a European Black-76 price on its expiry's forward and discount factor; scored in IV points.
+    Its violations come from its implied total variance on the league's grids: butterfly = Durrleman g < -G_TOL on
+    svi._K_GRID (g from the COS density and w), calendar = w decreasing on the quoted overlap and on K_GRID."""
+    from ohcamel_quant.options.surface import heston_violations, smile_inputs
+
+    ca, vs, _ = spy_2026_11_15
+    m = next(m for m in L.MODELS if m.name == "Heston (COS)")
+    fitted = m.fit(ca, vs)
+    n = sum(smile_inputs(ca, sid)[1].size for sid in vs.fits)
+    assert fitted.fit.n == n
+    s = m.score(fitted)
+    assert s["n_quotes"] == n and np.isfinite(s["rmse_vol_pts"])
+    assert s["n_slices"] == len(vs.fits) and s["calendar_pairs"] == len(vs.fits) - 1
+    assert s == {**s, **heston_violations(fitted.fit.params, [(f.T, f.k_min, f.k_max) for f in vs.fits.values()])}
+    # Heston is a martingale model: in exact arithmetic w(k, T) cannot fall with T, nor g go negative. Measured on
+    # 2026-11-13 SPY (fit sigma ~ 3, rho ~ -0.74): none on the quoted overlaps; on [-3, 3] the COS truncation (c2-only
+    # range, L = 12) shows in the far wings -- 13 calendar pairs (right-wing calls priced 1e-9 to 1e-6) and 30 of
+    # 31 slices with g < -G_TOL. Counted, not asserted away: numerics of the COS-priced surface, reported as such.
+    assert s["calendar_violations_quoted"] == 0
+    assert s["calendar_violations"] == 13 and s["butterfly_violations"] == 30
+    p = m.params(fitted)
+    assert set(p) == {"kappa", "theta", "sigma", "rho", "v0", "feller_ratio", "n_iv_failed"}

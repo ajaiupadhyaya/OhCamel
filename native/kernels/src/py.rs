@@ -371,6 +371,36 @@ fn american_iv<'py>(
     Ok(out.into_pyarray(py))
 }
 
+#[pyfunction]
+fn heston_price<'py>(
+    py: Python<'py>,
+    f: PyReadonlyArray1<'py, f64>,
+    k: PyReadonlyArray1<'py, f64>,
+    t: PyReadonlyArray1<'py, f64>,
+    df: PyReadonlyArray1<'py, f64>,
+    phi: PyReadonlyArray1<'py, f64>,
+    kappa: f64,
+    theta: f64,
+    sigma: f64,
+    rho: f64,
+    v0: f64,
+    n_terms: usize,
+    l: f64,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let (f_, k_, t_, d_, ph) = (
+        s1(&f, "F")?,
+        s1(&k, "K")?,
+        s1(&t, "T")?,
+        s1(&df, "df")?,
+        s1(&phi, "phi")?,
+    );
+    let p = [kappa, theta, sigma, rho, v0];
+    let out = py
+        .detach(|| crate::heston::heston_price(f_, k_, t_, d_, ph, &p, n_terms, l))
+        .map_err(err)?;
+    Ok(out.into_pyarray(py))
+}
+
 #[pymodule]
 fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("API_VERSION", crate::API_VERSION)?;
@@ -389,5 +419,6 @@ fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(realized_vol_minute, m)?)?;
     m.add_function(wrap_pyfunction!(american_price, m)?)?;
     m.add_function(wrap_pyfunction!(american_iv, m)?)?;
+    m.add_function(wrap_pyfunction!(heston_price, m)?)?;
     Ok(())
 }

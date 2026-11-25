@@ -20,6 +20,7 @@ pub mod copula;
 pub mod cscv;
 pub mod fhs;
 pub mod garch;
+pub mod heston;
 pub mod optim;
 pub mod par;
 pub mod rv;
@@ -33,4 +34,4 @@ mod py;
 /// The binding surface's version. The Python dispatcher refuses a wheel whose
 /// value it does not know (a stale build), so bump it with any signature or
 /// semantics change in `py.rs`.
-pub const API_VERSION: u32 = 4;
+pub const API_VERSION: u32 = 5;
