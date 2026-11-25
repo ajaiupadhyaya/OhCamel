@@ -55,7 +55,10 @@ def test_nll_rejects_bad_input(spy):
 
 
 #: garch_fit follows the benchmark table (Task 4.4), so each engine is forced: the shipped Rust fit stays under test.
-ENGINES = ["python", *(["rust"] if kernels._RUST is not None else [])]
+#: Both engines are always collected (the suite's size must not depend on the wheel: check-counts --verify runs
+#: without it); the Rust case skips when the wheel is not loaded.
+ENGINES = ["python", pytest.param("rust", marks=pytest.mark.skipif(
+    kernels._RUST is None, reason="ohcamel_kernels wheel not loaded (make kernels-dev)"))]
 
 
 @pytest.mark.parametrize("engine", ENGINES)
