@@ -452,6 +452,36 @@ let journal_holding_tlt ?(tif = D.Order.Tif.Day) ?(created = "2026-11-02T14:00:0
 
 let pnls record = List.map record ~f:(fun (s : D.Record.session) -> s.D.Record.pnl)
 
+(* Task 5.2: /api/research serves each strategy's record (dollars allocated and made, which are
+   sizes) on the live host only; the demo's is null, and so is a strategy with no fill. *)
+let test_the_record_is_served_on_the_live_host_and_never_on_the_demo () =
+  let j = journal_holding_tlt () in
+  let s_tlt = { (strategy "s_tlt") with Spec.Strategy.symbols = [ "TLT" ] } in
+  let none = strategy "s_none" in
+  let served ?record_zone () =
+    D.Intake.research_json ?record_zone ~journal:j ~strategies:[ s_tlt; none ]
+      (D.Intake.Off "test")
+    |> Yojson.Safe.Util.member "strategies"
+    |> Yojson.Safe.Util.to_list
+    |> List.map ~f:(Yojson.Safe.Util.member "record")
+  in
+  (match served ~record_zone:zone () with
+  | [ `Assoc [ ("sessions", `List rows) ]; `Null ] ->
+      Alcotest.(check (list string))
+        "its sessions, from the first fill"
+        [
+          {|{"date":"2026-11-02","allocated":10000.0,"pnl":0.0}|};
+          {|{"date":"2026-11-03","allocated":10000.0,"pnl":0.0}|};
+        ]
+        (List.map rows ~f:Yojson.Safe.to_string)
+  | other ->
+      Alcotest.failf "unexpected record shape: %s"
+        (String.concat ~sep:" | " (List.map other ~f:Yojson.Safe.to_string)));
+  Alcotest.(check (list string))
+    "the demo serves null for both" [ "null"; "null" ]
+    (List.map (served ()) ~f:Yojson.Safe.to_string);
+  D.Journal.close j
+
 let test_a_monthly_payer's_ex_date_is_not_a_loss () =
   let j = journal_holding_tlt () in
   let now = D.Stop.sessions ~journal:j ~zone ~strategy:"s_tlt" ~since:None in
@@ -665,6 +695,8 @@ let suite =
         test_a_deferred_drawdown_rule_does_not_fire_that_night;
       Alcotest.test_case "a monthly payer's ex-date is not a loss" `Quick
         test_a_monthly_payer's_ex_date_is_not_a_loss;
+      Alcotest.test_case "the record is served on the live host, never on the demo" `Quick
+        test_the_record_is_served_on_the_live_host_and_never_on_the_demo;
       Alcotest.test_case "the cash receipt is not counted twice" `Quick
         test_the_cash_receipt_is_not_counted_twice;
       Alcotest.test_case "only a session's quote is an arrival" `Quick

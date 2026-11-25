@@ -1159,8 +1159,9 @@ let test_api_research's_shape () =
       let strategies = [ spy_live; tlt_advisory ] in
       with_server
         ~extensions:
-          (D.Desk.research_extensions ~desk:None ~journal:f.journal ~strategies
-             ~intake:(Intake.Running f.intake) ~on_event:ignore) ~f:(fun json ->
+          (D.Desk.research_extensions ~serve_record:false ~desk:None ~journal:f.journal
+             ~strategies ~intake:(Intake.Running f.intake) ~on_event:ignore)
+        ~f:(fun json ->
           Alcotest.(check (list string))
             "the top level"
             [ "intake"; "reason"; "deferred"; "last_pass"; "strategies"; "overlay"; "r8" ]
@@ -1283,7 +1284,7 @@ let test_api_research_on_the_demo () =
   let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
   with_server
     ~extensions:
-      (D.Desk.research_extensions ~desk:None ~journal ~strategies:[]
+      (D.Desk.research_extensions ~serve_record:false ~desk:None ~journal ~strategies:[]
          ~intake:Intake.demo_status ~on_event:ignore) ~f:(fun json ->
       Alcotest.(check string)
         "the whole answer"
@@ -1353,8 +1354,8 @@ let with_evidence ~f =
       let server =
         Server.create
           ~extensions:
-            (D.Desk.research_extensions ~desk:None ~journal ~strategies:[]
-               ~intake:Intake.demo_status ~on_event:ignore)
+            (D.Desk.research_extensions ~serve_record:false ~desk:None ~journal
+               ~strategies:[] ~intake:Intake.demo_status ~on_event:ignore)
           ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
       in
       match

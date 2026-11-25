@@ -651,7 +651,9 @@ let research_evidence_body =
       "]}";
     ]
 
-let research_extensions ~(desk : t option) ~(journal : Journal.t)
+(* [serve_record] is true only on the gated live host: each strategy's record
+   (dollars allocated and made) is a size, which the public demo never serves. *)
+let research_extensions ~(serve_record : bool) ~(desk : t option) ~(journal : Journal.t)
     ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     ~(intake : Intake.status) ~(on_event : string -> unit) : Server.extension list =
   [
@@ -665,6 +667,7 @@ let research_extensions ~(desk : t option) ~(journal : Journal.t)
           match
             Intake.research_json
               ?scale:(Option.map desk ~f:scale_fields)
+              ?record_zone:(if serve_record then Lazy.force Desk_time.new_york else None)
               ~journal ~strategies intake
           with
           | json -> Server.respond_json server (Yojson.Safe.to_string json)

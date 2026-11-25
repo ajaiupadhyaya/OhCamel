@@ -2448,7 +2448,7 @@ let judgement_json ~(sizing : Signals_spec.sizing) (s : Journal.Signal.t) : Yojs
 
 (* Bounded by the book: one indexed seek per registered strategy, and the
    deferred count from the last pass, in memory. *)
-let research_json ?(scale = absent_reading_fields) ~journal
+let research_json ?(scale = absent_reading_fields) ?record_zone ~journal
     ~(strategies : Signals_spec.Strategy.t list) (status : status) : Yojson.Safe.t =
   let cadence_word : Signals_spec.Cadence.t -> string = function
     | Daily -> "daily"
@@ -2457,6 +2457,31 @@ let research_json ?(scale = absent_reading_fields) ~journal
   let adjust_word : Signals_spec.Adjust.t -> string = function
     | Intraday -> "intraday"
     | Open -> "open"
+  in
+  (* A strategy's record as the gated live host serves it: its sessions from the
+     first fill, [{date, allocated, pnl}] (desk/record.ml, via Stop.sessions:
+     net of fees, dividends credited), in dollars. Those are sizes, so a host
+     that is not given [record_zone] -- the public demo -- serves null, as does
+     a strategy with no fill. *)
+  let record_json name =
+    match record_zone with
+    | None -> `Null
+    | Some zone -> (
+        match Stop.sessions ~journal ~zone ~strategy:name ~since:None with
+        | [] -> `Null
+        | sessions ->
+            `Assoc
+              [
+                ( "sessions",
+                  `List
+                    (List.map sessions ~f:(fun (x : Record.session) ->
+                         `Assoc
+                           [
+                             ("date", `String (Date.to_string x.date));
+                             ("allocated", jnum x.allocated);
+                             ("pnl", jnum x.pnl);
+                           ])) );
+              ])
   in
   (* The overlay's reading as /api/desk serves it, with the governor beside
      it and the accepted document's [inputs] and [reported] -- the document
@@ -2544,7 +2569,7 @@ let research_json ?(scale = absent_reading_fields) ~journal
                    ("latest", jopt (judgement_json ~sizing:s.sizing) latest);
                    ("judgement", judgement);
                    ("validation", validation);
-                   ("record", `Null);
+                   ("record", record_json s.name);
                  ])) );
       ("overlay", overlay);
       ("r8", `String r8_sentence);

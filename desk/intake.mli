@@ -269,6 +269,7 @@ val absent_reading_fields : (string * Yojson.Safe.t) list
 
 val research_json :
   ?scale:(string * Yojson.Safe.t) list ->
+  ?record_zone:Time_float.Zone.t ->
   journal:Journal.t ->
   strategies:Ohcamel.Config.Book.Signals_spec.Strategy.t list ->
   status ->
