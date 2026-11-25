@@ -780,15 +780,64 @@ def heston_cf(u: np.ndarray, T: float, kappa: float, theta: float, sigma: float,
     return np.exp(C + D * v0)
 
 
-def heston_series(T: float, kappa: float, theta: float, sigma: float, rho: float, v0: float, n_terms: int,
-                  L: float = HESTON_L) -> tuple[float, float, np.ndarray, np.ndarray]:
-    """``(a, b, u_k, A_k)``: the range, ``u_k = k pi / (b - a)`` and ``A_k = Re(phi(u_k) e^{-i u_k a})`` with
-    ``A_0`` halved (the primed sum), so the density of ``ln(S_T/F)`` is ``2/(b-a) sum_k A_k cos(u_k (x - a))``."""
-    a, b = heston_range(T, kappa, theta, sigma, rho, v0, L)
+HESTON_EXT = 0.5            # a strike gets at least HESTON_EXT * L sqrt(c2) of range beyond it (heston_price)
+HESTON_MAX_TERMS = 16_384   # the cap on an extended series' length (heston.rs repeats both)
+
+
+def heston_series_on(T: float, kappa: float, theta: float, sigma: float, rho: float, v0: float, a: float, b: float,
+                     n_terms: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(u_k, A_k)`` on the range ``[a, b]``: ``u_k = k pi / (b - a)``, ``A_k = Re(phi(u_k) e^{-i u_k a})``, ``A_0``
+    halved (the primed sum); the density of ``ln(S_T/F)`` is ``2/(b-a) sum_k A_k cos(u_k (x - a))``."""
     u = np.arange(n_terms) * (math.pi / (b - a))
     A = (heston_cf(u, T, kappa, theta, sigma, rho, v0) * np.exp(-1j * u * a)).real
     A[0] *= 0.5
-    return a, b, u, A
+    return u, A
+
+
+def heston_series(T: float, kappa: float, theta: float, sigma: float, rho: float, v0: float, n_terms: int,
+                  L: float = HESTON_L) -> tuple[float, float, np.ndarray, np.ndarray]:
+    """``(a, b, u_k, A_k)`` on the cumulant range :func:`heston_range` (:func:`heston_series_on`)."""
+    a, b = heston_range(T, kappa, theta, sigma, rho, v0, L)
+    return (a, b, *heston_series_on(T, kappa, theta, sigma, rho, v0, a, b, n_terms))
+
+
+def heston_contract_range(k: np.ndarray, a0: float, b0: float, c2: float, n_terms: int,
+                          L: float = HESTON_L) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each contract's COS range and series length, from its own log-moneyness ``k = ln(K/F)`` only (so a price
+    never depends on what else is priced with it): the cumulant range ``[a0, b0]``, extended so at least
+    ``HESTON_EXT L sqrt(c2)`` lies beyond the strike -- ``a = min(a0, k - h)``, ``b = max(b0, k + h)`` -- and the
+    terms scaled with the range (``ceil(n (b - a) / (b0 - a0))``, at most HESTON_MAX_TERMS) so the resolution per
+    unit of ``sqrt(c2)`` is kept. A strike inside ``[a0 + h, b0 - h]`` keeps the cumulant range and ``n_terms``. Without
+    it a deep wing quote (k = -1.28 at 2.7 days under a sigma ~ 3 fit) sits outside the range and prices at 0."""
+    h = HESTON_EXT * L * math.sqrt(abs(c2))
+    a = np.minimum(a0, k - h)
+    b = np.maximum(b0, k + h)
+    n = np.where((a == a0) & (b == b0), float(n_terms),
+                 np.minimum(np.ceil(n_terms * (b - a) / (b0 - a0)), float(HESTON_MAX_TERMS)))
+    return a, b, n.astype(np.int64)
+
+
+def _cos_otm(f: np.ndarray, k: np.ndarray, d: np.ndarray, a: float, b: float, u: np.ndarray,
+             A: np.ndarray) -> np.ndarray:
+    """The discounted OUT-of-the-money price (put at ``K <= F``, call above) of contracts on one series."""
+    x = np.log(f / k)
+    otm_call = k > f
+    ya = x + a
+    lo = np.where(otm_call, 0.0, ya)                       # the OTM option's payoff interval in y
+    hi = np.where(otm_call, x + b, 0.0)
+    live = hi > lo
+    lo, hi = np.where(live, lo, 0.0), np.where(live, hi, 0.0)
+    tc, td = np.outer(lo - ya, u), np.outer(hi - ya, u)    # u_k (c - a_y), u_k (d - a_y)
+    cc, sc, cd, sd = np.cos(tc), np.sin(tc), np.cos(td), np.sin(td)
+    elo, ehi = np.exp(lo)[:, None], np.exp(hi)[:, None]
+    chi = (cd * ehi - cc * elo + u * (sd * ehi - sc * elo)) / (1.0 + u * u)
+    psi = np.empty_like(chi)
+    psi[:, 0] = hi - lo
+    psi[:, 1:] = (sd[:, 1:] - sc[:, 1:]) / u[1:]
+    sgn = np.where(otm_call, 1.0, -1.0)[:, None]           # call: chi - psi; put: psi - chi
+    V = sgn * (chi - psi) * (2.0 / (b - a)) * k[:, None]
+    otm = d * (V @ A)
+    return np.where(live, np.maximum(otm, 0.0), 0.0)
 
 
 def heston_price(F: np.ndarray, K: np.ndarray, T: np.ndarray, df: np.ndarray, phi: np.ndarray, kappa: float,
@@ -797,32 +846,28 @@ def heston_price(F: np.ndarray, K: np.ndarray, T: np.ndarray, df: np.ndarray, ph
     the cosine series (a put for ``K <= F``, a call above) and the other one is put-call parity, so parity holds to
     rounding and no wing price is a difference of two large numbers. With ``x = ln(F/K)``, ``y = x + ln(S_T/F)``
     on ``[x + a, x + b]``, the payoff coefficients are ``V_k = 2/(b-a) K (psi_k - chi_k)`` over ``[x + a, 0]``
-    (put) and ``2/(b-a) K (chi_k - psi_k)`` over ``[0, x + b]`` (call); price ``= df sum' A_k V_k``. NaN for an
-    invalid contract (non-positive F, K, T or df)."""
+    (put) and ``2/(b-a) K (chi_k - psi_k)`` over ``[0, x + b]`` (call); price ``= df sum' A_k V_k``. The range
+    and length are each contract's (:func:`heston_contract_range`): contracts of one expiry inside the cumulant range
+    share one series. NaN for an invalid contract (non-positive F, K, T or df)."""
     out = np.full(F.shape, np.nan)
     ok = np.isfinite(F) & np.isfinite(K) & np.isfinite(T) & np.isfinite(df) & (F > 0) & (K > 0) & (T > 0) & (df > 0)
+    p = (kappa, theta, sigma, rho, v0)
     for t in np.unique(T[ok]):
+        t = float(t)
         j = np.flatnonzero(ok & (T == t))
-        a, b, u, A = heston_series(float(t), kappa, theta, sigma, rho, v0, n_terms, L)
+        c1, c2 = heston_cumulants(t, *p)
+        a0, b0 = heston_range(t, *p, L)
         f, k, d, ph = F[j], K[j], df[j], phi[j]
-        x = np.log(f / k)
+        aj, bj, nj = heston_contract_range(np.log(k / f), a0, b0, c2, n_terms, L)
+        otm = np.empty(j.size)
+        base = (aj == a0) & (bj == b0)
+        if base.any():
+            u, A = heston_series_on(t, *p, a0, b0, n_terms)
+            otm[base] = _cos_otm(f[base], k[base], d[base], a0, b0, u, A)
+        for i in np.flatnonzero(~base):
+            u, A = heston_series_on(t, *p, float(aj[i]), float(bj[i]), int(nj[i]))
+            otm[i] = _cos_otm(f[i:i + 1], k[i:i + 1], d[i:i + 1], float(aj[i]), float(bj[i]), u, A)[0]
         otm_call = k > f
-        ya = x + a
-        lo = np.where(otm_call, 0.0, ya)                       # the OTM option's payoff interval in y
-        hi = np.where(otm_call, x + b, 0.0)
-        live = hi > lo
-        lo, hi = np.where(live, lo, 0.0), np.where(live, hi, 0.0)
-        tc, td = np.outer(lo - ya, u), np.outer(hi - ya, u)    # u_k (c - a_y), u_k (d - a_y)
-        cc, sc, cd, sd = np.cos(tc), np.sin(tc), np.cos(td), np.sin(td)
-        elo, ehi = np.exp(lo)[:, None], np.exp(hi)[:, None]
-        chi = (cd * ehi - cc * elo + u * (sd * ehi - sc * elo)) / (1.0 + u * u)
-        psi = np.empty_like(chi)
-        psi[:, 0] = hi - lo
-        psi[:, 1:] = (sd[:, 1:] - sc[:, 1:]) / u[1:]
-        sgn = np.where(otm_call, 1.0, -1.0)[:, None]           # call: chi - psi; put: psi - chi
-        V = sgn * (chi - psi) * (2.0 / (b - a)) * k[:, None]
-        otm = d * (V @ A)
-        otm = np.where(live, np.maximum(otm, 0.0), 0.0)
         is_call = ph > 0
         # OTM call -> put by parity, OTM put -> call by parity
         out[j] = np.where(is_call == otm_call, otm, otm + np.where(is_call, 1.0, -1.0) * d * (f - k))

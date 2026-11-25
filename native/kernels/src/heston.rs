@@ -92,11 +92,12 @@ fn cf(u: f64, t: f64, kappa: f64, theta: f64, sigma: f64, rho: f64, v0: f64) -> 
     c.add(dd.scale(v0)).exp()
 }
 
-/// (a, b, u_k, A_k) of one maturity (reference `heston_series`).
-fn series(t: f64, p: &[f64; 5], n_terms: usize, l: f64) -> (f64, f64, Vec<f64>, Vec<f64>) {
-    let (c1, c2) = cumulants(t, p[0], p[1], p[2], p[3], p[4]);
-    let h = l * c2.abs().sqrt();
-    let (a, b) = (c1 - h, c1 + h);
+/// Reference `HESTON_EXT` and `HESTON_MAX_TERMS`.
+const EXT: f64 = 0.5;
+const MAX_TERMS: f64 = 16384.0;
+
+/// (u_k, A_k) on [a, b] (reference `heston_series_on`).
+fn series_on(t: f64, p: &[f64; 5], a: f64, b: f64, n_terms: usize) -> (Vec<f64>, Vec<f64>) {
     let w = std::f64::consts::PI / (b - a);
     let mut us = Vec::with_capacity(n_terms);
     let mut aa = Vec::with_capacity(n_terms);
@@ -111,7 +112,37 @@ fn series(t: f64, p: &[f64; 5], n_terms: usize, l: f64) -> (f64, f64, Vec<f64>, 
         us.push(u);
         aa.push(ak);
     }
-    (a, b, us, aa)
+    (us, aa)
+}
+
+/// The discounted out-of-the-money price of one contract on one series
+/// (reference `_cos_otm`).
+fn cos_otm(fj: f64, kj: f64, dj: f64, a: f64, b: f64, us: &[f64], aa: &[f64]) -> f64 {
+    let x = (fj / kj).ln();
+    let otm_call = kj > fj;
+    let ya = x + a;
+    let (mut lo, mut hi) = if otm_call { (0.0, x + b) } else { (ya, 0.0) };
+    let live = hi > lo;
+    if !live {
+        lo = 0.0;
+        hi = 0.0;
+    }
+    let (elo, ehi) = (lo.exp(), hi.exp());
+    let sgn = if otm_call { 1.0 } else { -1.0 };
+    let scale = 2.0 / (b - a) * kj;
+    let mut acc = 0.0;
+    for (i, (&u, &ak)) in us.iter().zip(aa.iter()).enumerate() {
+        let (tc, td) = ((lo - ya) * u, (hi - ya) * u);
+        let (cc, sc, cd, sd) = (tc.cos(), tc.sin(), td.cos(), td.sin());
+        let chi = (cd * ehi - cc * elo + u * (sd * ehi - sc * elo)) / (1.0 + u * u);
+        let psi = if i == 0 { hi - lo } else { (sd - sc) / u };
+        acc += sgn * (chi - psi) * scale * ak;
+    }
+    if live {
+        (dj * acc).max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Prices of contracts (F, K, T, df, phi = +1 call / -1 put) under one
@@ -139,7 +170,8 @@ pub fn heston_price(
         return Err("n_terms must be at least 2 and L finite and positive".into());
     }
     let mut out = vec![f64::NAN; n];
-    let mut cache: Vec<(u64, (f64, f64, Vec<f64>, Vec<f64>))> = Vec::new();
+    // per maturity: (T bits, a0, b0, c2, the cumulant-range series)
+    let mut cache: Vec<(u64, f64, f64, f64, Vec<f64>, Vec<f64>)> = Vec::new();
     for j in 0..n {
         let (fj, kj, tj, dj) = (f[j], k[j], t[j], df[j]);
         let ok = [fj, kj, tj, dj].iter().all(|v| v.is_finite() && *v > 0.0);
@@ -147,35 +179,33 @@ pub fn heston_price(
             continue;
         }
         let key = tj.to_bits();
-        let idx = match cache.iter().position(|(kk, _)| *kk == key) {
+        let idx = match cache.iter().position(|c| c.0 == key) {
             Some(i) => i,
             None => {
-                cache.push((key, series(tj, p, n_terms, l)));
+                let (c1, c2) = cumulants(tj, p[0], p[1], p[2], p[3], p[4]);
+                let h = l * c2.abs().sqrt();
+                let (a0, b0) = (c1 - h, c1 + h);
+                let (us, aa) = series_on(tj, p, a0, b0, n_terms);
+                cache.push((key, a0, b0, c2, us, aa));
                 cache.len() - 1
             }
         };
-        let (a, b, us, aa) = &cache[idx].1;
-        let x = (fj / kj).ln();
+        let (_, a0, b0, c2, us, aa) = &cache[idx];
+        // the contract's own range (reference `heston_contract_range`)
+        let km = (kj / fj).ln();
+        let hx = EXT * l * c2.abs().sqrt();
+        let aj = a0.min(km - hx);
+        let bj = b0.max(km + hx);
+        let otm = if aj == *a0 && bj == *b0 {
+            cos_otm(fj, kj, dj, *a0, *b0, us, aa)
+        } else {
+            let nj = (n_terms as f64 * (bj - aj) / (b0 - a0))
+                .ceil()
+                .min(MAX_TERMS) as usize;
+            let (u2, a2) = series_on(tj, p, aj, bj, nj);
+            cos_otm(fj, kj, dj, aj, bj, &u2, &a2)
+        };
         let otm_call = kj > fj;
-        let ya = x + a;
-        let (mut lo, mut hi) = if otm_call { (0.0, x + b) } else { (ya, 0.0) };
-        let live = hi > lo;
-        if !live {
-            lo = 0.0;
-            hi = 0.0;
-        }
-        let (elo, ehi) = (lo.exp(), hi.exp());
-        let sgn = if otm_call { 1.0 } else { -1.0 };
-        let scale = 2.0 / (b - a) * kj;
-        let mut acc = 0.0;
-        for (i, (&u, &ak)) in us.iter().zip(aa.iter()).enumerate() {
-            let (tc, td) = ((lo - ya) * u, (hi - ya) * u);
-            let (cc, sc, cd, sd) = (tc.cos(), tc.sin(), td.cos(), td.sin());
-            let chi = (cd * ehi - cc * elo + u * (sd * ehi - sc * elo)) / (1.0 + u * u);
-            let psi = if i == 0 { hi - lo } else { (sd - sc) / u };
-            acc += sgn * (chi - psi) * scale * ak;
-        }
-        let otm = if live { (dj * acc).max(0.0) } else { 0.0 };
         let is_call = phi[j] > 0.0;
         out[j] = if is_call == otm_call {
             otm
@@ -210,6 +240,20 @@ mod tests {
         for i in 0..n {
             assert!((c[i] - p[i] - 0.98 * (101.0 - k[i])).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn a_strike_beyond_the_cumulant_range_gets_its_own_range() {
+        // sigma ~ 3 (a fit of the 2026-11-13 SPY surface), 32.7 days: k = -1 lies outside
+        // [c1 - 12 sqrt(c2), c1 + 12 sqrt(c2)] ~ [-0.75, 0.75] and is priced on an extended range
+        // (7.8e-7 against a 2^17-term series on [-12, 4]); without it the price is exactly 0.
+        let p = [6.815, 0.05599, 2.984, -0.737, 0.03467];
+        let t = 32.7 / 365.0;
+        let (c1, c2) = cumulants(t, p[0], p[1], p[2], p[3], p[4]);
+        assert!(-1.0 < c1 - 12.0 * c2.sqrt());
+        let k = (-1.0f64).exp();
+        let v = heston_price(&[1.0], &[k], &[t], &[1.0], &[-1.0], &p, 1024, 12.0).unwrap();
+        assert!((v[0] - 7.8e-7).abs() < 5e-8, "{}", v[0]);
     }
 
     #[test]

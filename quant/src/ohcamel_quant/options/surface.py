@@ -161,15 +161,24 @@ def heston_quotes(ca: ChainAnalytics, vs: VolSurface) -> pd.DataFrame:
 
 
 def fit_heston_surface(ca: ChainAnalytics, vs: VolSurface) -> heston.HestonFit:
-    """Heston (:mod:`.heston`, COS) calibrated to :func:`heston_quotes`, vega-weighted."""
-    return heston.calibrate(heston_quotes(ca, vs), weights="vega")
+    """Heston (:mod:`.heston`, COS at the league's ``LEAGUE_N`` terms on ``LEAGUE_L``) calibrated to
+    :func:`heston_quotes`, vega-weighted."""
+    return heston.calibrate(heston_quotes(ca, vs), weights="vega", n_terms=heston.LEAGUE_N, L=heston.LEAGUE_L)
 
 
-def heston_violations(p: heston.HestonParams, slices: list[tuple[float, float, float]]) -> dict[str, int]:
+#: The w comparisons of :func:`heston_violations` use only points whose out-of-the-money price (in units of
+#: ``df F``) is at least this: below it an implied vol inverted from a COS price carries the series' rounding
+#: (the calendar count wandered 13 / 5 / 6 / 3 with the series length on prices of 1e-12 .. 1e-6).
+HESTON_W_FLOOR = 1e-8
+
+
+def heston_violations(p: heston.HestonParams, slices: list[tuple[float, float, float]],
+                      n_terms: int = heston.LEAGUE_N, L: float = heston.LEAGUE_L,
+                      floor: float = HESTON_W_FLOOR) -> dict[str, int]:
     """Butterfly and calendar violations of a Heston surface at the maturities ``[(T, k_min, k_max), ...]``, by the
-    definitions :func:`count_violations` applies to SVI-form slices, measured on the COS-priced surface's implied
-    total variance ``w(k, T)`` (:func:`.heston.implied_vol`). Heston is free of static arbitrage in exact
-    arithmetic; COS truncation and rounding are what these counts can catch.
+    definitions :func:`count_violations` applies to SVI-form slices, measured on the COS-priced surface (``n_terms``
+    terms on the ``L`` range: converged, :data:`.heston.LEAGUE_N`) through its implied total variance
+    ``w(k, T)``. Heston is free of static arbitrage in exact arithmetic; what these can catch is the expansion's.
 
     * butterfly: Durrleman's ``g < -G_TOL`` on the 1201-point scan of [-K_MAX, K_MAX] (no zoom refinement), with
       ``g`` from the COS density ``f`` and ``w`` (Gatheral & Jacquier 2014, eq. 2.2 inverted:
@@ -178,37 +187,42 @@ def heston_violations(p: heston.HestonParams, slices: list[tuple[float, float, f
     * calendar: ``w(k, T2) < w(k, T1) - 1e-8`` on each adjacent pair's common quoted range (201 points) and on
       :data:`ARB_K_GRID`.
 
-    Only points where ``w`` exists count: a price below ``heston.PRICE_FLOOR`` (a wing past the COS range, most of
-    [-3, 3] at a 1-day expiry) has no implied vol, so no ``g`` and no ``w`` to compare there."""
+    Only points where both prices involved are at least ``floor`` (``df F`` units) and inside the density's range
+    count; the rest are excluded and counted in ``violation_points_excluded`` (most of [-3, 3] at a 1-day expiry)."""
     from .svi import _K_GRID
 
     ss = sorted(slices, key=lambda s: s[0])
-    bf = 0
+    bf, excluded = 0, 0
     W: dict[float, np.ndarray] = {}
     for T, _, _ in ss:
-        iv = heston.implied_vol(p, _K_GRID, T)
+        iv = heston.implied_vol(p, _K_GRID, T, n_terms, L, floor)
         w = iv * iv * T
-        W[T] = heston.implied_vol(p, ARB_K_GRID, T) ** 2 * T
-        ok = np.isfinite(w) & (w > 0)
+        W[T] = heston.implied_vol(p, ARB_K_GRID, T, n_terms, L, floor) ** 2 * T
+        a, b = heston.truncation_range(T, p, L)
+        ok = np.isfinite(w) & (w > 0) & (_K_GRID > a) & (_K_GRID < b)
+        excluded += int((~ok).sum())
         if ok.any():
             k, ww = _K_GRID[ok], w[ok]
             sw = np.sqrt(ww)
             d2 = -k / sw - 0.5 * sw
-            g = heston.density(p, k, T) * np.sqrt(2.0 * np.pi * ww) * np.exp(0.5 * d2 * d2)
+            g = heston.density(p, k, T, n_terms, L) * np.sqrt(2.0 * np.pi * ww) * np.exp(0.5 * d2 * d2)
             bf += bool(np.min(g) < -G_TOL)
     cal = calq = pairs_q = 0
     for (T1, lo1, hi1), (T2, lo2, hi2) in zip(ss, ss[1:], strict=False):
         dw = W[T2] - W[T1]
+        excluded += int((~np.isfinite(dw)).sum())
         cal += bool(np.nanmin(dw) < -1e-8) if np.isfinite(dw).any() else 0
         lo, hi = max(lo1, lo2), min(hi1, hi2)
         if hi > lo:
             pairs_q += 1
             k = np.linspace(lo, hi, QUOTED_N)
-            d = heston.implied_vol(p, k, T2) ** 2 * T2 - heston.implied_vol(p, k, T1) ** 2 * T1
+            d = (heston.implied_vol(p, k, T2, n_terms, L, floor) ** 2 * T2
+                 - heston.implied_vol(p, k, T1, n_terms, L, floor) ** 2 * T1)
+            excluded += int((~np.isfinite(d)).sum())
             calq += bool(np.nanmin(d) < -1e-8) if np.isfinite(d).any() else 0
     return {"butterfly_violations": int(bf), "n_slices": len(ss), "calendar_violations_quoted": int(calq),
             "calendar_pairs_quoted": int(pairs_q), "calendar_violations": int(cal),
-            "calendar_pairs": max(len(ss) - 1, 0)}
+            "calendar_pairs": max(len(ss) - 1, 0), "violation_points_excluded": int(excluded)}
 
 
 def build_surface(

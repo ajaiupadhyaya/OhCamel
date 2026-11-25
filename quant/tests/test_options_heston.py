@@ -81,7 +81,7 @@ def test_short_dated_out_of_the_money_quotes_hold_against_a_long_expansion():
     """Where COS is weakest: a 2-day expiry, strikes out to 6 standard deviations in both wings (k = -0.06 is a
     put price of 1.5e-7). The shipped series (L = 12, 160 terms) against a wider range and a long one (L = 20, 4096
     terms): the implied vols agree to 1e-6 (1e-4 vol points). Measured: within 2e-8. Beyond the range (k = -0.12
-    here, 12 sd) the price is zero and the implied vol NaN: the model, truncated, puts no mass there."""
+    here, 12 sd) the strike gets its own extended range; its price (1.7e-14) is below PRICE_FLOOR, so no implied vol."""
     T = 2.0 / 365.0
     k = np.array([-0.06, -0.04, -0.025, -0.012, 0.012, 0.025, 0.035, 0.05])
     K = 100.0 * np.exp(k)
@@ -92,7 +92,7 @@ def test_short_dated_out_of_the_money_quotes_hold_against_a_long_expansion():
     iv_hi = implied_vol_black(hi, 100.0, K, T, 1.0, np.where(call, "C", "P"))
     assert np.isfinite(iv_hi).all() and np.isfinite(iv_lo).all()
     np.testing.assert_allclose(iv_lo, iv_hi, rtol=0, atol=1e-6)
-    assert float(heston.price(100.0, 100.0 * np.exp(-0.12), T, 1.0, REF, is_call=False)) == 0.0
+    assert 0.0 <= float(heston.price(100.0, 100.0 * np.exp(-0.12), T, 1.0, REF, is_call=False)) < 1e-12 * 100.0
     assert np.isnan(heston.implied_vol(REF, np.array([-0.12]), T)).all()
 
 
@@ -170,3 +170,41 @@ def test_density_integrates_to_one_and_prices_are_its_integral():
     P = heston.price(100.0, np.array([K0 - h, K0, K0 + h]), T, 1.0, REF, is_call=False)
     d2 = (P[0] - 2 * P[1] + P[2]) / h ** 2
     assert d2 == pytest.approx(float(heston.density(REF, np.log(K0 / 100.0), T)) / K0, rel=1e-5)
+
+
+#: A fit of the 2026-11-13 SPY surface (vol of vol ~ 3, Feller ratio 0.09): quoted strikes outside the L = 12 range.
+WILD = heston.HestonParams(kappa=6.815, theta=0.05599, sigma=2.984, rho=-0.737, v0=0.03467)
+
+
+def test_a_quoted_strike_beyond_the_cumulant_range_is_priced_not_zeroed():
+    """Deep out-of-the-money puts the review found priced at exactly 0 (k = -1.0 and -1.2 at 32.7 and 60.7 days, past
+    c1 - 12 sqrt(c2)): each gets its own range (at least L/2 sd beyond the strike, terms scaled with the range) and
+    agrees with a 2^17-term series on [-12, 4] to 5e-4 in implied vol (measured 2.1e-4 at an IV of 0.82) at the league's LEAGUE_N, LEAGUE_L. Strikes inside the
+    range are unchanged by the rule."""
+    from ohcamel_quant.kernels import reference as R
+
+    for T, k in ((32.7 / 365, -1.0), (60.7 / 365, -1.2)):
+        a, b = heston.truncation_range(T, WILD)
+        assert k < a
+        K = np.array([np.exp(k)])
+        got = heston.price(1.0, K, T, 1.0, WILD, is_call=False, n_terms=heston.LEAGUE_N, L=heston.LEAGUE_L)
+        u, A = R.heston_series_on(T, *WILD.astuple(), -12.0, 4.0, 1 << 17)
+        ref = R._cos_otm(np.ones(1), K, np.ones(1), -12.0, 4.0, u, A)
+        assert got[0] > 0
+        iv = implied_vol_black(np.r_[got, ref], 1.0, np.r_[K, K], T, 1.0, "P")
+        assert abs(iv[0] - iv[1]) < 5e-4, iv
+    k_in = np.linspace(-0.05, 0.05, 5)
+    a0, b0 = heston.truncation_range(0.5, WILD)
+    aj, bj, nj = R.heston_contract_range(k_in, a0, b0, heston.cumulants(0.5, WILD)[1], 160)
+    assert (aj == a0).all() and (bj == b0).all() and (nj == 160).all()
+
+
+def test_160_terms_do_not_converge_on_a_vol_of_vol_of_3_and_the_league_n_does():
+    """Why the league prices at LEAGUE_N: at sigma ~ 3 the density is sharp; 160 terms miss by > 1e-3 in implied vol
+    where 1024 agree with 4096 to 1e-6."""
+    T = 0.5
+    s = np.sqrt(heston.cumulants(T, WILD)[1])
+    k = np.linspace(-4 * s, 3 * s, 15)
+    iv = {n: heston.implied_vol(WILD, k, T, n, heston.LEAGUE_L) for n in (160, 1024, 4096)}
+    assert np.nanmax(np.abs(iv[160] - iv[4096])) > 1e-3
+    np.testing.assert_allclose(iv[1024], iv[4096], rtol=0, atol=1e-6)

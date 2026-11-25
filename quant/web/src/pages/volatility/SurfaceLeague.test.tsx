@@ -25,7 +25,7 @@ describe("SurfaceLeagueReport (vol.surface_league)", () => {
     row("SVI (per slice)"),
     row("SSVI (power law)", { rmse_vol_pts: 3.45, calendar_violations: 0, next_day_rmse_vol_pts: 3.6, params: '{"rho": -0.61, "eta": 1.24, "gamma": 0.499}' }),
     row("SVI (per slice)", { underlying: "QQQ", rmse_vol_pts: 9.99 }),
-    row("Heston (COS)", { rmse_vol_pts: 3.61, butterfly_violations: 30, params: '{"kappa": 6.8, "feller_ratio": 0.086}' }),
+    row("Heston (COS)", { rmse_vol_pts: 3.57, butterfly_violations: 0, params: '{"kappa": 7.5, "feller_ratio": 0.081}', fit_note: "5230 of 5230 quotes scored · COS 1024 terms, L 24 · fit status 3, 33 evaluations, start 1" }),
   ];
   const html = render(<SurfaceLeagueReport rows={rows} ticker="spy" />);
 
@@ -46,9 +46,10 @@ describe("SurfaceLeagueReport (vol.surface_league)", () => {
   });
   it("shows the Heston row with its footing: European Black-76 prices of the same quotes, source and as-of", () => {
     expect(html).toContain("Heston (COS)");
-    expect(html).toContain("3.61");
-    expect(html).toContain("30 / 31");
+    expect(html).toContain("3.57");
+    expect(html).toContain("5230 of 5230 quotes scored");
     expect(html).toContain("EUROPEAN BLACK-76");
+    expect(html).toContain("COS AT 1024 TERMS");
     expect(html).toContain("vol.surface_league");
     expect(html).toContain("AS OF 2026-11-24");
   });

@@ -169,7 +169,8 @@ def test_next_day_scorer_on_committed_days(spy_2026_11_15, spy_next):
     f = vs.fits["2026-11-20"]
     want = {"SVI (per slice)": float(f.params.implied_vol(k, f.T)),
             "SSVI (power law)": float(ssvi.implied_vol(fitted["SSVI (power law)"].fit.params, k, f.T)),
-            "Heston (COS)": float(heston.implied_vol(fitted["Heston (COS)"].fit.params, np.array([k]), f.T)[0])}
+            "Heston (COS)": float(heston.implied_vol(fitted["Heston (COS)"].fit.params, np.array([k]), f.T,
+                                                     heston.LEAGUE_N, heston.LEAGUE_L)[0])}
     for name, s in out.items():
         assert s["n"] == 1 and s["unscored"] == 0
         assert s["rmse_vol_pts"] == pytest.approx(abs(want[name] - iv) * 100.0, rel=1e-12)
@@ -230,12 +231,16 @@ def test_heston_is_fitted_to_the_same_quotes_and_its_violations_are_counted_on_t
     s = m.score(fitted)
     assert s["n_quotes"] == n and np.isfinite(s["rmse_vol_pts"])
     assert s["n_slices"] == len(vs.fits) and s["calendar_pairs"] == len(vs.fits) - 1
-    assert s == {**s, **heston_violations(fitted.fit.params, [(f.T, f.k_min, f.k_max) for f in vs.fits.values()])}
-    # Heston is a martingale model: in exact arithmetic w(k, T) cannot fall with T, nor g go negative. Measured on
-    # 2026-11-13 SPY (fit sigma ~ 3, rho ~ -0.74): none on the quoted overlaps; on [-3, 3] the COS truncation (c2-only
-    # range, L = 12) shows in the far wings -- 13 calendar pairs (right-wing calls priced 1e-9 to 1e-6) and 30 of
-    # 31 slices with g < -G_TOL. Counted, not asserted away: numerics of the COS-priced surface, reported as such.
-    assert s["calendar_violations_quoted"] == 0
-    assert s["calendar_violations"] == 13 and s["butterfly_violations"] == 30
+    v = heston_violations(fitted.fit.params, [(f.T, f.k_min, f.k_max) for f in vs.fits.values()])
+    assert s == {**s, **{k: x for k, x in v.items() if k != "violation_points_excluded"}}
+    # Heston is a martingale model: in exact arithmetic w(k, T) cannot fall with T, nor g go negative. Scored on the
+    # converged series (LEAGUE_N terms on LEAGUE_L) at points priced at least HESTON_W_FLOOR, the expansion leaves
+    # none on this surface (fit sigma ~ 3); at 160 terms on L = 12 with no floor it showed 30/31 butterfly and 13/30
+    # calendar, all series-length and rounding artefacts (task 4.6 fix report). Bounds, not platform-exact pins.
+    assert s["butterfly_violations"] == 0 and s["calendar_violations_quoted"] == 0
+    assert s["calendar_violations"] <= 2
+    assert fitted.fit.n_iv_failed == 0 and "5230 of 5230 quotes scored" in s["fit_note"]
     p = m.params(fitted)
-    assert set(p) == {"kappa", "theta", "sigma", "rho", "v0", "feller_ratio", "n_iv_failed"}
+    assert set(p) == {"kappa", "theta", "sigma", "rho", "v0", "feller_ratio", "n_iv_failed", "max_abs_err_vol_pts",
+                      "status", "nfev", "cost", "start", "n_terms", "L", "violation_points_excluded"}
+    assert p["n_terms"] == heston.LEAGUE_N and p["violation_points_excluded"] > 0

@@ -498,3 +498,16 @@ def test_heston_price_parity(both, p, n_terms):
     q = on("python", kernels.heston_price, F, K, T, df, call, *p, n_terms=n_terms)
     assert np.isfinite(q).all()
     np.testing.assert_allclose(r, q, rtol=0, atol=1e-9)
+
+
+def test_heston_price_parity_with_extended_ranges(both):
+    """Strikes past the cumulant range (each priced on its own extended range and series length) under a sigma ~ 3
+    fit: Rust and the reference agree to 1e-9, at 160 and the league's 1024 terms."""
+    p = (6.815, 0.05599, 2.984, -0.737, 0.03467)
+    T = np.repeat([2.7 / 365, 32.7 / 365, 60.7 / 365, 1.0], 9)
+    K = np.exp(np.tile([-1.3, -1.0, -0.6, -0.2, 0.0, 0.1, 0.3, 0.6, 1.0], 4))
+    call = K > 1.0
+    for n, L in ((160, 12.0), (1024, 24.0)):
+        r = on("rust", kernels.heston_price, 1.0, K, T, 1.0, call, *p, n_terms=n, L=L)
+        q = on("python", kernels.heston_price, 1.0, K, T, 1.0, call, *p, n_terms=n, L=L)
+        np.testing.assert_allclose(r, q, rtol=0, atol=1e-9)

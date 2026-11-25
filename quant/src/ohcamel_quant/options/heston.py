@@ -14,7 +14,11 @@ in ``n_terms`` cosines (default 160) on the truncation range ``[c1 - L sqrt(c2),
 with ``c1``, ``c2`` the mean and variance of ``X`` (their eq. 49, the ``c4`` term left out: the c2-only form).
 ``c1`` and ``c2`` are derived in closed form from the CIR moments (:func:`cumulants`; tested against the CF's own
 derivatives). The out-of-the-money option is the series (a put at ``K <= F``, a call above) and the other is
-put-call parity, so parity holds to rounding and no wing price is a difference of two large numbers. Accuracy:
+put-call parity, so parity holds to rounding and no wing price is a difference of two large numbers. A strike
+within ``L/2`` standard deviations of the range's edge, or past it, is priced on its own range extended to ``L/2``
+sd beyond it, with the terms scaled to the range (``kernels.reference.heston_contract_range``), so no quoted strike
+prices at exactly zero. The nightly league prices at :data:`LEAGUE_N` = 1024 terms on ``L`` = 24: at a fitted vol
+of vol near 3, 160 terms miss by up to 2e-2 in implied vol. Accuracy:
 the published reference (S = K = 100, T = 1, r = 0, kappa 1.5768, theta 0.0398, sigma 0.5751, rho -0.5711,
 v0 0.0175; call 5.785155450) is matched to 4.0e-5 -- the c2-only range truncates that heavy left tail; at
 L = 20 and 512 terms the series is within 3e-8 of the reference. The NumPy reference
@@ -54,6 +58,11 @@ MIN_QUOTES = 6
 #: An out-of-the-money model price below this fraction of ``df F`` has no implied vol here (NaN): below it the
 #: series' rounding (~1e-16 of the strike per term) is a visible share of the price.
 PRICE_FLOOR = 1e-12
+#: What the nightly league prices Heston with (calibration, scoring and violations): a fitted surface's vol of vol
+#: runs to ~3 (2026-11-13 SPY), where the log-return density is sharp and heavy-tailed: 160 terms leave up to 2e-2
+#: in implied vol and the L = 12 range up to 6e-2 at 8 sd out; 1024 terms on L = 24 converge (series within 7e-6,
+#: range within 2e-5 at T <= 0.5 against L = 48; measured, task 4.6 fix report).
+LEAGUE_N, LEAGUE_L = 1024, 24.0
 
 
 @dataclass(frozen=True)
@@ -95,30 +104,33 @@ def truncation_range(T: float, p: HestonParams, L: float = L) -> tuple[float, fl
     return _ref.heston_range(float(T), *p.astuple(), L)
 
 
-def price(F: Any, K: Any, T: Any, df: Any, p: HestonParams, *, is_call: Any, n_terms: int = N_TERMS) -> np.ndarray:
+def price(F: Any, K: Any, T: Any, df: Any, p: HestonParams, *, is_call: Any, n_terms: int = N_TERMS,
+          L: float = L) -> np.ndarray:
     """European prices (discounted) by COS, broadcast over ``F, K, T, df, is_call``; dispatched to the Rust kernel
-    when the wheel is loaded (``kernels.heston_price``)."""
-    return kernels.heston_price(F, K, T, df, is_call, *p.astuple(), n_terms=n_terms)
+    when the wheel is loaded (``kernels.heston_price``). A strike within ``L/2`` standard deviations of the range's
+    edge, or beyond it, is priced on its own extended range (``kernels.reference.heston_contract_range``)."""
+    return kernels.heston_price(F, K, T, df, is_call, *p.astuple(), n_terms=n_terms, L=L)
 
 
-def implied_vol(p: HestonParams, k: Any, T: float, n_terms: int = N_TERMS) -> np.ndarray:
+def implied_vol(p: HestonParams, k: Any, T: float, n_terms: int = N_TERMS, L: float = L,
+                floor: float = PRICE_FLOOR) -> np.ndarray:
     """Black-76 implied vol of the Heston price at log-forward-moneyness ``k`` and maturity ``T`` (the smile in
     forward moneyness depends on ``k`` and ``T`` only), inverted from the out-of-the-money option; NaN where that
-    price is below :data:`PRICE_FLOOR`."""
+    price is below ``floor`` (default :data:`PRICE_FLOOR`)."""
     k = np.asarray(k, dtype=float)
     K = np.exp(k)
     call = k >= 0
-    px = price(1.0, K, float(T), 1.0, p, is_call=call, n_terms=n_terms)
-    px = np.where(px >= PRICE_FLOOR, px, np.nan)
+    px = price(1.0, K, float(T), 1.0, p, is_call=call, n_terms=n_terms, L=L)
+    px = np.where(px >= floor, px, np.nan)
     return implied_vol_black(px, 1.0, K, float(T), 1.0, np.where(call, "C", "P"))
 
 
-def density(p: HestonParams, x: Any, T: float, n_terms: int = N_TERMS) -> np.ndarray:
+def density(p: HestonParams, x: Any, T: float, n_terms: int = N_TERMS, L: float = L) -> np.ndarray:
     """The COS density of ``x = ln(S_T / F)``: ``2/(b-a) sum' A_k cos(u_k (x - a))`` on ``[a, b]``, zero outside.
     The put's second strike derivative is ``df f(ln(K/F)) / K``, so where this goes negative the COS-priced smile
     has butterfly arbitrage."""
     x = np.asarray(x, dtype=float)
-    a, b, u, A = _ref.heston_series(float(T), *p.astuple(), n_terms)
+    a, b, u, A = _ref.heston_series(float(T), *p.astuple(), n_terms, L)
     f = (2.0 / (b - a)) * (np.cos(np.multiply.outer(x - a, u)) @ A)
     return np.where((x >= a) & (x <= b), f, 0.0)
 
@@ -137,6 +149,8 @@ class HestonFit:
     feller: bool                 # 2 kappa theta >= sigma^2 -- reported, not enforced
     feller_ratio: float
     weights: str
+    n_terms: int = N_TERMS
+    L: float = L
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -162,7 +176,7 @@ def _atm_var(q: pd.DataFrame, T: float) -> float:
 
 
 def calibrate(quotes: pd.DataFrame, *, weights: str | None = "vega", starts: tuple = STARTS,
-              max_nfev: int = MAX_NFEV, n_terms: int = N_TERMS) -> HestonFit:
+              max_nfev: int = MAX_NFEV, n_terms: int = N_TERMS, L: float = L) -> HestonFit:
     """Heston on ``quotes`` -- one row per option, columns ``T, F, df, K, price, is_call`` (and optionally ``iv``,
     the quote's Black-76 implied vol; inverted from the price when absent) -- by least squares on prices
     (module docstring). ``weights``: ``"vega"`` (price error / Black vega, ~ the implied-vol error) or ``None``
@@ -188,7 +202,7 @@ def calibrate(quotes: pd.DataFrame, *, weights: str | None = "vega", starts: tup
     scale = np.maximum(scale, 1e-8 * df * F * np.sqrt(T))
 
     def resid(x: np.ndarray) -> np.ndarray:
-        m = kernels.heston_price(F, K, T, df, call, *x, n_terms=n_terms)
+        m = kernels.heston_price(F, K, T, df, call, *x, n_terms=n_terms, L=L)
         return (m - mkt) / scale
 
     Ts = np.unique(T)
@@ -204,7 +218,7 @@ def calibrate(quotes: pd.DataFrame, *, weights: str | None = "vega", starts: tup
     if best is None:
         raise ValueError("Heston calibration: no start gave a finite objective")
     p = HestonParams(*(float(v) for v in best.x))
-    model = kernels.heston_price(F, K, T, df, call, *p.astuple(), n_terms=n_terms)
+    model = kernels.heston_price(F, K, T, df, call, *p.astuple(), n_terms=n_terms, L=L)
     otm = model - np.where(call == (K > F), 0.0, np.where(call, 1.0, -1.0) * df * (F - K))
     model = np.where(otm >= PRICE_FLOOR * df * F, model, np.nan)
     miv = implied_vol_black(model, F, K, T, df, np.where(call, "C", "P"))
@@ -214,4 +228,4 @@ def calibrate(quotes: pd.DataFrame, *, weights: str | None = "vega", starts: tup
                      float("nan"), max_abs_err_vol_pts=float(np.max(np.abs(err))) if err.size else float("nan"),
                      n_iv_failed=int((~ok).sum()), cost=float(best.cost), nfev=int(best.nfev),
                      status=int(best.status), start=best_i, feller=bool(p.feller_ratio >= 1.0),
-                     feller_ratio=float(p.feller_ratio), weights=str(weights))
+                     feller_ratio=float(p.feller_ratio), weights=str(weights), n_terms=int(n_terms), L=float(L))

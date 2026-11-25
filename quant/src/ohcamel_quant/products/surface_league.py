@@ -138,6 +138,7 @@ class _HestonFitted:
     fit: heston.HestonFit
     T_of: dict[str, float]
     k_range: dict[float, tuple[float, float]]
+    excluded: int | None = None      # violation-test points below the price floor (set by _heston_score)
 
 
 def _heston_fit(ca: ChainAnalytics, vs: VolSurface) -> _HestonFitted:
@@ -146,17 +147,29 @@ def _heston_fit(ca: ChainAnalytics, vs: VolSurface) -> _HestonFitted:
 
 
 def _heston_score(m: _HestonFitted) -> dict[str, Any]:
-    return {"n_quotes": m.fit.n, "rmse_vol_pts": m.fit.rmse_vol_pts,
-            **heston_violations(m.fit.params, [(T, *r) for T, r in m.k_range.items()])}
+    v = heston_violations(m.fit.params, [(T, *r) for T, r in m.k_range.items()])
+    m.excluded = v.pop("violation_points_excluded")
+    scored = m.fit.n - m.fit.n_iv_failed
+    f = m.fit
+    note = (f"{scored} of {f.n} quotes scored" + (f" ({f.n_iv_failed} model prices below the inversion floor)"
+                                                  if f.n_iv_failed else "")
+            + f" · COS {f.n_terms} terms, L {f.L:g} · fit status {f.status}, {f.nfev} evaluations, start {f.start}")
+    return {"n_quotes": m.fit.n, "rmse_vol_pts": m.fit.rmse_vol_pts, "fit_note": note, **v}
 
 
 def _heston_predict(m: _HestonFitted, sid: str, k: np.ndarray) -> np.ndarray | None:
     T = m.T_of.get(sid)
-    return None if T is None else heston.implied_vol(m.fit.params, k, T)
+    return None if T is None else heston.implied_vol(m.fit.params, k, T, heston.LEAGUE_N, heston.LEAGUE_L)
 
 
 def _heston_params(m: _HestonFitted) -> dict[str, Any]:
-    return {**m.fit.params.to_dict(), "feller_ratio": m.fit.feller_ratio, "n_iv_failed": m.fit.n_iv_failed}
+    f = m.fit
+    out = {**f.params.to_dict(), "feller_ratio": f.feller_ratio, "n_iv_failed": f.n_iv_failed,
+           "max_abs_err_vol_pts": f.max_abs_err_vol_pts, "status": f.status, "nfev": f.nfev, "cost": f.cost,
+           "start": f.start, "n_terms": f.n_terms, "L": f.L}
+    if m.excluded is not None:
+        out["violation_points_excluded"] = m.excluded
+    return out
 
 
 MODELS: tuple[Model, ...] = (
@@ -330,9 +343,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                "it is not the previous NYSE session",
                "SSVI: power-law phi under eta (1 + |rho|) <= 2, gamma in (0, 1/2], theta non-decreasing "
                "(Gatheral & Jacquier 2014, Thm 4.1, Thm 4.2, Cor. 4.1)",
-               "Heston: COS (Fang & Oosterlee 2008; 160 terms, range c1 -/+ 12 sqrt(c2)), little-trap CF (Albrecher "
-               "et al. 2007), calibrated by least squares on European Black-76 prices of the same identified-IV "
+               "Heston: COS (Fang & Oosterlee 2008) at 1024 terms on c1 -/+ 24 sqrt(c2) (a strike near or past the "
+               "edge gets its own extended range), little-trap CF (Albrecher et al. 2007), calibrated by least squares on European Black-76 prices of the same identified-IV "
                "quotes (the chains are American), vega-weighted; Feller 2 kappa theta >= sigma^2 reported in params, "
-               "not enforced; violations from its implied total variance on the same grids"],
+               "not enforced; violations from its implied total variance on the same grids, at points whose price is at "
+               "least 1e-8 of df F (the rest excluded, counted in params)"],
         verdict="DESCRIPTIVE ONLY",
         verdict_detail=f"{n_und} UNDERLYING{'S' if n_und != 1 else ''} · {len(MODELS)} MODELS · MEASUREMENT")

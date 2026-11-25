@@ -48,7 +48,17 @@ export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]
   const mine = rows.filter((r) => r.underlying?.toUpperCase() === t);
   if (!mine.length) return <Absent reason={`${t} NOT IN THE LEAGUE`} source={`${KINDS.surfaceLeague} · league`} />;
   const cols: Column<SurfaceLeagueRow>[] = [
-    { key: "model", label: "Model", render: (r) => <span title={r.fit_note ?? r.params ?? undefined}>{r.model}</span> },
+    {
+      key: "model",
+      label: "Model",
+      render: (r) => (
+        <span title={r.params ?? r.fit_note ?? undefined}>
+          {r.model}
+          {r.fit_note && r.rmse_vol_pts != null ? <span className="vx-note"> · {r.fit_note}</span> : null}
+        </span>
+      ),
+      wrap: true,
+    },
     { key: "rmse_vol_pts", label: "RMSE · pts", numeric: true, render: (r) => <span className="num">{fmtPts(r.rmse_vol_pts)}</span>, title: "in-sample, implied-vol points, every fitted quote pooled" },
     { key: "butterfly_violations", label: "Butterfly", numeric: true, render: (r) => <span className="num">{ratio(r.butterfly_violations, r.n_slices)}</span>, title: "slices with g < 0 on k in [-3, 3]" },
     { key: "calendar_violations_quoted", label: "Calendar · quoted", numeric: true, render: (r) => <span className="num">{ratio(r.calendar_violations_quoted, r.calendar_pairs_quoted)}</span>, title: "adjacent expiries whose total variance decreases within their common quoted k range" },
@@ -76,7 +86,7 @@ export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]
       <DataTable<SurfaceLeagueRow> columns={cols} rows={mine} rowKey={(r) => r.model} />
       {mine.some((r) => r.model.startsWith("Heston")) && (
         <p className="vx-note">
-          HESTON (COS, 160 TERMS) IS FITTED TO THE SAME IDENTIFIED-IV QUOTES, EACH PRICED AS A EUROPEAN BLACK-76 OPTION ON ITS EXPIRY&apos;S FORWARD (THE CHAINS ARE AMERICAN); ITS VIOLATIONS ARE MEASURED ON THE COS-PRICED SURFACE, SO WING COUNTS ARE NUMERICS OF THE EXPANSION, NOT OF THE MODEL · {KINDS.surfaceLeague} · AS OF {fmtDate(mine[0].asof, "iso")}
+          HESTON IS FITTED TO THE SAME IDENTIFIED-IV QUOTES, EACH PRICED AS A EUROPEAN BLACK-76 OPTION ON ITS EXPIRY&apos;S FORWARD (THE CHAINS ARE AMERICAN), AND SCORED AS PRICED BY COS AT 1024 TERMS ON C1 ± 24√C2 (STRIKES PAST THE RANGE GET THEIR OWN); ITS VIOLATIONS ARE MEASURED ON THAT COS-PRICED SURFACE AT POINTS PRICED ABOVE 1E-8 OF THE FORWARD, SO ANY COUNT THERE IS THE EXPANSION&apos;S, NOT THE MODEL&apos;S · {KINDS.surfaceLeague} · AS OF {fmtDate(mine[0].asof, "iso")}
         </p>
       )}
     </div>
