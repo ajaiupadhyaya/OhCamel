@@ -22,7 +22,8 @@ It is paper only throughout.
 **What is done** (each task reviewed clean; the ledger is `.superpowers/sdd/2026-11-15-the-completion/progress.md`):
 
 - **The desk can be left alone.** A limit trip is journaled and survives a restart; it debounces (three breached
-  observations over 30 s) and lifts by a stated hysteresis rule; a limit that cannot be evaluated refuses risk;
+  observations over 30 s) and, on the live host (whose switch is enabled), lifts only by the owner's reset -- the
+  hysteresis rule lifts only an alert, never a trip; a limit that cannot be evaluated refuses risk;
   stops are evaluated at the close (INC-02's draft rules: a drawdown line of a multiple of the strategy's ex-ante
   volatility, floored and capped, and a sessions rule); the VaR forecast is scored against the hypothetical P&L of
   the positions held (Kupiec, Christoffersen, the Basel light) and the page carries counts, never sizes; alerts
@@ -120,7 +121,8 @@ The same steps are in [`runbooks/desk.md`](runbooks/desk.md).
 None of these is the agent's to do. The order is the order of dependence.
 
 1. **Read and approve INC-02**, line by line (`research/experiments/INC-02/preregistration.md`, ending in an
-   `Approved-by:` line). Check 4 fails until it names a date; the pooled test's series starts at that date.
+   `Approved-by:` line). Check 4 fails until it names a date; the pooled test's series starts at INC-02's first
+   fill dated on or after that date (never on or before INC-01's close, 2026-11-05).
 2. **R3, the farm's gates** (spec ruling R3): the default stands until the owner answers; two questions ride with it
    (whether it applies to EXP-I01–I03 and Q01's unspent holdout, and the cells whose out-of-sample record cannot reach
    three regimes). R2 (reduce through a trip) and R4 and R6 are defaults too. No file may call a ruling the owner's
@@ -130,10 +132,14 @@ None of these is the agent's to do. The order is the order of dependence.
    `d788e86` (the owner pushed it 2026-11-24); the completion branch beyond it is not pushed to `main`.
    **Deploys still owed**, per the ledger: the hosts stand at `db54ce8` (`4cd3848 --public-only` and `db54ce8 --live`, both
    2026-11-16 23:07Z). Day 3's `a14005b --live` and Day 4's `d788e86` (`--public-only`, with `--live` after) are OWNER-PENDING,
-   and both are before the hold, so they may go any time; nothing at or after `594df16` may.
-4. **Regenerate `book.sexp`** with each strategy's ex-ante volatility: run `book_vols` on the droplet, write the vols
-   with `tools/book_ex_ante_vol.py --vols`, regenerate the book (*Getting the book's ex-ante volatilities*). A book
-   with no `(ex_ante_vol F)` on a strategy fails to load, which is why the hold covers it. Then deploy `--live` and
+   and both are before the hold, so they may go any time; nothing at or after `594df16` may. **Pass the sha
+   explicitly** (`deploy/deploy.sh --sha d788e86`): once the completion branch is merged, a deploy with the default
+   sha (`origin/main`) targets a sha past the `594df16` hold, and its `check-book` step refuses the droplet's INC-01 book.
+4. **Regenerate `book.sexp`** from `book.example.sexp` by the recipe in *Changing the book* (every word the live book
+   changes is listed there: `trading`, `kill_switch_enabled`, `kill_switch_trips_on`, `reduce_through_trip`,
+   `var_window`, and each strategy's `ex_ante_vol`): run `book_vols` on the droplet, write the vols with
+   `tools/book_ex_ante_vol.py --vols` (*Getting the book's ex-ante volatilities*). A book with no `(ex_ante_vol F)`
+   on a strategy fails to load, which is why the hold covers it. Then deploy `--live` and
    lift the hand's halt only when ready. Do not edit the droplet's book by hand.
 5. **`OHCAMEL_ALERT_URL`** in `/etc/ohcamel/ops.env` on the droplet; until then pages are logged only.
 6. **The VaR window**: the book's `(risk ((var_window ...)))` defaults to 250; to keep the old 60, write
@@ -153,12 +159,16 @@ None of these is the agent's to do. The order is the order of dependence.
     40–60 minutes if every name were SPY-sized, and a wall-clock kill loses the night). Record it.
 12. **The EODHD decision** (about $20 a month): the delisted-name build is switched off; if bought, run
     `tools/accept_delisted.py`. The delisted-fixture test skips until then.
-13. **The Day 6 reset** (after 1 and 4): regenerate, deploy `--live`, lift the halt. The agent then verifies read-only.
+13. **The Day 6 reset** (after 1 and 4): regenerate by the recipe in *Changing the book* (all six changes, not two),
+    deploy `--live`, lift the halt. The agent then verifies read-only.
+14. **Before lifting the halt, check for splits.** The per-strategy record carries no split adjustment, so a split
+    or reverse split in a held name (USO and UNG, both on the roster, have reverse-split history) reads as a
+    gain or loss of the ratio and can latch a stop the next night. Check the roster's names for a split since the
+    last close, and if one happened, flatten or hold that name by hand before lifting the halt.
 
-Known and deferred, from the reviews (the whole-branch review reads this list): `cov_league` catches a `ValueError` per
-universe, so one DCC failure can skip the ETF universe and the overlay falls back (entrants must be isolated per
-estimator); `report.py`'s pooled-test note says the record is null until Stage 3 (false on the live host); the INC-02
-approval parser reads an ISO date only; `web/execution.js` does not render the new per-fill cost fields.
+Known and deferred, from the reviews (the whole-branch review reads this list): the INC-02 approval parser reads an
+ISO date only; `web/execution.js` does not render the new per-fill cost fields. (Fixed in the final review: a
+`cov_league` entrant that raises is now skipped alone, and `report.py`'s Stage 3 note is gone.)
 
 ## Earlier state, as of 2026-10-27 to 2026-10-31 (superseded by the section above)
 
@@ -280,7 +290,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2669<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2682<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -984,6 +994,19 @@ retention, nothing to deploy), with the checkout's `roster.yaml` and `costs.yaml
 (they could be older than the sha) and no `PYTHONPATH`. **Untested against Docker: run it once and read `vols.json`
 (every farm row a number, no `why`) before relying on it. If SQLite cannot read the live WAL file through a `:ro`
 mount ("unable to open database file"), the run fails and writes nothing: say so rather than dropping `:ro`.**
+Two ways around that without dropping `:ro`: run it while the worker is up, so jobs.sqlite's `-wal` and `-shm` files
+already exist beside it (SQLite cannot create them on a read-only mount, but can read existing ones); or take a
+consistent copy first with SQLite's online backup (the `sqlite3 .backup` command; the worker image may not carry the
+`sqlite3` CLI, so through its Python):
+
+```
+docker exec ohcamel-ohcamel-worker-1 /app/quant/.venv/bin/python -c "import sqlite3; \
+  sqlite3.connect('file:/data/jobs.sqlite?mode=ro', uri=True).backup(sqlite3.connect('/tmp/jobs-copy.sqlite'))"
+docker cp ohcamel-ohcamel-worker-1:/tmp/jobs-copy.sqlite ~/jobs-copy.sqlite
+```
+
+and point `book_vols` at the copy by adding `-v ~/jobs-copy.sqlite:/data/jobs.sqlite:ro` to the `docker run` below
+(a file bind over the volume's own `jobs.sqlite`; the warehouse still comes from the volume).
 
 ```
 # on the droplet, in a checkout of the sha; the running worker's image supplies the dependencies
@@ -1237,13 +1260,29 @@ OHCAMEL_TAG="$(git rev-parse HEAD)" docker compose -f deploy/docker-compose.yml 
 `env_file` (below). A restart of `ohcamel-live` drops the Alpaca stream, so do
 it outside 09:25-17:10 New York time.
 
-The live `book.sexp` is `book.example.sexp` with two blocks changed: `(trading
-enabled)`, and the `alerts` block armed (`(enabled true)`,
-`(kill_switch_enabled true)`, `(kill_switch_trips_on (book-cap var-cap dd-cap))`,
-since 2026-10-27). A change to the example -- the per-name `(stale_after_s N)`
-thresholds, say -- is carried over by regenerating it with both edits, the old
-one archived beside the earlier copies in `~/book-archive/`, then a `diff`
-against the archived book that shows only the example's own change, then
+The live `book.sexp` is `book.example.sexp` with these six words set as below, and
+no others changed. Four differ from the example (1, 2, 4 and 6); two match it and
+must stay as the example has them (3, and 5 unless the owner keeps 60):
+
+1. `(trading enabled)` in the desk block (the example ships `disabled`).
+2. `(kill_switch_enabled true)` in the `alerts` block (the example ships `false`).
+3. `(kill_switch_trips_on (book-cap es-cap dd-cap))` -- the example's own list.
+   `var-cap` is a non-tripping alert since Task 1.9; do not put it back in the
+   list (the INC-01 book's `(book-cap var-cap dd-cap)` is the old one).
+4. `(reduce_through_trip false)` in the desk block, unless the owner has approved
+   ruling R2 -- the example ships `true`.
+5. `(risk ((var_window ...)))`: the example's 250 is the default; write 60 to keep
+   the window the desk had before Task 1.9 (OWNER-PENDING 6).
+6. Every strategy's `(ex_ante_vol F)`: the example's farm rows carry
+   `(ex_ante_vol 0.075) (ex_ante_vol_source placeholder)`, which `check-book`
+   refuses under `(trading enabled)`. Write the measured values with
+   `book_vols` and `tools/book_ex_ante_vol.py` (*Getting the book's ex-ante
+   volatilities*).
+
+A change to the example -- the per-name `(stale_after_s N)` thresholds, say --
+is carried over by regenerating it with all six edits, the old one archived
+beside the earlier copies in `~/book-archive/`, then a `diff` against the
+archived book that shows only the example's own change and these six, then
 `check-book`, then the restart above.
 
 ### A sub-ledger break

@@ -60,8 +60,8 @@ account's position with the sum in the Alpaca paper dashboard.
 
 **Owner action:** follow "A sub-ledger break" in `docs/status.md`: find the trade made outside the desk (a trade on
 the Alpaca dashboard, a corporate action, a fill the desk never heard of), reverse it at the venue so the account
-returns to the sub-ledger's sum, and let the next two checks find the name whole. A desk ticket never clears a
-break.
+returns to the sub-ledger's sum, and let the next check find the name whole: one whole check clears a break. A
+desk ticket never clears a break.
 
 ## Completions exhausted
 
@@ -78,6 +78,13 @@ and fills tables show which orders ended unfilled and why (halted names, a close
 **Owner action:** usually nothing today: it retries tomorrow. If the cause is a name the venue will not trade or
 a halted desk, fix that. If a stopped strategy still holds shares that matter, flatten them by hand at the venue
 after reading the dashboard. Do not restart the live container during 09:25-17:10 ET to "retry".
+
+A latched stop's flatten can also be refused by the pre-trade gate, not the venue. A stop's flatten is waived past
+the exposure limits only (book, class and name caps); a VaR or ES limit is still judged. In a netted pair -- two
+strategies holding opposite sides of one name, or a hedge leg -- closing one strategy's leg can create or worsen a
+`var-cap` or `es-cap` breach, and that flatten is refused each time until completions run out. The refusal is in
+the log beside the `was tried` line. That is the owner's call: flatten the pair together by hand at the venue (the
+desk never un-stops a strategy; only the book's `(reinstated DATE)` does).
 
 ## A stale overlay
 

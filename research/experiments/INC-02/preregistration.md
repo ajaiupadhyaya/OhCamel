@@ -4,9 +4,10 @@
 session trades, and the kill switch is not reset, until the owner's approval is recorded under *Approval* at
 the bottom. Drafted by the agent on 2026-11-24 from `docs/superpowers/specs/2026-11-15-the-completion.md`
 (*Research*; rulings R1 and R4). Under `docs/CHARTER.md` the owner owns hypotheses and kill decisions, and
-R4 says INC-02 is written by the owner from this draft: every numbered line below is the owner's to approve,
+ruling R4 says INC-02 is written by the owner from this draft: every numbered line below is the owner's to approve,
 change or strike, and each is marked *(awaiting approval)* until then. A line marked *agent's proposal* fills
-a gap the spec leaves open; the spec does not fix it.
+a gap the spec leaves open; the spec does not fix it. The roster's lines are labelled Roster-1 to Roster-6 so that
+they cannot be read as the completion spec's rulings R1-R6, which this file cites only as "ruling R*n*".
 
 INC-02 tests one hypothesis: that the pooled incubation book's Sharpe ratio is above zero. The statistic is
 the book's daily return, net of costs, over the 500 sessions from its first fill. The null is a Sharpe of zero
@@ -64,7 +65,7 @@ fixture proxy's volatility of 0.026 to 0.039 a year (*The drawdown cap, on its m
 Raw returns with no `r_f` at all would count the rates cells' T-bill carry as edge. The power in T5 is
 against the true Sharpe of whichever statistic the owner approves. *(awaiting approval)*
 
-T2. **The horizon.** 500 NYSE sessions from INC-02's first fill, the canary sessions (R4) included. A session
+T2. **The horizon.** 500 NYSE sessions from INC-02's first fill, the canary sessions (Roster-4) included. A session
 in which the desk is halted or tripped, or holds nothing, still counts, with the return it had (zero when
 flat). *(agent's proposal)* *(awaiting approval)*
 
@@ -109,7 +110,7 @@ two together), and its farm rows are the farm's cells (`quant/tests/test_signals
 functions of `quant/src/ohcamel_quant/backtest/strategies.py`, called by `signals.daily` as the farm calls
 them; universes are `quant/src/ohcamel_quant/universes.json`'s groups.
 
-R1. **The roster** is these 22 rows. *(awaiting approval)*
+Roster-1. **The roster** is these 22 rows. *(awaiting approval)*
 
 | Slug | Producer | Rule | Universe | Fraction |
 |---|---|---|---|---|
@@ -136,22 +137,36 @@ R1. **The roster** is these 22 rows. *(awaiting approval)*
 | `farm_st_reversal_sectors` | `signals.daily` | `st_reversal` (Lehmann 1990) | sectors | 0.025 |
 | `farm_pairs_distance_sectors` | `signals.daily` | `pairs_distance` (Gatev, Goetzmann & Rouwenhorst 2006) | sectors | 0.025 |
 
-R2. **Two rows of INC-01 are gone.** `farm_pairs_coint_sectors`: `pairs_coint` takes two tickers and was given
+Roster-2. **Two rows of INC-01 are gone.** `farm_pairs_coint_sectors`: `pairs_coint` takes two tickers and was given
 eleven, and the farm dropped the cell in completion task 2.4. EXP-Q01's held slot (`q01_ls_quintile`): Q01's
 own pre-registration says "Nothing reaches the desk under any verdict". *(awaiting approval)*
 
-R3. **Capital.** Every row at `capital_fraction` 0.025: 22 × 0.025 = 0.55, and `incubation_cap` **0.55**, a
+Roster-3. **Capital.** Every row at `capital_fraction` 0.025: 22 × 0.025 = 0.55, and `incubation_cap` **0.55**, a
 proportional ceiling (C18), so nothing is held back and the cap scales nothing. `vol_target` 0.10, as in
 INC-01. *(awaiting approval)*
 
-R4. **The canary**, as in INC-01: the first three sessions run at `incubation_cap` 0.10 over the same roster
+Roster-4. **The canary**, as in INC-01: the first three sessions run at `incubation_cap` 0.10 over the same roster
 (each strategy at 0.025 × 0.10 / 0.55 ≈ 0.0045), and the owner raises it to 0.55 after reading their record.
 *(awaiting approval)*
 
-R5. **The roster is fixed for the 500 sessions.** A stopped strategy's slot stays in the pool and holds cash;
+Roster-5. **The roster is fixed for the 500 sessions.** A stopped strategy's slot stays in the pool and holds cash;
 adding a strategy (each of EXP-I01–I03 after its own approval and battery) or removing one starts a new
 experiment. *(agent's proposal: a pooled test of a changing book tests nothing in particular)*
 *(awaiting approval)*
+
+Roster-6. **INC-01's inventory, before INC-02's first session.** The desk has been halted by hand since
+2026-11-16 holding INC-01's positions, and INC-02's roster reuses INC-01's slugs, so whatever a slug still holds
+would enter INC-02's record from its first session. Two ways, and the owner chooses one:
+
+- (a) **Flatten first.** Before the first INC-02 session, INC-01's carried positions are flattened (by hand at the
+  venue, or by a zero-target document per strategy), so every INC-02 strategy starts flat and its first fill is
+  INC-02's. The pooled test's series then starts at a clean first fill.
+- (b) **Carry them in.** The carried positions stay and enter INC-02 sized as INC-01 sized them, until each
+  strategy's first INC-02 rebalance re-sizes it; their P&L from the first session counts in the pooled test, and
+  that is stated beside the result.
+
+The agent recommends (a): a test "from INC-02's first fill" should not open on positions INC-02 did not take.
+*(agent's proposal, awaiting approval)*
 
 ## Stops
 
@@ -263,7 +278,7 @@ INSUFFICIENT DATA keeps last month's parameters. A cell with none is not emitted
 in the producer's artifact. The farm's nightly re-selection never reaches the book inside a month.
 (`quant/src/ohcamel_quant/signals/freeze.py`, `KEEPS_LAST_MONTH`.) *(awaiting approval)*
 
-F2. **What F1 does under the gates of ruling R3, stated plainly.** R3 (which itself awaits the owner) makes a
+F2. **What F1 does under the gates of ruling R3, stated plainly.** Ruling R3 (which itself awaits the owner) makes a
 cell whose out-of-sample record has data in fewer than 3 of the 7 regimes of `research/config/regimes.yaml`
 read INSUFFICIENT DATA, and F1 then keeps last month's parameters, while `signals.daily` marks the cell
 `unvalidated`. Incubation sizes whatever the validation says, so sizing does not change. But the table's last
@@ -279,8 +294,21 @@ F1 means:
 - a cell that has never had parameters is never emitted, so it never trades;
 - the page shows them `unvalidated` for the whole of INC-02.
 
+Two further facts about F1 under ruling R3, stated so the owner approves them knowingly *(agent's proposal, awaiting
+approval)*:
+
+- **A transient INSUFFICIENT DATA case.** A cell carried forward from before the one regime file
+  (`research/config/regimes.yaml`) holds another table's regime rows and reads INSUFFICIENT DATA with the detail
+  "REGIMES SCORED ON AN EARLIER TABLE · AWAITS A RE-RUN" (`quant/src/ohcamel_quant/models/farm.py`) until the farm
+  re-runs it. Under F1 such a cell keeps last month's parameters for as long as that lasts, though nothing about
+  the cell itself is insufficient.
+- **Where pinned parameters come from.** Parameters F1 keeps from a month before completion task 2.4 were
+  selected by the pre-2.4 farm: default leverage (not gross 1), the close fill (not the next open) and a flat cost
+  (not the cost file's tiers). A cell pinned to them trades parameters chosen under a configuration it does not
+  trade, until the farm's selection at the traded configuration reaches it.
+
 The owner approves F1 and F2 as they stand, changes them (for instance: an INSUFFICIENT DATA cell takes the
-farm's newest selection like any other verdict, or the sector cells leave the roster and R1 and R3 are
+farm's newest selection like any other verdict, or the sector cells leave the roster and Roster-1 and Roster-3 are
 re-equalised), or strikes them. *(awaiting approval)*
 
 ## INC-01's clauses that awaited the owner's confirmation
