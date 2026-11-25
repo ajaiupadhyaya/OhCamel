@@ -116,9 +116,20 @@ def test_the_ten_day_fhs_path_is_conditional_where_the_copula_is_iid(rets):
 
     x = rets[["SPY"]].to_numpy()
     fit = fit_gjr(x[:, 0])
-    hot = GarchParams.from_fits([fit])
-    hot.sigma2_next[:] = 9.0 * float(np.var(100 * x[:, 0]))        # a start at three times the usual volatility
-    w = np.array([1.0])
-    fhs = kernels.fhs_paths(residual_matrix([fit]), hot, w, 10, 40_000, 5, 1)
+    usual = float(np.var(100 * x[:, 0]))
+    z, w = residual_matrix([fit]), np.array([1.0])
+
+    def start(mult: float):
+        g = GarchParams.from_fits([fit])
+        g.sigma2_next[:] = mult * usual
+        return g
+
+    hot = kernels.fhs_paths(z, start(9.0), w, 10, 40_000, 5, 1)      # three times the usual volatility
+    calm = kernels.fhs_paths(z, start(1.0), w, 10, 40_000, 5, 1)
+    hot_1d = kernels.fhs_paths(z, start(9.0), w, 1, 40_000, 5, 1)
     iid = kernels.copula_t_paths(x, w, 6.0, 10, 40_000, 5, 1)
-    assert np.var(fhs) > np.var(iid)
+    assert np.var(hot) > np.var(iid)
+    assert np.var(hot) > 2 * np.var(calm)                  # the start matters: today's variance is carried forward
+    # ... but it is carried THROUGH the horizon, not held: variance mean-reverts, so 10 days of it is less than 10
+    # constant-rescaled days of the hot first day
+    assert np.var(hot) < 0.95 * 10 * np.var(hot_1d)

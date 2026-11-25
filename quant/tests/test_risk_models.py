@@ -345,14 +345,25 @@ def test_evt_is_conditional_on_todays_volatility():
 
 
 def test_evt_conditional_error_is_the_sigma_forecast_not_the_tail_fit():
-    """Across seeds the typical error is small; a single draw can exceed 10% because sigma_{T+1} itself is estimated
-    (the GARCH parameters carry noise), which is why the headline test pins a seed and this one pins the median."""
+    """Across seeds the typical error is small; a single draw can exceed 10% because sigma_{T+1} itself is
+    estimated and the GJR filter, fitted to a symmetric GARCH series, overreacts to the run of large losses at the
+    end and biases sigma-hat upward (review of Task 4.4). That is why the headline test pins a seed and this one pins
+    the median; the next test isolates the tail fit from sigma-hat."""
     errs = []
     for seed in range(6):
         r, sigma_next, q, mu = _simulate_garch(4000, seed=seed, shocks_last=(-3.0, -3.5, -3.0, -4.0))
         truth = -mu + sigma_next * q
         errs.append(abs(vm.evt_pot(r, 0.99).var / truth - 1))
     assert float(np.median(errs)) < 0.10 and max(errs) < 0.25
+
+
+def test_evt_tail_fit_alone_is_within_ten_percent_for_every_seed():
+    """(VaR + mu-hat) / sigma-hat is the residual quantile the GPD produced: it must match the innovation's true 99%
+    quantile q whatever sigma-hat did, for every seed."""
+    for seed in range(8):
+        r, _, q, _ = _simulate_garch(4000, seed=seed, shocks_last=(-3.0, -3.5, -3.0, -4.0))
+        p = vm.evt_pot(r, 0.99)
+        assert (p.var + p.params["mu"]) / p.params["sigma_next"] == pytest.approx(q, rel=0.10), seed
 
 
 def test_evt_threshold_is_taken_on_the_residuals_and_rescaled_by_the_forecast_sigma():

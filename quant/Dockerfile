@@ -253,7 +253,9 @@ EOF
 # use, so it starts writable by `quant`. /tmp is a tmpfs under compose's
 # read-only root; XDG caches point into it so no library tries $HOME.
 # OHCAMEL_QUANT_KERNELS=rust: the kernels dispatcher raises at import if the
-# wheel is missing or stale -- production never silently falls back to NumPy.
+# wheel is missing or stale -- production never silently falls back to NumPy. The one exception is a kernel
+# the baked-in docs/perf/kernels.json sends to the reference on THIS CPU (a row measured on the build host's
+# CPU model; none matches a CI runner, so the build keeps every kernel on Rust).
 ENV PATH=/app/quant/.venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -270,7 +272,8 @@ import lightgbm, pathlib; assert pathlib.Path('/app/research/experiments/EXP-Q01
 assert pathlib.Path('/app/interface/signal.schema.json').is_file() and pathlib.Path('/app/book.example.sexp').is_file(); \
 import ohcamel_quant.backtest.costs as cf; assert cf.COSTS_PATH.is_file() and cf.load().tickers, cf.COSTS_PATH; \
 assert a.WEB_DIST.is_dir(), a.WEB_DIST; assert (c.get_settings().fixtures_dir / 'history').is_dir(); \
-assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n in k.API), [n for n in k.API if k.engine_of(n) != 'rust']; \
+assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n in k.API if k.TABLE_ENGINE.get(n) != 'python'), [n for n in k.API if k.engine_of(n) != 'rust']; \
+assert set(k.TABLE_ENGINE) <= set(k.TABLE_DISPATCHED), k.TABLE_ENGINE; \
 print('routes:', len(a.app.routes), 'kernels:', k.ENGINE)"
 
 USER quant

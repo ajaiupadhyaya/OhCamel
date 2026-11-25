@@ -73,7 +73,9 @@ def test_ci_native_job_builds_the_wheel_and_runs_parity_both_ways():
 
 
 def test_image_asserts_every_kernel_runs_on_rust():
-    assert "all(k.engine_of(n) == 'rust' for n in k.API)" in DOCKERFILE
+    # ... except a kernel the baked-in table sends to the reference on the build CPU (none matches a CI runner)
+    assert "all(k.engine_of(n) == 'rust' for n in k.API if k.TABLE_ENGINE.get(n) != 'python')" in DOCKERFILE
+    assert "set(k.TABLE_ENGINE) <= set(k.TABLE_DISPATCHED)" in DOCKERFILE
 
 
 def test_image_checks_the_wheel_against_the_dispatchers_own_api_version():

@@ -290,8 +290,13 @@ export function modelInfo(model: string): Info {
 }
 
 export const modelLabel = (m: string) => MODEL_LABEL[m] ?? m;
+/** The rolling backtest's EVT is the unconditional tail; the live evt_pot is GARCH-conditional (Task 4.4). */
+export const backtestLabel = (m: string) => (m === "evt_pot" ? "EVT (POT, unconditional)" : modelLabel(m));
 
 /** Models whose volatility is conditional on the recent past. */
 export const CONDITIONAL_MODELS = ["ewma", "garch", "gjr_garch", "fhs"];
+/** Conditional by the estimate's own flag: evt_pot is GARCH-conditional unless it fell back (params.conditional). */
+export const isConditional = (e: { model: string; params?: Record<string, unknown> }) =>
+  CONDITIONAL_MODELS.includes(e.model) || (e.model === "evt_pot" && e.params?.conditional === true);
 /** Unconditional, fat-tail aware models. */
 export const FAT_TAIL_MODELS = ["historical", "student_t", "evt_pot"];

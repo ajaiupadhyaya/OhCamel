@@ -80,16 +80,16 @@ def cpu_model() -> str:
     return name or "unknown CPU"
 
 
-def faster_engine(doc: Any, name: str, host: str | None = None) -> str | None:
-    """Which engine the table says is faster for kernel ``name`` (``"python"`` or ``"rust"``; a tie keeps the
-    kernel), or ``None`` when the table has no row for it. A row whose ``host`` is ``host`` outranks any other
-    host's; among equals the last row in the file wins, so a newer measurement replaces an older one. The row
-    is one problem size (``SIZES``): the verdict is for that size, and nothing is extrapolated."""
-    rows = [r for r in validate_table(doc) if r["name"] == name]
+def faster_engine(doc: Any, name: str, host: str | None) -> str | None:
+    """Which engine the table says is faster for kernel ``name`` on ``host`` (``"python"`` or ``"rust"``; a tie
+    keeps the kernel), or ``None`` when no row for ``name`` was measured on exactly that host. Only a row from the
+    running CPU governs: a laptop's or a CI runner's row says nothing about another machine, so without a match the
+    kernel stays on the wheel. Among rows of one host the last in the file wins (a newer run replaces an older).
+    The row is one problem size (``SIZES``): the verdict is for that size, and nothing is extrapolated."""
+    rows = [r for r in validate_table(doc) if r["name"] == name and host is not None and r["host"] == host]
     if not rows:
         return None
-    mine = [r for r in rows if host is not None and r["host"] == host]
-    r = (mine or rows)[-1]
+    r = rows[-1]
     return "python" if r["python_ms"] < r["rust_1t_ms"] else "rust"
 
 

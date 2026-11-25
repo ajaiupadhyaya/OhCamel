@@ -151,11 +151,18 @@ class _FakeWheel(types.SimpleNamespace):
         raise AssertionError("garch_fit must not reach Rust when the table says Python is faster")
 
 
-def _write_table(path, python_ms, rust_ms):
+@pytest.fixture(autouse=True)
+def _host(monkeypatch):
+    from ohcamel_quant.kernels import bench
+
+    monkeypatch.setattr(bench, "cpu_model", lambda: "Test CPU")
+
+
+def _write_table(path, python_ms, rust_ms, host="Test CPU"):
     import json
 
     row = {"name": "garch_fit", "python_ms": python_ms, "rust_1t_ms": rust_ms, "rust_2t_ms": None,
-           "host": "Test CPU", "measured_on": "test box", "sha": "0b87dec"}
+           "host": host, "measured_on": "test box", "sha": "0b87dec"}
     path.write_text(json.dumps({"kernels": [row]}))
 
 
@@ -199,3 +206,25 @@ def test_forced_engine_overrides_the_table(reload_kernels, monkeypatch, tmp_path
     k = reload_kernels("rust", fake)
     with k.forced("rust"):
         assert k.engine_of("garch_fit") == "rust"
+
+
+def test_a_row_from_another_host_never_governs(reload_kernels, monkeypatch, tmp_path):
+    """The image bakes the table in: a laptop's or a CI runner's row must leave the droplet's kernel on Rust."""
+    t = tmp_path / "kernels.json"
+    _write_table(t, 3.0, 20.0, host="Apple M2 Pro")
+    monkeypatch.setenv("OHCAMEL_QUANT_KERNEL_TABLE", str(t))
+    fake = types.SimpleNamespace(API_VERSION=reload_kernels(None, None).API_VERSION, garch_fit=lambda *a: None)
+    k = reload_kernels("rust", fake)
+    assert k.TABLE_ENGINE == {} and k.engine_of("garch_fit") == "rust"
+
+
+def test_the_committed_table_keeps_every_kernel_on_rust_on_a_host_it_has_no_row_for(reload_kernels, monkeypatch):
+    """What quant/Dockerfile's build-time assertion relies on."""
+    monkeypatch.delenv("OHCAMEL_QUANT_KERNEL_TABLE", raising=False)
+    from ohcamel_quant.kernels import bench
+
+    monkeypatch.setattr(bench, "cpu_model", lambda: "Some CI Runner CPU")
+    fake = types.SimpleNamespace(API_VERSION=reload_kernels(None, None).API_VERSION,
+                                 **{n: (lambda *a: None) for n in kernels.API})
+    k = reload_kernels("rust", fake)
+    assert k.TABLE_ENGINE == {} and all(k.engine_of(n) == "rust" for n in k.API)

@@ -11,7 +11,7 @@ import { fmtCompact, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
 import { frameToMatrix } from "../../lib/series";
 import type { PortfolioIn } from "../../lib/types";
-import { CONDITIONAL_MODELS, INFO, modelInfo, modelLabel } from "../portfolio/info";
+import { INFO, backtestLabel, isConditional, modelInfo, modelLabel } from "../portfolio/info";
 import { KV, PValue, PctUsd, Readline, RunButton, ShareRows, ZoneChip, asDates, esVerdict, useCommitted, usd } from "../portfolio/shared";
 import type { BacktestOut, DecompPosition, DecompositionOut, Estimate, GarchOut, LiquidityLine, LiquidityOut, RiskSummaryOut, Scorecard } from "../portfolio/types";
 import { splitBreaches } from "./breaches";
@@ -23,6 +23,7 @@ const ALPHAS: { value: Alpha; label: string }[] = [
 ];
 const lvl = (a: number | string) => fmtNum(Number(a) * 100, 0);
 const MODEL = (m: string) => modelLabel(m).toUpperCase();
+const BT_MODEL = (m: string) => backtestLabel(m).toUpperCase();
 
 /** `alpha` and `horizon` seed the controls (the /risk?alpha=&h= link); they stay free after that. */
 export function RiskSections({ req, alpha = "0.99", horizon = "1" }: { req: PortfolioIn; alpha?: Alpha; horizon?: "1" | "10" }) {
@@ -82,8 +83,8 @@ function SummaryLine({ d }: { d: RiskSummaryOut }) {
     const xs = valid.filter(pick).map((e) => e.var);
     return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
   };
-  const cond = mean((e) => CONDITIONAL_MODELS.includes(e.model));
-  const uncond = mean((e) => !CONDITIONAL_MODELS.includes(e.model));
+  const cond = mean((e) => isConditional(e));
+  const uncond = mean((e) => !isConditional(e));
   return (
     <Readline
       items={[
@@ -357,7 +358,7 @@ function BacktestSection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alph
         skeletonHeight={360}
         notes={[]}
         asOf={asOf}
-        actions={q.data ? <Select ariaLabel="Model" value={shown} onChange={setModel} options={q.data.ranking_by_fz0.map((m) => ({ value: m, label: MODEL(m) }))} /> : undefined}
+        actions={q.data ? <Select ariaLabel="Model" value={shown} onChange={setModel} options={q.data.ranking_by_fz0.map((m) => ({ value: m, label: BT_MODEL(m) }))} /> : undefined}
       >
         {(d) => <BacktestChart d={d} model={shown} />}
       </Panel>
@@ -372,7 +373,7 @@ function Scorecards({ d, active, onPick }: { d: BacktestOut; active: string; onP
   const is99 = Math.abs(d.alpha - 0.99) < 1e-9;
   const cols: Column<CardRow>[] = [
     { key: "rank", label: "#", numeric: true, width: 28, info: INFO.fz0 },
-    { key: "model", label: "Model", render: (r) => <span className="pl-model-name">{MODEL(r.model)}</span> },
+    { key: "model", label: "Model", render: (r) => <span className="pl-model-name">{BT_MODEL(r.model)}</span> },
     {
       key: "exceptions",
       label: "Breaches",
@@ -470,7 +471,7 @@ function BacktestChart({ d, model }: { d: BacktestOut; model: string }) {
           ]}
         />
       )}
-      <XYChart time x={s.dates} series={series} yFormat="pct" digits={2} height={340} zero ariaLabel={`Daily portfolio returns against ${modelLabel(model)} VaR and ES, ${count} breaches`} />
+      <XYChart time x={s.dates} series={series} yFormat="pct" digits={2} height={340} zero ariaLabel={`Daily portfolio returns against ${backtestLabel(model)} VaR and ES, ${count} breaches`} />
     </>
   );
 }

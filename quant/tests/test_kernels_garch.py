@@ -54,24 +54,32 @@ def test_nll_rejects_bad_input(spy):
         kernels.garch_nll([0.0] * 4, y, "garch")
 
 
+#: garch_fit follows the benchmark table (Task 4.4), so each engine is forced: the shipped Rust fit stays under test.
+ENGINES = ["python", *(["rust"] if kernels._RUST is not None else [])]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
 @pytest.mark.parametrize("kind", ["garch", "gjr"])
-def test_fit_matches_fit_garch_fast(spy, kind):
+def test_fit_matches_fit_garch_fast(spy, kind, engine):
     # compute plan A5: within 1e-4 of fit_garch_fast on SPY (relative for nu, which is large),
     # at a likelihood at least as good, with the same next-day variance
     r = spy[-1000:]
     fast = gm.fit_garch_fast(r, kind)
-    got = kernels.garch_fit(100.0 * r, kind, None)
+    with kernels.forced(engine):
+        got = kernels.garch_fit(100.0 * r, kind, None)
     np.testing.assert_allclose(got.params, fast.x, rtol=1e-4, atol=1e-4)
     assert got.nll <= -fast.loglik + 1e-6 * abs(fast.loglik)
     assert got.next_variance == pytest.approx(fast.next_variance_pct, rel=1e-3)
 
 
-def test_fit_warm_start_is_cheaper(spy):
+@pytest.mark.parametrize("engine", ENGINES)
+def test_fit_warm_start_is_cheaper(spy, engine):
     y = 100.0 * spy[-1000:]
-    cold = kernels.garch_fit(y, "gjr", None)
-    warm = kernels.garch_fit(y, "gjr", cold.params)
+    with kernels.forced(engine):
+        cold = kernels.garch_fit(y, "gjr", None)
+        warm = kernels.garch_fit(y, "gjr", cold.params)
     assert warm.nll <= cold.nll + 1e-9 * abs(cold.nll)
-    if kernels.engine_of("garch_fit") == "rust":
+    if engine == "rust":
         assert warm.iterations < cold.iterations
 
 

@@ -130,19 +130,21 @@ def test_validate_requires_a_host():
         bench.validate_table({"kernels": [{k: v for k, v in ROW.items() if k != "host"}]})
 
 
-def test_faster_engine_is_whichever_the_row_measured_faster():
-    assert bench.faster_engine(_doc({"python_ms": 3.0, "rust_1t_ms": 20.0}), "garch_fit") == "python"
-    assert bench.faster_engine(_doc({"python_ms": 30.0, "rust_1t_ms": 2.0}), "garch_fit") == "rust"
-    assert bench.faster_engine(_doc({"python_ms": 3.0, "rust_1t_ms": 3.0}), "garch_fit") == "rust"   # a tie keeps the kernel
-    assert bench.faster_engine(_doc(), "garch_fit") is None                                          # nothing measured
+def test_faster_engine_is_whichever_the_row_measured_faster_on_this_host():
+    h = "Test CPU @ 1.0GHz"
+    assert bench.faster_engine(_doc({"python_ms": 3.0, "rust_1t_ms": 20.0}), "garch_fit", h) == "python"
+    assert bench.faster_engine(_doc({"python_ms": 30.0, "rust_1t_ms": 2.0}), "garch_fit", h) == "rust"
+    assert bench.faster_engine(_doc({"python_ms": 3.0, "rust_1t_ms": 3.0}), "garch_fit", h) == "rust"   # a tie keeps the kernel
+    assert bench.faster_engine(_doc(), "garch_fit", h) is None                                          # nothing measured
 
 
-def test_a_row_measured_on_this_host_outranks_another_hosts():
+def test_only_a_row_measured_on_this_host_governs():
     doc = _doc({"python_ms": 3.0, "rust_1t_ms": 20.0, "host": "Laptop CPU"},
                {"python_ms": 30.0, "rust_1t_ms": 2.0, "host": "Droplet CPU"})
-    assert bench.faster_engine(doc, "garch_fit", host="Laptop CPU") == "python"
-    assert bench.faster_engine(doc, "garch_fit", host="Droplet CPU") == "rust"
-    assert bench.faster_engine(doc, "garch_fit", host="Other") == "rust"      # no match: the latest row
+    assert bench.faster_engine(doc, "garch_fit", "Laptop CPU") == "python"
+    assert bench.faster_engine(doc, "garch_fit", "Droplet CPU") == "rust"
+    assert bench.faster_engine(doc, "garch_fit", "Other") is None       # no match: no verdict, the kernel stays on the wheel
+    assert bench.faster_engine(doc, "garch_fit", None) is None
 
 
 def test_cpu_model_is_one_nonempty_line_without_pipes():

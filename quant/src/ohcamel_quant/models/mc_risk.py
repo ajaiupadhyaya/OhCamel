@@ -86,19 +86,23 @@ def _copula_loglik(u: np.ndarray, r: np.ndarray, nu: float) -> float:
     return float(np.sum(joint) - np.sum(stats.t.logpdf(t, nu)))
 
 
+def _profile(u: np.ndarray, r: np.ndarray, n_grid: int = 25) -> tuple[np.ndarray, np.ndarray]:
+    grid = np.geomspace(NU_BOUNDS[0], NU_BOUNDS[1], n_grid)
+    return grid, np.array([_copula_loglik(u, r, float(nu)) for nu in grid])
+
+
 def copula_nu_profile(x: np.ndarray, n_grid: int = 25) -> tuple[np.ndarray, np.ndarray]:
     """``(nu grid, copula log-likelihood)`` on a geometric grid over :data:`NU_BOUNDS`, R held at its Kendall estimate."""
     x = np.asarray(x, dtype=float)
     if x.ndim != 2 or x.shape[1] < 2:
         raise ValueError("the copula likelihood needs at least two assets")
-    u, r = _copula_inputs(x)
-    grid = np.geomspace(NU_BOUNDS[0], NU_BOUNDS[1], n_grid)
-    return grid, np.array([_copula_loglik(u, r, float(nu)) for nu in grid])
+    return _profile(*_copula_inputs(x), n_grid)
 
 
 def copula_nu(x: np.ndarray) -> float:
     """Degrees of freedom of the t-copula: the maximiser of its profile likelihood over nu in :data:`NU_BOUNDS`
-    (geometric grid to locate the peak, bounded Brent search between its neighbours to refine it).
+    (geometric grid to locate the peak, bounded Brent search between its neighbours to refine it, the result
+    rounded to the search's own tolerance, 1e-3, so a last-digit platform difference cannot move the pinned tables).
 
     One asset has no copula, so the single marginal's t MLE (clipped to the same bounds) stands in for it.
     """
@@ -108,14 +112,16 @@ def copula_nu(x: np.ndarray) -> float:
     if x.ndim == 2 and x.shape[1] == 1:
         z = (x[:, 0] - x[:, 0].mean()) / x[:, 0].std(ddof=1)
         return float(np.clip(fit_t_dof(z), *NU_BOUNDS))
-    grid, ll = copula_nu_profile(x)
+    if x.ndim != 2:
+        raise ValueError("the copula likelihood needs an n x k matrix")
+    u, r = _copula_inputs(x)
+    grid, ll = _profile(u, r)
     i = int(np.argmax(ll))
     if i in (0, grid.size - 1):                      # the likelihood is still rising at the bound: the bound is the answer
         return float(grid[i])
-    u, r = _copula_inputs(x)
     res = minimize_scalar(lambda nu: -_copula_loglik(u, r, nu), bounds=(grid[i - 1], grid[i + 1]),
                           method="bounded", options={"xatol": 1e-3})
-    return float(np.clip(res.x, *NU_BOUNDS))
+    return float(np.clip(round(float(res.x), 3), *NU_BOUNDS))
 
 
 @dataclass

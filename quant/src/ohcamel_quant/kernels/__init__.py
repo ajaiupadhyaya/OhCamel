@@ -89,7 +89,8 @@ TABLE_ENV = "OHCAMEL_QUANT_KERNEL_TABLE"
 
 def _load_table_engines() -> dict[str, Engine]:
     """``{kernel: "python"}`` (or ``"rust"``) from docs/perf/kernels.json (or $OHCAMEL_QUANT_KERNEL_TABLE) for the
-    dispatched kernels; ``{}`` when there is no wheel, no readable table or no row (those stay on the wheel)."""
+    dispatched kernels whose row was measured on THIS CPU (``bench.cpu_model()``); a kernel with no such row, no
+    wheel or no readable table stays on the wheel's engine (logged)."""
     if _RUST is None:
         return {}
     import json
@@ -106,6 +107,9 @@ def _load_table_engines() -> dict[str, Engine]:
     except (OSError, ValueError) as e:
         log.warning("kernel benchmark table unreadable (%s); dispatched kernels run on Rust", e)
         return {}
+    for n, e in picks.items():
+        if e is None:
+            log.info("no %s row in the kernel table was measured on %s; it stays on the wheel", n, host)
     return {n: e for n, e in picks.items() if e in ("rust", "python")}
 
 

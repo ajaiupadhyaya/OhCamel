@@ -566,12 +566,13 @@ discarded; nothing on the droplet automates that.
 
 ## Measuring the kernels on the droplet (OWNER-PENDING, Task 4.4)
 
-`garch_fit` runs on whichever engine `docs/perf/kernels.json` says is faster (`ohcamel_quant.kernels`,
-`TABLE_ENGINE`; `OHCAMEL_QUANT_KERNEL_TABLE` points it at another file). The committed rows were measured on a
-developer laptop (`host` = `Apple M2 Pro`) and say the NumPy reference is faster (2.96 ms against 20.07 ms), so
-that is what runs until a droplet row exists. A row whose `host` equals the CPU model of the running process
-outranks any other host's, so the droplet's own row takes over as soon as it is committed. `host` is read from
-the machine by the run (`/proc/cpuinfo`); it cannot be typed.
+`garch_fit` runs on whichever engine `docs/perf/kernels.json` says is faster **on the CPU it is running on**
+(`ohcamel_quant.kernels`, `TABLE_ENGINE`; `OHCAMEL_QUANT_KERNEL_TABLE` points it at another file). Only a row whose
+`host` equals the running process's CPU model governs; with no such row the kernel stays on the wheel's engine (Rust).
+The committed rows come from a developer laptop (`host` = `Apple M2 Pro`), so they never match the droplet, and any
+CI-runner row is likewise harmless (it never matches the droplet's CPU): today `garch_fit` runs on Rust in the image.
+`host` is read from the machine by the run (`/proc/cpuinfo`); it cannot be typed. The table is baked into the image
+(`COPY docs/perf/kernels.json`), so a committed droplet row takes effect only after a rebuild and redeploy.
 
 The agent never runs this. On the droplet, from `~/OhCamel` (the `dc` helper above), the run is read-only on the
 repository and writes to a scratch directory; it is offline (committed fixtures) and takes a few minutes, so run
