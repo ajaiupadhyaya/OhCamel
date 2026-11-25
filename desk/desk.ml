@@ -356,7 +356,11 @@ let var_score t =
   let seen_version, scored = t.var_score_seen in
   if version = seen_version then scored
   else
-    let scored = Var_score.(to_json (of_journal t.journal)) in
+    let scored =
+      Var_score.to_json
+        (if String.equal (venue_name t) Sim_venue.name then Var_score.simulated t.journal
+         else Var_score.of_journal t.journal)
+    in
     t.var_score_seen <- (version, scored);
     scored
 

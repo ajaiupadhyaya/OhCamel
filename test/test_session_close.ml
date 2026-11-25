@@ -684,7 +684,7 @@ let test_the_hypothetical_return_is_the_first_closes_positions () =
   let r =
     Score.hypothetical_returns
       ~sessions:[ date "2026-09-10"; date "2026-09-11" ]
-      ~marks:(marks_of marks)
+      ~marks:(marks_of marks) ~dividends:[]
   in
   Alcotest.(check (list (pair string (float 1e-12))))
     "keyed by the date the forecast was made"
@@ -722,7 +722,7 @@ let test_a_pair_that_cannot_be_priced_is_counted_not_guessed () =
              "2026-09-25";
            ]
            ~f:date)
-      ~marks:(marks_of marks)
+      ~marks:(marks_of marks) ~dividends:[]
   in
   Alcotest.(check (list (pair string (float 1e-12))))
     "09-09 holds only AAPL (XOM has no mark that day) and 09-10 is flat"
@@ -730,6 +730,74 @@ let test_a_pair_that_cannot_be_priced_is_counted_not_guessed () =
     (List.map r.Score.returns ~f:(fun (d, x) -> (Date.to_string d, x)));
   Alcotest.(check int)
     "08->09 (XOM held, no mark), 11->14 (flat book), 14->25 (a gap)" 3 r.Score.unscorable
+
+(* A cash dividend gone ex between the closes is not a loss: the raw close
+   falls by it. AAPL long 10 at 100 falls to 98 on its ex-date with a 2.00
+   dividend, so the hypothetical return is 10 * (98 - 100) + 10 * 2 = 0; a
+   short owes it, so XOM short 5 at 50 that falls to 48 with a 1.00 dividend
+   gains 5 * 2 and owes 5 * 1. A dividend gone ex before the first close or
+   after the second is not this pair's. *)
+let test_a_dividend_gone_ex_is_added_back () =
+  let marks =
+    table
+      [
+        ("2026-09-10", [ mark "2026-09-10" aapl 100.0 10.0 ]);
+        ("2026-09-11", [ mark "2026-09-11" aapl 98.0 10.0 ]);
+        ("2026-09-14", [ mark "2026-09-14" xom 50.0 (-5.0) ]);
+        ("2026-09-15", [ mark "2026-09-15" xom 48.0 (-5.0) ]);
+      ]
+  in
+  let dividend id symbol ex rate =
+    { Venue.Cash_dividend.id; symbol; ex_date = date ex; payable_date = None; rate }
+  in
+  let r =
+    Score.hypothetical_returns
+      ~sessions:(List.map [ "2026-09-10"; "2026-09-11" ] ~f:date)
+      ~marks:(marks_of marks)
+      ~dividends:
+        [
+          dividend "a" aapl "2026-09-11" 2.0;
+          dividend "early" aapl "2026-09-10" 5.0;
+          dividend "late" aapl "2026-09-12" 5.0;
+        ]
+  in
+  Alcotest.(check (list (pair string (float 1e-12))))
+    "the dividend offsets the fall"
+    [ ("2026-09-10", 0.0) ]
+    (List.map r.Score.returns ~f:(fun (d, x) -> (Date.to_string d, x)));
+  let short =
+    Score.hypothetical_returns
+      ~sessions:(List.map [ "2026-09-14"; "2026-09-15" ] ~f:date)
+      ~marks:(marks_of marks)
+      ~dividends:[ dividend "x" xom "2026-09-15" 1.0 ]
+  in
+  (* 5 * 2 (the fall) - 5 * 1 (owed) = 5, over gross 250. *)
+  Alcotest.(check (list (pair string (float 1e-12))))
+    "a short owes it"
+    [ ("2026-09-14", 5.0 /. 250.0) ]
+    (List.map short.Score.returns ~f:(fun (d, x) -> (Date.to_string d, x)))
+
+(* A close missed mid-week is two weekdays, not one: Wed to Fri is not a
+   1-day move. Fri to Mon is one. *)
+let test_a_missed_midweek_close_is_not_one_day () =
+  let held d p = [ mark d aapl p 10.0 ] in
+  let marks =
+    table
+      [
+        ("2026-09-09", held "2026-09-09" 100.0);
+        ("2026-09-11", held "2026-09-11" 90.0);
+        ("2026-09-14", held "2026-09-14" 91.0);
+      ]
+  in
+  let r =
+    Score.hypothetical_returns
+      ~sessions:(List.map [ "2026-09-09"; "2026-09-11"; "2026-09-14" ] ~f:date)
+      ~marks:(marks_of marks) ~dividends:[]
+  in
+  Alcotest.(check (list string))
+    "only Friday to Monday is scored" [ "2026-09-11" ]
+    (List.map r.Score.returns ~f:(fun (d, _) -> Date.to_string d));
+  Alcotest.(check int) "Wednesday to Friday is counted" 1 r.Score.unscorable
 
 (* A journal with [n] consecutive sessions from 2026-03-02 (every calendar day:
    the score reads dates, not a calendar), holding AAPL long 10 at 100 that
@@ -951,6 +1019,10 @@ let suite =
         `Quick test_the_hypothetical_return_is_the_first_closes_positions;
       Alcotest.test_case "SCORE: a pair that cannot be priced is counted, not guessed"
         `Quick test_a_pair_that_cannot_be_priced_is_counted_not_guessed;
+      Alcotest.test_case "SCORE: a dividend gone ex is added back" `Quick
+        test_a_dividend_gone_ex_is_added_back;
+      Alcotest.test_case "SCORE: a missed mid-week close is not one day" `Quick
+        test_a_missed_midweek_close_is_not_one_day;
       Alcotest.test_case "SCORE: published as counts, p-values and a light" `Quick
         test_a_score_is_published_as_counts_p_values_and_a_light;
       Alcotest.test_case "SCORE: fewer than sixty sessions says n of 60" `Quick

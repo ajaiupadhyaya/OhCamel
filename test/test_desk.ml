@@ -796,13 +796,20 @@ let test_api_desk_shows_the_last_thirty_sessions_and_the_latest_forecasts () =
       Alcotest.(check int)
         "all 32 counted" 32
         (Yojson.Safe.Util.to_int (field b "sessions"));
-      (* The score rides on the same body: this journal has 32 sessions and no
-         marks, so it is a count short of 60 and says so rather than a light. *)
+      (* The score rides on the same body, and on a simulated venue (this
+         desk's) it is declined: a reason and the newest session, no estimator
+         row, no light, no p-value. *)
+      let vs = field b "var_score" in
       Alcotest.(check string)
-        "var_score is on the body, and a short record has no light" "null"
-        (match Yojson.Safe.Util.(member "var_score" b |> member "scores" |> to_list) with
-        | [] -> "null"
-        | s :: _ -> Yojson.Safe.to_string (Yojson.Safe.Util.member "light" s));
+        "a simulated venue's sessions are not scored"
+        "simulated sessions: not a 1-day VaR, not scored"
+        Yojson.Safe.Util.(member "reason" vs |> to_string);
+      Alcotest.(check int)
+        "no estimator rows" 0
+        (List.length Yojson.Safe.Util.(member "scores" vs |> to_list));
+      Alcotest.(check string)
+        "as of the newest session" "2026-02-01"
+        Yojson.Safe.Util.(member "as_of" vs |> to_string);
       let shown = Yojson.Safe.Util.to_list (field b "recent_sessions") in
       let date_of s = Yojson.Safe.Util.(to_string (member "date" s)) in
       let equity_of s = Yojson.Safe.Util.(to_number (member "equity_close" s)) in

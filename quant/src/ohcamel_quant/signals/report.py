@@ -88,7 +88,9 @@ OVERLAY_COLUMNS = ["read_at", "exposure_scale", "governor", "governor_cap", "val
                    "reason", "vol_target", "vol_forecast", "vol_model", "cov_estimator", "inputs", "reported"]
 BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "limits", "desk_switch"]
 # /api/desk's var_score (desk/var_score.ml): the journaled forecasts tested against what happened, as counts,
-# p-values and a light. Public, so no column names a size, a loss, an exposure or a limit.
+# p-values and a light. Public, so no column names a size, a loss, an exposure or a limit. ``kupiec_p`` is
+# Kupiec's unconditional-coverage test and ``christoffersen_p`` Christoffersen's INDEPENDENCE test (not
+# conditional coverage). A simulated venue is not scored: one row, no estimator, ``message`` the reason.
 VAR_SCORE_COLUMNS = ["as_of", "source", "estimator", "window", "level", "n", "exceptions", "kupiec_p",
                      "christoffersen_p", "light", "message", "min_sessions", "other_window_sessions"]
 LIGHTS = ("green", "yellow", "red")
@@ -354,6 +356,11 @@ def _var_score(desk: dict[str, Any] | None, notes: list[str]) -> list[dict[str, 
     what they are about. A field that is not what the engine writes is None, with a note; nothing else on the
     wire object is copied."""
     raw = desk.get("var_score") if desk is not None else None
+    if isinstance(raw, dict) and isinstance(raw.get("reason"), str) and not raw.get("scores"):
+        return [{"as_of": raw.get("as_of") if isinstance(raw.get("as_of"), str) else None, "source": None,
+                 "estimator": None, "window": None, "level": None, "n": None, "exceptions": None,
+                 "kupiec_p": None, "christoffersen_p": None, "light": None, "message": raw["reason"],
+                 "min_sessions": None, "other_window_sessions": None}]
     if not isinstance(raw, dict) or not isinstance(raw.get("scores"), list):
         notes.append("var_score not read: GET /api/desk "
                      + ("was not read" if desk is None else "serves no var_score with a scores list"))

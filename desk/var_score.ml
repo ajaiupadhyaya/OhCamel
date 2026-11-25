@@ -20,14 +20,16 @@
    account's equity would not, since a trade during the session changes it
    without being a forecast error.
 
-   What it does not see: a distribution or split no record dates moves the
-   raw close like a loss (the close's own check, [Session_close.unrecorded_moves],
-   defers the drawdown rule for it, and this score does not); a name whose mark
+   What it does not see: a split no record dates moves the raw close like a
+   loss; a name whose mark
    of the next session is missing cannot be repriced and the pair is left out
    and counted; and a close not recorded between two sessions is a gap, not a
-   day, so a pair more than [max_gap_days] calendar days apart is left out and
-   counted. The journal holds no calendar, so a single missed mid-week close
-   (two days apart) is not told from a holiday weekend.
+   day, so a pair more than one weekday apart is left out and counted (a close
+   missed mid-week, and also the week around a holiday, since the journal holds
+   no calendar). Recorded cash dividends are added back to the return. A split
+   is not: the journal records no splits, so one that no one dated can still
+   read as a loss; the close's own check ([Session_close.unrecorded_moves])
+   defers the drawdown rule for it, and this score does not.
 
    WHICH WINDOW. Task 1.9 moved the return window from 60 to 250 sessions and
    journals it on every forecast. A series is never mixed across that move:
@@ -46,10 +48,6 @@
 open Core
 module VB = Ohcamel.Var_backtest
 
-(* A pair of recorded sessions further apart than this is not one day: a long
-   weekend with a holiday is four. *)
-let max_gap_days = 4
-
 (* The window a forecast journaled before the window was recorded was made
    over: every one of them, per the journal. *)
 let unrecorded_window = 60
@@ -62,8 +60,21 @@ type realised = {
   through : Date.t option;  (** The newest session a return runs to. *)
 }
 
+(* Weekdays in (d, next]: a Friday to Monday is one, a Wednesday to Friday is
+   two. The journal holds no holiday calendar, so a holiday's Monday-less week
+   reads as two and is left out and counted rather than scored as one day. *)
+let weekdays_between (d : Date.t) (next : Date.t) =
+  let rec go day n =
+    if Date.( >= ) day next then n
+    else
+      let day = Date.add_days day 1 in
+      go day (if Date.is_weekend day then n else n + 1)
+  in
+  go d 0
+
 let hypothetical_returns ~(sessions : Date.t list)
-    ~(marks : Date.t -> Journal.Mark.t list) : realised =
+    ~(marks : Date.t -> Journal.Mark.t list) ~(dividends : Venue.Cash_dividend.t list) :
+    realised =
   let cache = Date.Table.create () in
   let marks d = Hashtbl.find_or_add cache d ~default:(fun () -> marks d) in
   let pairs =
@@ -87,12 +98,28 @@ let hypothetical_returns ~(sessions : Date.t list)
           |> List.map ~f:(fun (m : Journal.Mark.t) -> (m.symbol, m.close))
           |> Ohcamel.Types.Symbol.Map.of_alist_reduce ~f:(fun _ later -> later)
         in
+        (* The marks are raw closes, which fall by a dividend on its ex-date:
+           that is not a loss, so each recorded cash dividend gone ex in (d,
+           next] is added back on the quantity held (a short owes it, so its
+           negative quantity subtracts). *)
+        let dividend (m : Journal.Mark.t) =
+          List.sum
+            (module Float)
+            dividends
+            ~f:(fun (c : Venue.Cash_dividend.t) ->
+              if
+                Ohcamel.Types.Symbol.equal c.symbol m.symbol
+                && Date.( > ) c.ex_date d && Date.( <= ) c.ex_date next
+              then m.qty *. c.rate
+              else 0.0)
+        in
         let changes =
           List.map held ~f:(fun m ->
-              Option.map (Map.find after m.symbol) ~f:(fun c -> m.qty *. (c -. m.close)))
+              Option.map (Map.find after m.symbol) ~f:(fun c ->
+                  (m.qty *. (c -. m.close)) +. dividend m))
         in
         if
-          Date.diff next d > max_gap_days
+          weekdays_between d next > 1
           || List.is_empty held || Float.( <= ) gross 0.0
           || List.exists changes ~f:Option.is_none
         then Error ()
@@ -121,6 +148,8 @@ type t = {
   scores : estimator_score list;
   other_window_sessions : int;
   unscorable : int;
+  reason : string option;
+      (** Why nothing was scored, when the desk declines to: a simulated venue. *)
 }
 
 let window_of (f : Journal.Forecast.t) =
@@ -139,6 +168,7 @@ let score ~(forecasts : Journal.Forecast.t list) ~(realised : realised) : t =
         scores = [];
         other_window_sessions = 0;
         unscorable = realised.unscorable;
+        reason = None;
       }
   | Some newest ->
       let window = window_of newest and level = newest.confidence in
@@ -175,6 +205,7 @@ let score ~(forecasts : Journal.Forecast.t list) ~(realised : realised) : t =
         scores;
         other_window_sessions;
         unscorable = realised.unscorable;
+        reason = None;
       }
 
 (* The newest 250 sessions' forecasts (251 sessions make 250 pairs): a year, the
@@ -195,11 +226,35 @@ let of_journal (journal : Journal.t) : t =
     | oldest :: _ -> Journal.forecasts_since journal ~date:oldest
   in
   score ~forecasts
-    ~realised:(hypothetical_returns ~sessions ~marks:(Journal.marks journal))
+    ~realised:
+      (hypothetical_returns ~sessions ~marks:(Journal.marks journal)
+         ~dividends:(Journal.cash_dividends journal))
+
+(* A simulated venue's sessions are not one trading day each: the demo journals
+   one every five minutes, builds its VaR from daily-return pushes every 15
+   seconds and moves prices on 400 ms ticks, so a forecast and its "realised"
+   are on different scales and a light would mean nothing. So it is not scored:
+   no light, no p-value, no count, only the reason and the newest session. *)
+let simulated_reason = "simulated sessions: not a 1-day VaR, not scored"
+
+let simulated (journal : Journal.t) : t =
+  {
+    window = None;
+    level = None;
+    as_of =
+      Option.map
+        (List.last (Journal.recent_sessions journal ~limit:1))
+        ~f:(fun s -> s.Journal.Session.date);
+    scores = [];
+    other_window_sessions = 0;
+    unscorable = 0;
+    reason = Some simulated_reason;
+  }
 
 let source =
   "Each close's journaled forecast, tested against the return its positions made over \
-   the next session"
+   the next session. kupiec_p is Kupiec's unconditional-coverage test and \
+   christoffersen_p is Christoffersen's independence test (not conditional coverage)"
 
 let to_json (t : t) : Yojson.Safe.t =
   let num x = if Float.is_finite x then `Float x else `Null in
@@ -243,5 +298,6 @@ let to_json (t : t) : Yojson.Safe.t =
       ("min_sessions", `Int VB.min_sessions);
       ("other_window_sessions", `Int t.other_window_sessions);
       ("unscorable_sessions", `Int t.unscorable);
+      ("reason", opt (fun r -> `String r) t.reason);
       ("scores", `List (List.map t.scores ~f:one));
     ]

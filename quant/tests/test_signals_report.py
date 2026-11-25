@@ -521,3 +521,13 @@ def test_a_var_score_field_is_copied_by_name_and_a_stray_one_is_not(tmp_path):
 def test_an_engine_that_is_down_has_an_empty_var_score(tmp_path):
     spec = report.run({}, _ctx(tmp_path, f"http://127.0.0.1:{_free_port()}"))
     assert len(spec.tables["var_score"]) == 0
+
+
+def test_a_simulated_venue_is_one_row_with_the_reason_and_no_light(tmp_path):
+    sim = {"reason": "simulated sessions: not a 1-day VaR, not scored", "as_of": "2026-10-09", "scores": [],
+           "window": None, "level": None}
+    t = _scored(tmp_path, {**DESK, "var_score": sim}).tables["var_score"]
+    assert len(t) == 1
+    r = t.iloc[0]
+    assert r["message"] == "simulated sessions: not a 1-day VaR, not scored" and r["as_of"] == "2026-10-09"
+    assert pd.isna(r["light"]) and pd.isna(r["kupiec_p"]) and pd.isna(r["christoffersen_p"]) and pd.isna(r["n"])
