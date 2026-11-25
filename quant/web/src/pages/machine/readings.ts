@@ -184,6 +184,36 @@ function strategy(gi: GraphIndex, i: number, n: MNode): Reading {
 }
 
 // ------------------------------------------------------------------ the desk
+const TENTHS = ["no times", "one time", "two times", "three times", "four times", "five times", "six times", "seven times",
+  "eight times", "nine times", "ten times"];
+
+/**
+ * The desk's one test, INC-02, as the book says it: the horizon (or why there is none yet) and the power, before any
+ * result. Read only from the payload's `pooled_*` fields; null when the desk published no test. The power is the
+ * payload's own figure, in tenths ("four times in ten" for 0.41), never a number of its own.
+ */
+export function pooledLine(m: Record<string, unknown>): string | null {
+  const done = fin(m.pooled_done), need = fin(m.pooled_required), power = fin(m.pooled_power), verdict = str(m.pooled_verdict);
+  if (done === null || need === null || power === null || !verdict) return null;
+  const tenths = Math.min(10, Math.max(0, Math.round(power * 10)));
+  const detects = `this test detects a Sharpe of 1.0 ${TENTHS[tenths]} in ten`;
+  if (verdict === "NOT STARTED") {
+    const why = str(m.pooled_why) ?? "";
+    const short = /approval/.test(why) ? "awaits the owner" : /no .*fill/.test(why) ? "no fill yet" : "not begun";
+    return `INC-02 not started · ${short} · ${detects}`;
+  }
+  const head = `session ${num(done)} of ${num(need)} · ${detects}`;
+  if (verdict === "REJECTED NULL") return `${head} · result: the null of no edge is rejected`;
+  if (verdict === "NOT REJECTED") return `${head} · result: the null of no edge is not rejected`;
+  return head;
+}
+
+/** ``pooledLine`` as the one segment a paragraph is made of, or false when there is none. */
+export function pooledSegs(m: Record<string, unknown>): Seg[] | false {
+  const line = pooledLine(m);
+  return line === null ? false : segs(line);
+}
+
 /** A signal source as the book names it. */
 const SOURCE: Record<string, string> = { "p:research": "the research service", "p:signals.daily": "daily signals" };
 
@@ -219,7 +249,7 @@ function book(gi: GraphIndex, i: number, n: MNode): Reading {
   } else if (str(m.summary_why)) {
     summary = S`Its limits, kill switch and position count are not shown here. ${reason(gi, str(m.summary_why)!)}`;
   }
-  return { title: n.n || n.l, paras: paras(first, summary), caveats: [] };
+  return { title: n.n || n.l, paras: paras(first, summary, pooledSegs(m)), caveats: [] };
 }
 
 /** When the book's summary is from, for a limit or the kill switch: "4:30 PM on 28 Oct". */

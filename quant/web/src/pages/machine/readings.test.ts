@@ -589,6 +589,20 @@ describe("reading: the book, its limits and kill switch", () => {
     expect(refsOf(r)).toEqual(expect.arrayContaining(["lim:aapl-cap", "lim:dd-cap", "kill", "p:signals.overlay"]));
   });
 
+  it("says INC-02's test on the book with its horizon and its power before any result, and nothing when none is published", () => {
+    const fx = clone();
+    const m = nodeOf(fx, "book").m;
+    Object.assign(m, { pooled_done: 120, pooled_required: 500, pooled_verdict: "IN PROGRESS", pooled_power: 0.41 });
+    expect(text(fx, "book")).toContain("session 120 of 500 · this test detects a Sharpe of 1.0 four times in ten");
+    expect(text(fx, "book")).not.toMatch(/result/);
+    Object.assign(m, { pooled_done: 0, pooled_verdict: "NOT STARTED", pooled_why: "INC-02 awaits the owner's approval" });
+    expect(text(fx, "book")).toContain("INC-02 not started · awaits the owner · this test detects a Sharpe of 1.0 four times in ten");
+    Object.assign(m, { pooled_done: 500, pooled_verdict: "REJECTED NULL" });
+    const done = text(fx, "book");
+    expect(done.indexOf("four times in ten")).toBeLessThan(done.indexOf("is rejected"));
+    expect(text(FIXTURE, "book")).not.toMatch(/Sharpe of 1\.0/);
+  });
+
   it("labels a draft roster on the book and on each strategy, and only while the payload says it is one", () => {
     const fx = clone();
     nodeOf(fx, "book").m.roster_draft = "INC-02";

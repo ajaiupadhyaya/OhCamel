@@ -17,7 +17,7 @@ import {
   shares, sideRoute, str, strategyCount, strs, ups,
 } from "./prose";
 import type { ReadingCtx, Seg } from "./prose";
-import { reading } from "./readings";
+import { pooledSegs, reading } from "./readings";
 import type { StepView } from "./url";
 import { countKinds, directReaders } from "./web";
 import type { GraphIndex } from "./web";
@@ -338,7 +338,7 @@ const book: TourStep = {
     } else if (str(m.summary_why)) {
       live = S`Its limits, kill switch and position count are not shown here. ${reason(gi, str(m.summary_why)!)}`;
     }
-    return paras(first, live);
+    return paras(first, live, pooledSegs(m));
   },
 };
 

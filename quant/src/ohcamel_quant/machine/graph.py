@@ -517,6 +517,28 @@ def _book_summary(p: Product | None) -> tuple[dict | None, str | None]:
     }, None
 
 
+POOLED_VERDICTS = ("NOT STARTED", "IN PROGRESS", "REJECTED NULL", "NOT REJECTED")
+
+
+def _pooled(p: Product | None) -> dict:
+    """INC-02's one test, from ``desk.report``'s ``pooled_test`` row: sessions done of required, the verdict word,
+    the power at a Sharpe of 1.0 and, for a test not started, the reason. Counts, a probability and words only;
+    a stale or missing report, a missing row or a value of the wrong type says nothing, and the book then states
+    no test (the page must not state one the desk did not publish)."""
+    t = p.tables.get("pooled_test") if _present(p) and not p.stale else None
+    if t is None or t.empty:
+        return {}
+    r = {k: _plain(v) for k, v in t.iloc[0].items()}
+    done, need, power, verdict = r.get("sessions_done"), r.get("sessions_required"), r.get("power_at_1"), r.get("verdict")
+    ok = (isinstance(done, int | float) and isinstance(need, int | float) and isinstance(power, int | float)
+          and not isinstance(done, bool) and verdict in POOLED_VERDICTS and need > 0)
+    if not ok:
+        return {}
+    why = r.get("reason")
+    return {"pooled_done": int(done), "pooled_required": int(need), "pooled_verdict": verdict,
+            "pooled_power": float(power), **({"pooled_why": why} if isinstance(why, str) and why else {})}
+
+
 def _signal_source(c: Cell) -> str:
     return {DAILY: "p:signals.daily", RESEARCH: "p:research"}.get(c.producer, f"p:{c.producer}")
 
@@ -535,6 +557,7 @@ def _desk(g: _Graph, inp: Inputs) -> None:
     else:
         book |= {"positions": summary["positions"], "kill": summary["kill"], "limits": len(summary["limits"]),
                  "summary_asof": summary["as_of"]}
+    book |= _pooled(inp.products.get("desk.report"))
     if inp.roster_draft:
         book["roster_draft"] = inp.roster_draft
     g.node("book", "book", "THE BOOK", "The paper book at Alpaca", "book", {}, book)

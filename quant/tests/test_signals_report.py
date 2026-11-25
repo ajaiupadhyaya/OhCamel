@@ -220,7 +220,8 @@ def test_a_full_report(tmp_path):
     assert sorted(eng.seen) == sorted(report.ROUTES)
     assert spec.verdict is None
     assert spec.data_asof == "2026-10-09"
-    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score", "tca"}
+    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score", "tca",
+                              "pooled_test"}
 
     fills = spec.tables["fills"]
     # Only this session's fill (13:30Z is 09:30 New York on the 9th), with every field the route serves.
@@ -275,7 +276,8 @@ def test_an_unreachable_engine_is_a_done_job_that_says_so(tmp_path):
     spec = report.run({}, _ctx(tmp_path, url))
     assert spec.verdict is None
     assert all(df.empty for df in spec.tables.values())
-    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score", "tca"}
+    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score", "tca",
+                              "pooled_test"}
     assert list(spec.tables["fills"].columns) == report.FILL_COLUMNS
     assert len(spec.tables["book_summary"]) == 0 and list(spec.tables["book_summary"].columns) == report.BOOK_COLUMNS
     notes = " | ".join(spec.notes)
@@ -572,3 +574,15 @@ def test_a_tca_route_without_benchmarks_is_named_and_the_sentence_still_stands(t
         spec = report.run({}, _ctx(tmp_path, eng.url))
     assert len(spec.tables["tca"]) == 0
     assert "tca benchmarks not read" in " | ".join(spec.notes) and SENTENCE in spec.notes
+
+
+def test_the_report_carries_inc02s_test_as_not_started_while_it_awaits_the_owner(tmp_path):
+    with _Engine(_full()) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    t = spec.tables["pooled_test"]
+    assert list(t.columns) == report.POOLED_COLUMNS and len(t) == 1
+    r = t.iloc[0]
+    assert (r["experiment"], r["sessions_required"], r["power_at_1"], r["power_at_half"]) == ("INC-02", 500, 0.41, 0.17)
+    assert r["as_of"] == "2026-10-09" and "per-strategy record" in r["source"]
+    if report.roster_draft() is not None:
+        assert (r["verdict"], r["sessions_done"], r["reason"]) == ("NOT STARTED", 0, "INC-02 awaits the owner's approval")

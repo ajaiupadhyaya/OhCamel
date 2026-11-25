@@ -431,6 +431,13 @@ describe("the tour: 7, the book", () => {
     expect(body(FIXTURE, "book")).not.toMatch(/draft/);
   });
 
+  it("says INC-02's test on the book step: session n of 500 and the power, in tenths", () => {
+    const fx = clone();
+    Object.assign(nodeOf(fx, "book").m, { pooled_done: 7, pooled_required: 500, pooled_verdict: "IN PROGRESS", pooled_power: 0.41 });
+    expect(body(fx, "book")).toContain("session 7 of 500 · this test detects a Sharpe of 1.0 four times in ten");
+    expect(body(FIXTURE, "book")).not.toMatch(/Sharpe of 1\.0/);
+  });
+
   it("gives the range of capital when the strategies' shares differ", () => {
     const fx = clone();
     nodeOf(fx, "st:exp_a01_spy").m.capital = 0.01;

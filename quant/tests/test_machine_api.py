@@ -139,7 +139,7 @@ def test_the_tables_each_kind_needs(store):
     wanted = {k: load.wanted(k) for k in PROD}
     assert all(set(LENS_TABLES.get(k, ())) <= set(w) for k, w in wanted.items())
     assert set(wanted["risk.mc_atlas"]) == {"summary", "members"} and set(wanted["farm.sweep"]) == {"leaderboard", "cells"}
-    assert wanted["desk.report"] == ("book_summary",) and wanted["ops.data_integrity"] == ()
+    assert wanted["desk.report"] == ("book_summary", "pooled_test") and wanted["ops.data_integrity"] == ()
     assert len(wanted["risk.mc_atlas"]) == 2                    # no table twice
 
 

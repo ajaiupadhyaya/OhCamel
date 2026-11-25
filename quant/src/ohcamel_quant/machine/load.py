@@ -51,7 +51,7 @@ log = logging.getLogger("ohcamel_quant.machine.load")
 # the tables the graph reads beyond the lenses' (``LENS_TABLES``): the atlas's members, the farm's cells
 # (its leaderboard is a lens table) and the desk report's book summary
 GRAPH_TABLES: dict[str, tuple[str, ...]] = {
-    "risk.mc_atlas": ("members",), "farm.sweep": ("cells",), "desk.report": ("book_summary",),
+    "risk.mc_atlas": ("members",), "farm.sweep": ("cells",), "desk.report": ("book_summary", "pooled_test"),
 }
 MAX_TABLE_ROWS = 500_000   # a table longer than this is counted, not loaded: no lens table is near it
 LOOKBACK_DAYS = 380        # calendar days of closes before the newest bar: a year of sessions, with slack

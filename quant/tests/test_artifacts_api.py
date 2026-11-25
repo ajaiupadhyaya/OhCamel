@@ -164,6 +164,8 @@ def _desk_report(db, root):
                                         "kupiec_p": [0.7], "light": ["green"]})
     tables["tca"] = pd.DataFrame({"scope": ["overall"], "fills": [3], "mean_vs_open_bps": [4.2],
                                   "note": ["Paper fills have no market impact and no queue."]})
+    tables["pooled_test"] = pd.DataFrame({"experiment": ["INC-02"], "sessions_done": [0], "sessions_required": [500],
+                                          "verdict": ["NOT STARTED"], "power_at_1": [0.41]})
     aid, _ = publish_artifact(db, root, "desk.report", tables, finished=utcnow(), notes=[ACCOUNT_NOTE])
     return aid
 
@@ -183,9 +185,10 @@ def test_the_desks_report_lists_only_its_summary_and_quotes_no_account_figure(ap
     for url in ("/api/artifacts/desk.report/latest", f"/api/artifacts/desk.report/{aid}"):
         r = client.get(url)
         assert r.status_code == 200
-        assert r.json()["manifest"]["tables"] == ["book_summary", "var_score", "tca"]
+        assert r.json()["manifest"]["tables"] == ["book_summary", "var_score", "tca", "pooled_test"]
         assert "equity_close" not in r.text and "gross_close" not in r.text
     assert client.get(f"/api/artifacts/desk.report/{aid}/book_summary").status_code == 200
+    assert client.get(f"/api/artifacts/desk.report/{aid}/pooled_test").status_code == 200
 
 
 def test_the_risk_models_score_is_public_and_carries_no_size(api):

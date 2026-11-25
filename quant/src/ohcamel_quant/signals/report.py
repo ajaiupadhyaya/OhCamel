@@ -69,9 +69,11 @@ import httpx
 import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
+from .pooled import SESSIONS, analytic_power, psr_and_se, verdict_at
+from .roster import ROSTER_PATH, roster_draft
 
 __all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "PAPER_SENTENCE", "ROUTES", "TCA_COLUMNS", "TIMEOUT_S",
-           "VAR_SCORE_COLUMNS", "run"]
+           "VAR_SCORE_COLUMNS", "POOLED_COLUMNS", "run"]
 
 KIND = "desk.report"
 TIMEOUT_S = 10.0
@@ -100,6 +102,12 @@ VAR_SCORE_COLUMNS = ["as_of", "source", "estimator", "window", "level", "n", "ex
                      "christoffersen_p", "light", "message", "min_sessions", "other_window_sessions"]
 TCA_COLUMNS = ["scope", "strategy", "fills", "open_n", "close_n", "vwap_n", "mean_vs_open_bps", "mean_vs_close_bps",
                "mean_vs_vwap_bps", "source", "window", "note"]
+#: INC-02's one test (signals/pooled.py): the brief's eight columns, then what a reader needs to place them -- the
+#: reason a test has not started, the statistic's name (proposed until the owner approves it), the as-of, the source.
+POOLED_COLUMNS = ["experiment", "sessions_done", "sessions_required", "psr", "sharpe_se", "power_at_1",
+                  "power_at_half", "verdict", "reason", "statistic", "as_of", "source"]
+POOLED_SOURCE = ("the engine's per-strategy record (net of costs, dividends in, marked to the official close) "
+                 "and /api/desk/sessions' closes")
 #: Said beside every row of the TCA table: the paper venue fills at the simulator's price.
 PAPER_SENTENCE = ("Paper fills have no market impact and no queue; realised shortfall here is a floor on what a "
                   "real venue would charge.")
@@ -430,9 +438,73 @@ def _var_score(desk: dict[str, Any] | None, notes: list[str]) -> list[dict[str, 
     return rows
 
 
+def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any,
+                  notes: list[str]) -> list[float] | None:
+    """INC-02's T1, the proposed statistic: per session ``sum_i (pnl_i - allocated_i * r_f) / prior-close equity``,
+    i.e. ``sum_i w_i (r_i - r_f)`` with ``w_i`` the share of the account allocated. Each strategy's ``record`` is
+    ``{"sessions": [{date, allocated, pnl}]}`` (desk/record.ml's session, from the strategy's first fill); a
+    session in which no strategy has a row counts as zero (T2: a flat or halted session still counts). The series
+    runs from the first date any strategy has a row to the newest session close. None when there is no record, no
+    close, or a close without a prior equity or rate; the notes say which. ``rf_for()`` reads the rate, and is
+    called only once there is a record to need it."""
+    rows: dict[str, list[tuple[float, float]]] = {}
+    strategies = (research or {}).get("strategies")
+    for s in strategies if isinstance(strategies, list) else []:
+        rec = s.get("record") if isinstance(s, dict) else None
+        listed = rec.get("sessions") if isinstance(rec, dict) else None
+        for r in listed if isinstance(listed, list) else []:
+            if not isinstance(r, dict) or not isinstance(r.get("date"), str):
+                continue
+            alloc, pnl = _num(r.get("allocated")), _num(r.get("pnl"))
+            if alloc is not None and pnl is not None:
+                rows.setdefault(r["date"], []).append((alloc, pnl))
+    if not rows:
+        return None
+    closes = sorted((c["date"], _num(c.get("equity_close"))) for c in sessions or []
+                    if isinstance(c, dict) and isinstance(c.get("date"), str))
+    rf = rf_for()
+    first = min(rows)
+    out: list[float] = []
+    for i, (d, _) in enumerate(closes):
+        if d < first:
+            continue
+        prior = closes[i - 1][1] if i > 0 else None
+        if prior is None or prior <= 0:
+            notes.append(f"pooled_test: no prior-close equity for {d}: the statistic is not computed")
+            return None
+        drag = rf.get(d) if rf else None
+        if drag is None:
+            notes.append(f"pooled_test: no risk-free rate for {d}: the statistic is not computed")
+            return None
+        out.append(sum(pnl - alloc * drag for alloc, pnl in rows.get(d, [])) / prior)
+    return out
+
+
+def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any, session: date,
+                 notes: list[str], *, roster_path: Any = ROSTER_PATH) -> list[dict[str, Any]]:
+    """The desk's whole public record: one row, INC-02's test with its horizon and its power. ``NOT STARTED``
+    until the pre-registration records the owner's approval (the reading the roster's draft label uses), then
+    until INC-02's first fill; ``IN PROGRESS`` to session 500; then the one evaluation."""
+    head = {"experiment": "INC-02", "sessions_required": SESSIONS, "power_at_1": round(analytic_power(1.0), 2),
+            "power_at_half": round(analytic_power(0.5), 2), "as_of": session.isoformat(), "source": POOLED_SOURCE}
+    unapproved = roster_draft(roster_path) is not None
+    label = "excess return on deployed capital" + (" (proposed, awaiting approval)" if unapproved else "")
+    idle = {"sessions_done": 0, "psr": None, "sharpe_se": None, "verdict": "NOT STARTED", "statistic": label}
+    if unapproved:
+        return [{**head, **idle, "reason": "INC-02 awaits the owner's approval"}]
+    daily = _pooled_daily(research, sessions, rf_for, notes)
+    if not daily:
+        return [{**head, **idle, "reason": "no INC-02 fill yet"}]
+    done = min(len(daily), SESSIONS)
+    psr, se = psr_and_se(daily[:SESSIONS])
+    return [{**head, "sessions_done": done, "psr": psr, "sharpe_se": se, "verdict": verdict_at(done, psr),
+             "reason": None, "statistic": label}]
+
+
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],
           provenance: list[dict], notes: list[str], *, book: list[dict],
-          var: list[dict] | None = None, tca: list[dict] | None = None) -> ArtifactSpec:
+          var: list[dict] | None = None, tca: list[dict] | None = None,
+          pooled: list[dict] | None = None) -> ArtifactSpec:
     notes.append(INC01_SENTENCE)
     notes.append(PAPER_SENTENCE)
     return ArtifactSpec(
@@ -442,7 +514,8 @@ def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict
                 "overlay_path": pd.DataFrame(overlay, columns=OVERLAY_COLUMNS),
                 "book_summary": pd.DataFrame(book, columns=BOOK_COLUMNS),
                 "var_score": pd.DataFrame(var or [], columns=VAR_SCORE_COLUMNS),
-                "tca": pd.DataFrame(tca or [], columns=TCA_COLUMNS)},
+                "tca": pd.DataFrame(tca or [], columns=TCA_COLUMNS),
+                "pooled_test": pd.DataFrame(pooled or [], columns=POOLED_COLUMNS)},
         data_asof=session.isoformat(), provenance=provenance, notes=notes, verdict=None)
 
 
@@ -496,5 +569,15 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     if desk is not None:
         notes.append(f"account session_pnl {desk.get('session_pnl')} (the whole paper account, not per strategy)")
     provenance = [{"source": "ohcamel-live", "url": base, "route": p, "read": bodies[p] is not None} for p in ROUTES]
+
+    def rf_for() -> dict[str, float]:
+        try:
+            got = ctx.market.risk_free_daily(date(2000, 1, 1), session).data
+            return {d.date().isoformat(): float(v) for d, v in got.items()}
+        except Exception as e:   # noqa: BLE001 -- the rate is a feed; its failure is a note, not a failed report
+            notes.append(f"pooled_test: the risk-free rate could not be read ({type(e).__name__})")
+            return {}
+
+    pooled = _pooled_test(research, sessions, rf_for, session, notes)
     return _spec(session, fills, pnl, refusals, overlay, provenance, notes, book=book, var=var,
-                 tca=_tca_rows(tca, notes))
+                 tca=_tca_rows(tca, notes), pooled=pooled)
