@@ -103,8 +103,13 @@ def test_a_series_covering_two_regimes_is_insufficient_data_not_fail():
 
 def test_too_few_regimes_is_insufficient_data_whatever_else_fails():
     reg = _regimes([None, None, None, None, None, False, None])
-    v = charter_verdict(**{**GOOD, "regimes": reg, "regimes_covered": 1, "dsr": 0.1, "spa_p": 0.9})
+    v = charter_verdict(**{**GOOD, "regimes": reg, "regimes_covered": 1, "dsr": 0.1, "spa_p": 0.9, "pbo": 0.7})
     assert v.value == "INSUFFICIENT DATA"
+    # fix round 1 (I-1): the gates that failed outright are still named, in the FAIL label's form, after the coverage
+    # clause -- the regime gate itself is the coverage, not a measured failure -- and a high PBO is still named
+    assert v.detail == ("1 OF 7 REGIMES HAVE OUT-OF-SAMPLE DATA (NEEDS 3) · FAILED DSR 0.10 (NEEDS >= 0.95), "
+                        "EXCESS 0.90 (NEEDS SPA P <= 0.10 VS BUY-AND-HOLD) · PBO 0.70 HIGH")
+    assert is_label(v.detail)
 
 
 def test_regimes_covered_must_agree_with_the_table():
@@ -122,10 +127,11 @@ def test_one_regime_table_read_from_the_one_file():
     loader resolves itself (so the research suite can load it standalone) and which is REPO_ROOT's."""
     assert regime_file.REGIMES_PATH == REPO_ROOT / "research" / "config" / "regimes.yaml"
     assert regime_file.REGIMES_REL == "research/config/regimes.yaml"
+    # fix round 1 (I-2): stress windows -- where the two old lists shared a regime, the drawdown window one used
     assert REGIMES == regime_file.load() == (
-        ("2008", "2008-01-01", "2008-12-31"), ("2011", "2011-01-01", "2011-12-31"),
+        ("2008", "2008-01-01", "2008-12-31"), ("2011", "2011-04-29", "2011-10-03"),
         ("2015-16", "2015-01-01", "2016-12-31"), ("2018Q4", "2018-10-01", "2018-12-31"),
-        ("2020", "2020-01-01", "2020-12-31"), ("2022", "2022-01-01", "2022-12-31"),
+        ("2020", "2020-02-19", "2020-06-30"), ("2022", "2022-01-01", "2022-12-31"),
         ("2024", "2024-01-01", "2024-12-31"))
 
 
@@ -193,7 +199,7 @@ def test_a_full_cost_sweep_is_reported_not_gated_and_accepts_records():
 
 
 def test_regime_table_compounds_inside_each_window():
-    r = pd.Series([0.01, 0.01, -0.5], index=pd.to_datetime(["2020-01-02", "2020-01-03", "2023-06-01"]))
+    r = pd.Series([0.01, 0.01, -0.5], index=pd.to_datetime(["2020-03-02", "2020-03-03", "2023-06-01"]))
     t = regime_table(r)
     assert list(t["regime"]) == [r[0] for r in REGIMES]
     row = t.set_index("regime").loc["2020"]

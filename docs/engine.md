@@ -1672,31 +1672,34 @@ its verdict, quoted rather than paraphrased:
 
 > | Strategy | Verdict | Sizing | verdict_line |
 > |---|---|---|---|
-> | `exp_a01_spy` (SPY) | **fail** | advisory | fail: 3 of 6 gates failed (dsr, excess, regimes_positive); PBO 0.786, above 0.5 |
-> | `exp_a01_tlt` (TLT) | **fail** | advisory | fail: 6 of 6 gates failed (holdout_positive, dsr, psr, excess, bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5 |
+> | `exp_a01_spy` (SPY) | **fail** | advisory | fail: 2 of 5 measured gates failed (dsr, regimes_positive), excess not computed; PBO 0.786, above 0.5 |
+> | `exp_a01_tlt` (TLT) | **fail** | advisory | fail: 5 of 5 measured gates failed (holdout_positive, dsr, psr, bootstrap_sharpe_lower5, regimes_positive), excess not computed; PBO 0.981, above 0.5 |
 >
 > Both strategies fail. The pre-registration's kill criterion is "any charter
 > gate failing is a fail", and each strategy fails at least one gate.
 
-(Re-derived on 2026-11-23 under the owner's ruling R3: DSR and PSR at 0.95, the
+(Re-derived on 2026-11-24 under the owner's ruling R3: DSR and PSR at 0.95, the
 excess gate -- not computed by the research battery, so failed -- and the one
 regime table; no return or Sharpe moved, and both verdicts stayed fail.)
 
 `report.md` states, gate by gate, why each failed, in its own words:
 
-> - **SPY fails three gates: DSR, excess and the regimes.** Its DSR, 0.399, is below
->   0.95. The excess gate is not computed by this battery and fails. It was positive in
->   2 of the 4 regimes with data, 2020 and 2024, and negative in 2018Q4 and 2022. Under
->   the battery's first gates (DSR 0.30, five regimes) it failed only the regimes: it
->   was positive then in 2023 and 2024 alone, the calm bull years the owner named before
->   the run, and negative in the 2018 Q4 selloff, the 2020 COVID crash (2020-02-19 →
->   2020-06-30) and the 2022 rate shock. SPY passes the holdout, PSR and bootstrap
->   gates. Its PBO, 0.786, is high: had every gate passed, its verdict would have been
+> - **SPY fails DSR and the regimes, and its excess gate is not computed.** Its DSR,
+>   0.399, is below 0.95. The excess gate is not computed by this battery and fails. It
+>   was positive in 1 of the 4 regimes with data, 2024, and negative in the 2018 Q4
+>   selloff, the 2020 COVID crash and the 2022 rate shock. Under the battery's first
+>   gates (DSR 0.30, five regimes) it failed only the regimes: it was positive then in
+>   2023 and 2024 alone, the calm bull years the owner named before the run. SPY
+>   passes the holdout, PSR and bootstrap gates. Its PBO, 0.786, is high: had every
+>   gate passed, its verdict would have been
 >   "pass, fragile", not promoted without a second, independent window.
 > - **TLT fails every decided gate.** Its holdout is negative. Its DSR, PSR and
 >   bootstrap lower bound are far below their lines; the excess gate is not computed.
 >   It was positive in 2 of 4 regimes with data, 2018Q4 and 2020, and negative in 2022
->   and 2024.
+>   and 2024 (on the first five, also negative in 2023).
+> - **PBO is high for both.** It is 0.786 for SPY and 0.981 for TLT, and both are above
+>   0.5. With three configurations, a set with no skill scores about 2/3 (see
+>   Disclosures). Both figures are above that.
 >
 > **PBO with three configurations.** With 3 configurations, a set with no skill at all
 > scores a PBO of about 2/3, since the in-sample best lands at or below the
@@ -1735,7 +1738,7 @@ loaded. Figure 1 draws a signals band into the orders band only where an
 intake actually runs, so the demo's own figure, which has none, stays
 byte-identical to the one before this phase.
 
-`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->431<!-- /count --> Python
+`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->434<!-- /count --> Python
 tests, hermetic, offline, seeded, checked with `ruff`. `lib/verified.ml`
 and this file's counts cover only the OCaml suites; the Python count is
 reported here and in `docs/status.md`, never folded into either.

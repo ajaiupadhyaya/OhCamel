@@ -148,7 +148,10 @@ def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trials: pd.DataFrame
     current = sorted(name for name, _, _ in REGIMES)
     rows = []
     for r in ok.itertuples():
-        reg = regimes[regimes["cell_id"] == r.cell_id]
+        reg = regimes[regimes["cell_id"] == r.cell_id] if "cell_id" in regimes.columns else regimes.iloc[0:0]
+        if reg.empty or "positive" not in reg.columns:
+            # no regime rows at all is no out-of-sample data in any regime (fix round 1, M-5), not an earlier table
+            reg = pd.DataFrame({"regime": [name for name, _, _ in REGIMES], "positive": [None] * len(REGIMES)})
         # the excess gate reads the cell's SPA p-value against its universe's equal-weight buy-and-hold, filled and
         # costed as the cell is (products/farm.py run_cell); a row without one fails it (task 2.5). A cell carried
         # forward from before the one regime file holds another table's rows: never judged on it, it awaits a re-run.

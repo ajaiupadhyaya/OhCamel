@@ -11,21 +11,38 @@
 #
 # The list is the union of the two lists the batteries held before (quant:
 # 2008, 2015-16, 2020, 2022, 2024; research: 2018 Q4, 2020, 2022, 2023, 2024)
-# plus 2011, without 2023 (the ruling's list). Each window is written once,
-# here, by one rule: a regime named by a year is that calendar year; 2015-16
-# is the two calendar years; 2018Q4 is that quarter. The name is the window.
+# plus 2011, without 2023 (the ruling's list). A regime window is a stress
+# window, and no battery's window gets easier (controller ruling, task 2.5
+# round 1): where the two old lists named the same regime with different
+# windows, this table takes the stress window -- the drawdown one of them
+# already used -- and a regime only one list named keeps that list's window.
+#
+#   regime   old quant window          old research window       chosen
+#   2008     2008-01-01 .. 2008-12-31  --                        quant's
+#   2011     --                        --                        new: SPY's 2011 drawdown (below)
+#   2015-16  2015-01-01 .. 2016-12-31  --                        quant's
+#   2018Q4   --                        2018-10-01 .. 2018-12-31  research's
+#   2020     2020-01-01 .. 2020-12-31  2020-02-19 .. 2020-06-30  research's (the COVID crash, from the peak)
+#   2022     2022-01-01 .. 2022-12-31  2022-01-01 .. 2022-12-31  the same
+#   2024     2024-01-01 .. 2024-12-31  2024-01-01 .. 2024-12-31  the same
+#
+# 2011 is new: SPY's dividend-adjusted closing high of 2011-04-29 to its
+# closing low of 2011-10-03 (-18.6%), read from the Yahoo Finance daily
+# series the quant cache holds (quant/.data/prices/SPY.parquet, fetched
+# 2026-11-16) -- the same peak-to-trough convention as research's 2020
+# window, which starts at the 2020-02-19 high.
 #
 # The gate (docs/CHARTER.md, "The gates"): a strategy's out-of-sample record
 # is positive -- compounded return strictly above zero -- in at least 3 of
 # these regimes. A regime "has out-of-sample data" when the record holds at
 # least one return inside its window; a regime without data counts as not
 # positive. Fewer than 3 regimes with data is INSUFFICIENT DATA, not FAIL.
-version: "1.0.0"
+version: "1.1.0"
 regimes:
   - {name: "2008", start: "2008-01-01", end: "2008-12-31"}     # the financial crisis
-  - {name: "2011", start: "2011-01-01", end: "2011-12-31"}     # the US downgrade and the euro debt crisis
+  - {name: "2011", start: "2011-04-29", end: "2011-10-03"}     # the US downgrade and the euro debt crisis
   - {name: "2015-16", start: "2015-01-01", end: "2016-12-31"}  # the yuan devaluation and the oil collapse
   - {name: "2018Q4", start: "2018-10-01", end: "2018-12-31"}   # the fourth-quarter selloff
-  - {name: "2020", start: "2020-01-01", end: "2020-12-31"}     # the COVID crash and its recovery
+  - {name: "2020", start: "2020-02-19", end: "2020-06-30"}     # the COVID crash
   - {name: "2022", start: "2022-01-01", end: "2022-12-31"}     # the rate shock
   - {name: "2024", start: "2024-01-01", end: "2024-12-31"}     # a calm bull year

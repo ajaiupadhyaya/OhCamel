@@ -143,7 +143,18 @@ def test_a_cell_with_fewer_than_three_regimes_of_data_is_insufficient_data():
 
     board = leaderboard(*_board_inputs(0.30, positive=(None, None, None, None, None, True, True)))
     assert board.loc[0, "verdict"] == "INSUFFICIENT DATA"
-    assert board.loc[0, "detail"] == "2 OF 7 REGIMES HAVE OUT-OF-SAMPLE DATA (NEEDS 3)"
+    assert board.loc[0, "detail"] == ("2 OF 7 REGIMES HAVE OUT-OF-SAMPLE DATA (NEEDS 3) · FAILED EXCESS 0.30 "
+                                      "(NEEDS SPA P <= 0.10 VS BUY-AND-HOLD)")
+
+
+def test_a_cell_with_no_regime_rows_has_no_regime_data_not_an_earlier_table():
+    """Fix round 1 (M-5): no regime rows at all is no out-of-sample data in any regime, judged as such."""
+    from ohcamel_quant.models.farm import leaderboard
+
+    cells, _, trials = _board_inputs(0.04)
+    board = leaderboard(cells, pd.DataFrame(columns=["cell_id"]), trials)
+    assert board.loc[0, "verdict"] == "INSUFFICIENT DATA"
+    assert board.loc[0, "detail"] == "0 OF 7 REGIMES HAVE OUT-OF-SAMPLE DATA (NEEDS 3)"
 
 
 def test_a_cell_scored_on_an_earlier_regime_table_awaits_a_re_run():

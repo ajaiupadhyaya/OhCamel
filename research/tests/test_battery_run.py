@@ -299,6 +299,28 @@ def test_the_excess_gate_fails_because_the_battery_has_no_spa_test(recorded):
         assert m.verdict != "pass"
 
 
+def test_each_manifest_records_the_gates_it_was_judged_by(recorded):
+    """Fix round 1 (I-3): pre-registrations written before R3 (EXP-I01..I03)
+    are not amended here; a run records, in its own manifest, the charter
+    date, every threshold and the regime file's hash it was judged by, so the
+    owner's later amendment decision can be checked against the evidence."""
+    from ohcamel_research.manifest import REGIMES_REL
+
+    for m in recorded.manifests:
+        (line,) = [n for n in m.notes if n.startswith("judged by the gates of docs/CHARTER.md")]
+        assert f"of {GATES_VERSION}" in line
+        for part in (
+            "DSR >= 0.95",
+            "PSR >= 0.95",
+            "excess SPA p <= 0.10",
+            "bootstrap lower 5.0th percentile > 0",
+            "regimes positive >= 3 of 7",
+            "cost sweep 0/5/15/30 bps round trip",
+        ):
+            assert part in line, part
+        assert f"{REGIMES_REL.as_posix()} {m.hashes[REGIMES_REL.as_posix()]}" in line
+
+
 def test_the_regime_gate_reads_the_one_regime_file(recorded):
     from ohcamel_research.battery.gates import REGIMES
 
@@ -1184,6 +1206,44 @@ def test_insufficient_data_names_the_regime_coverage():
     assert line == (
         "insufficient data: 2 of 7 regimes have out-of-sample data (needs 3); "
         "1 other gate failed (psr); PBO 0.300"
+    )
+
+
+_NOT_COMPUTED = {"reason": "not computed: no SPA test"}
+
+
+def test_a_gate_the_battery_could_not_compute_is_named_apart_from_measured_failures():
+    """Fix round 1 (M-2): the excess gate the research battery cannot compute
+    fails the verdict, but the line says "excess not computed" rather than
+    count it as a measured failure."""
+    gates = _gates(holdout_positive=True, dsr=False, psr=True, pbo=None, cost_sweep=None)
+    gates.insert(
+        3, {"name": "excess", "passed": False, "value": None, "detail": dict(_NOT_COMPUTED)}
+    )
+    assert verdict_line("fail", gates, 0.786) == (
+        "fail: 1 of 3 measured gates failed (dsr), excess not computed; PBO 0.786, above 0.5"
+    )
+    clean = _gates(holdout_positive=True, dsr=True, pbo=None)
+    clean.append({"name": "excess", "passed": False, "value": None, "detail": dict(_NOT_COMPUTED)})
+    assert verdict_line("fail", clean, 0.2) == (
+        "fail: excess not computed; all 2 measured gates passed; PBO 0.200"
+    )
+
+
+def test_insufficient_data_names_a_gate_not_computed_apart():
+    gates = [
+        {"name": "dsr", "passed": False, "value": 0.2, "detail": {}},
+        {"name": "excess", "passed": False, "value": None, "detail": dict(_NOT_COMPUTED)},
+        {
+            "name": "regimes_positive",
+            "passed": False,
+            "value": 1.0,
+            "detail": {"covered": ["2020", "2022"], "min_positive": 3, "insufficient_data": True},
+        },
+    ]
+    assert verdict_line("insufficient data", gates, 0.3) == (
+        "insufficient data: 2 of 7 regimes have out-of-sample data (needs 3); "
+        "1 other gate failed (dsr), excess not computed; PBO 0.300"
     )
 
 

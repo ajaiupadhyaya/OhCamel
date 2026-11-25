@@ -13,6 +13,10 @@ describe("CHARTER (docs/CHARTER.md, owner ruling R3)", () => {
   it("states the gates models/verdict.py applies", () => {
     expect(CHARTER).toMatchObject({ dsr: 0.95, psr: 0.95, spa: 0.1, regimes: 3, regimesOf: 7 });
   });
+  it("failedGates reads the gates an INSUFFICIENT DATA verdict names after its coverage clause (fix round 1, I-1)", () => {
+    expect(failedGates("2 OF 7 REGIMES HAVE OUT-OF-SAMPLE DATA (NEEDS 3) · FAILED DSR 0.12 (NEEDS >= 0.95), EXCESS 0.96 (NEEDS SPA P <= 0.10 VS BUY-AND-HOLD) · PBO 0.71 HIGH")).toEqual(["dsr", "excess"]);
+    expect(failedGates("2 OF 7 REGIMES HAVE OUT-OF-SAMPLE DATA (NEEDS 3)")).toEqual([]);
+  });
   it("failedGates reads the excess gate a farm verdict names", () => {
     expect(failedGates("FAILED DSR 0.12 (NEEDS >= 0.95), EXCESS 0.96 (NEEDS SPA P <= 0.10 VS BUY-AND-HOLD)")).toEqual(["dsr", "excess"]);
   });

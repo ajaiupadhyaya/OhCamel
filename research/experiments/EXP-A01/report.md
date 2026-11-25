@@ -4,7 +4,7 @@ Pre-registration: `hypothesis.md` and `config.yaml`, committed alone in `2c92874
 before any line of `battery/` existed. Evidence: `manifest.exp_a01_spy.json` and
 `manifest.exp_a01_tlt.json`, written by `ohcamel-research battery run` on the battery
 at `38011f6`, seed 42, `ran_at` 2026-09-19T04:12:20Z, Python 3.13.12, and re-derived
-on 2026-11-23 (`ran_at` 2026-11-24T04:15:13Z, Python 3.13.18) under the gates of the
+on 2026-11-24 (Python 3.13.18; `ran_at` as in each manifest) under the gates of the
 owner's ruling R3 (completion task 2.5; see "Re-judged under R3" below). Every number
 below is read from those two manifests. None is computed by hand, except the
 distribution bound in the Disclosures, which is arithmetic on the pre-registration's
@@ -17,50 +17,55 @@ The charter's gates changed (owner ruling R3, `docs/CHARTER.md`): DSR and PSR at
 equal-weight buy-and-hold at most 0.10; and one regime table for both batteries,
 `research/config/regimes.yaml` (2008, 2011, 2015-16, 2018Q4, 2020, 2022, 2024),
 replacing this battery's five regimes (2018 Q4 selloff, 2020 COVID, 2022, 2023, 2024).
+Where both batteries named a regime, the table keeps the stress window, so this
+battery's 2018 Q4, 2020 (2020-02-19 → 2020-06-30), 2022 and 2024 windows are unchanged;
+2023 is gone.
 The re-derivation re-ran the battery on the same data with the same seed. No return,
 Sharpe, PBO, bootstrap figure or cost-sweep number moved; what moved is listed here.
 
 - **Both verdicts are unchanged: fail.**
-- **SPY** now fails three gates. DSR 0.399 is below 0.95 (it passed the old 0.30).
-  The excess gate fails because this battery has no SPA test yet (fdq ships none); a
-  charter gate that cannot be computed fails, and the manifest says so. The regime
-  gate still fails, 2 of 4 regimes with data positive, on the new table (below).
-  PSR 0.977 passes 0.95.
-- **TLT** fails all six decided gates, now including the excess gate.
+- **SPY** now fails two measured gates, and its excess gate is not computed. DSR
+  0.399 is below 0.95 (it passed the old 0.30). The excess gate fails because this
+  battery has no SPA test yet (fdq ships none); a charter gate that cannot be computed
+  fails, and the manifest says so. The regime gate still fails: 1 of 4 regimes with
+  data positive (2024), since 2023 left the table. PSR 0.977 passes 0.95.
+- **TLT** fails all five measured gates, and its excess gate is not computed.
 - **The regimes** are read on the new table. The joined series starts 2017-08-11, so
-  2008, 2011 and 2015-16 have no data; 2018Q4, 2020 (now the calendar year, not
-  2020-02-19 → 2020-06-30), 2022 and 2024 do. 2023 is no longer a regime.
+  2008, 2011 and 2015-16 have no data; 2018Q4, 2020, 2022 and 2024 do, on the same
+  windows and with the same returns as before. 2023 is no longer a regime.
+- **Each manifest now states the gates it was judged by** (a note: the charter's
+  date, every threshold, and the regime file's hash).
 
 ## Verdict
 
 | Strategy | Verdict | Sizing | verdict_line |
 |---|---|---|---|
-| `exp_a01_spy` (SPY) | **fail** | advisory | fail: 3 of 6 gates failed (dsr, excess, regimes_positive); PBO 0.786, above 0.5 |
-| `exp_a01_tlt` (TLT) | **fail** | advisory | fail: 6 of 6 gates failed (holdout_positive, dsr, psr, excess, bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5 |
+| `exp_a01_spy` (SPY) | **fail** | advisory | fail: 2 of 5 measured gates failed (dsr, regimes_positive), excess not computed; PBO 0.786, above 0.5 |
+| `exp_a01_tlt` (TLT) | **fail** | advisory | fail: 5 of 5 measured gates failed (holdout_positive, dsr, psr, bootstrap_sharpe_lower5, regimes_positive), excess not computed; PBO 0.981, above 0.5 |
 
 Both strategies fail. The pre-registration's kill criterion is "any charter gate
 failing is a fail", and each strategy fails at least one gate.
 
-- **SPY fails three gates: DSR, excess and the regimes.** Its DSR, 0.399, is below
-  0.95. The excess gate is not computed by this battery and fails. It was positive in
-  2 of the 4 regimes with data, 2020 and 2024, and negative in 2018Q4 and 2022. Under
-  the battery's first gates (DSR 0.30, five regimes) it failed only the regimes: it
-  was positive then in 2023 and 2024 alone, the calm bull years the owner named before
-  the run, and negative in the 2018 Q4 selloff, the 2020 COVID crash (2020-02-19 →
-  2020-06-30) and the 2022 rate shock. SPY passes the holdout, PSR and bootstrap
-  gates. Its PBO, 0.786, is high: had every gate passed, its verdict would have been
+- **SPY fails DSR and the regimes, and its excess gate is not computed.** Its DSR,
+  0.399, is below 0.95. The excess gate is not computed by this battery and fails. It
+  was positive in 1 of the 4 regimes with data, 2024, and negative in the 2018 Q4
+  selloff, the 2020 COVID crash and the 2022 rate shock. Under the battery's first
+  gates (DSR 0.30, five regimes) it failed only the regimes: it was positive then in
+  2023 and 2024 alone, the calm bull years the owner named before the run. SPY
+  passes the holdout, PSR and bootstrap gates. Its PBO, 0.786, is high: had every
+  gate passed, its verdict would have been
   "pass, fragile", not promoted without a second, independent window.
 - **TLT fails every decided gate.** Its holdout is negative. Its DSR, PSR and
   bootstrap lower bound are far below their lines; the excess gate is not computed.
   It was positive in 2 of 4 regimes with data, 2018Q4 and 2020, and negative in 2022
-  and 2024.
+  and 2024 (on the first five, also negative in 2023).
 - **PBO is high for both.** It is 0.786 for SPY and 0.981 for TLT, and both are above
   0.5. With three configurations, a set with no skill scores about 2/3 (see
   Disclosures). Both figures are above that.
 
 The hypothesis says "Three regimes negative would refute it." On the battery's first
-five regimes three were negative for SPY and three for TLT; on the R3 table two of
-four are negative for each.
+five regimes three were negative for SPY and three for TLT; on the R3 table three of
+four are negative for SPY and two of four for TLT.
 
 **The verdict promotes nothing.** Both strategies ship `advisory`. Promotion to
 sizing is the owner's decision alone, made in `book.sexp` after reading this report.
@@ -84,7 +89,7 @@ series joined to the holdout series (`walk_forward_oos+holdout`, 2,211 bars,
 | Probabilistic Sharpe Ratio | 0.977 | ≥ 0.95 | pass |
 | Excess: Hansen's SPA against the universe's equal-weight buy-and-hold | not computed (no SPA test in this battery) | p ≤ 0.10 | **fail** |
 | Stationary-block bootstrap, lower 5th percentile of annualised Sharpe (1,000 resamples, mean block 21, seed 42) | 0.120 | > 0 | pass |
-| Regimes positive | 2 of 4 with data | ≥ 3 | **fail** |
+| Regimes positive | 1 of 4 with data | ≥ 3 | **fail** |
 | PBO, max(port, fdq) | **0.786, high** (port 0.786, fdq 0.786) | reported; above 0.5 named | reported: high |
 | Cost sweep | see below | reported at 0 / 5 / 15 / 30 bps | reported |
 
@@ -96,7 +101,7 @@ Regimes (compounded return of the joined series inside each span):
 |---|---|---|---|---|
 | 2008, 2011, 2015-16 | — | 0 | no data | — |
 | 2018Q4 | 2018-10-01 → 2018-12-31 | 63 | −0.112 | no |
-| 2020 | 2020-01-01 → 2020-12-31 | 253 | +0.070 | yes |
+| 2020 | 2020-02-19 → 2020-06-30 | 93 | −0.139 | no |
 | 2022 | 2022-01-01 → 2022-12-31 | 250 | −0.195 | no |
 | 2024 (calm bull year) | 2024-01-01 → 2024-12-31 | 252 | +0.212 | yes |
 
@@ -122,7 +127,7 @@ Bootstrap percentiles: 5th −0.833, 50th −0.258, 95th 0.248.
 |---|---|---|---|---|
 | 2008, 2011, 2015-16 | — | 0 | no data | — |
 | 2018Q4 | 2018-10-01 → 2018-12-31 | 63 | +0.027 | yes |
-| 2020 | 2020-01-01 → 2020-12-31 | 253 | +0.091 | yes |
+| 2020 | 2020-02-19 → 2020-06-30 | 93 | +0.114 | yes |
 | 2022 | 2022-01-01 → 2022-12-31 | 250 | −0.028 | no |
 | 2024 (calm bull year) | 2024-01-01 → 2024-12-31 | 252 | −0.158 | no |
 
@@ -300,7 +305,7 @@ split differs in either direction. The rule moved neither figure.
 positive in them, so a regime pass on SPY would be weak evidence. In the first run SPY
 was positive in exactly those two years and in no other, so its regime gate failed.
 Ruling R3 (2026-11-23) replaced the five with the one regime table both batteries
-read; on it SPY is positive in 2020 and 2024 and its regime gate still fails.
+read; on it SPY is positive in 2024 alone and its regime gate still fails.
 
 **PBO with three configurations.** With 3 configurations, a set with no skill at all
 scores a PBO of about 2/3, since the in-sample best lands at or below the

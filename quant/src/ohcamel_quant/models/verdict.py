@@ -90,6 +90,10 @@ def regime_table(r: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(rows).astype({"positive": object})
 
 
+def _failed_label(failed: Sequence[Gate]) -> str:
+    return "FAILED " + ", ".join(f"{g.name.upper()} {_fmt(g.value).upper()} (NEEDS {g.rule.upper()})" for g in failed)
+
+
 def covered(regimes: pd.DataFrame) -> int:
     """How many regimes of a :func:`regime_table` frame hold out-of-sample data (``positive`` not missing)."""
     return sum(1 for x in regimes["positive"] if x is not None and not pd.isna(x))
@@ -139,14 +143,17 @@ def charter_verdict(*, holdout_return: Any, dsr: Any, psr: Any, boot_lo5: Any, r
         cost_sweep_gate(costs),
         *extra,
     ]
-    if avail < REGIMES_MIN:
-        return Verdict("INSUFFICIENT DATA", f"{avail} OF {len(REGIMES)} REGIMES HAVE OUT-OF-SAMPLE DATA "
-                                            f"(NEEDS {REGIMES_MIN})", tuple(gates))
     pbo_txt = f" · PBO {pb:.2f} HIGH" if pb is not None and pb > PBO_HIGH else ""
     failed = [g for g in gates if g.passed is False]
+    if avail < REGIMES_MIN:
+        # the coverage first, then every gate that failed outright, in the FAIL label's form (fix round 1, I-1): the
+        # regime gate is the coverage itself, not a measured failure
+        others = [g for g in failed if g.name != "regimes_positive"]
+        return Verdict("INSUFFICIENT DATA", f"{avail} OF {len(REGIMES)} REGIMES HAVE OUT-OF-SAMPLE DATA "
+                                            f"(NEEDS {REGIMES_MIN})" + (" · " + _failed_label(others) if others else "")
+                       + pbo_txt, tuple(gates))
     if failed:
-        return Verdict("FAIL", "FAILED " + ", ".join(f"{g.name.upper()} {_fmt(g.value).upper()} (NEEDS {g.rule.upper()})"
-                                                     for g in failed) + pbo_txt, tuple(gates))
+        return Verdict("FAIL", _failed_label(failed) + pbo_txt, tuple(gates))
     return Verdict("PASS", f"EVERY CHARTER GATE PASSED · {ADVISORY_NOTE}{pbo_txt}", tuple(gates))
 
 

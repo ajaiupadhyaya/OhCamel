@@ -14,7 +14,7 @@ session_series: true        # one net return per session
 # bar and the later of the two is written here before the battery runs (pre-registration, Data).
 selection_window: {start: "2016-06-01", end: "2023-12-31"}
 holdout_window: {start: "2024-01-01", end: "2026-09-30"}   # evaluated once
-regimes: research           # research/config/regimes.yaml (task 2.5): 2008, 2011, 2015-16, 2018Q4, 2020, 2022, 2024
+regimes: research           # battery/gates.py REGIMES: 2018 Q4, 2020 COVID, 2022, 2023, 2024
 friction: {version: "1.0.0", file: research/config/friction_v1.yaml}
 mode: walkforward
 n_folds: 4

@@ -175,13 +175,13 @@
           "2011": 0,
           "2015-16": 0,
           "2018Q4": 63,
-          "2020": 253,
+          "2020": 93,
           "2022": 250,
           "2024": 252
         },
         "by_regime": {
           "2018Q4": -0.11235806810834315,
-          "2020": 0.07000305371133297,
+          "2020": -0.13894850342890397,
           "2022": -0.1952949048973377,
           "2024": 0.21151211233076306
         },
@@ -196,7 +196,7 @@
       },
       "name": "regimes_positive",
       "passed": false,
-      "value": 2.0
+      "value": 1.0
     },
     {
       "detail": {
@@ -299,7 +299,7 @@
     "fixtures/macro/macro.parquet.meta.json": "sha256:f8d591f35fd7346bf5578a1f784017edf9a155e69495d32e9034c8a37a1c40d9",
     "research/config/costs.yaml": "sha256:1b66c22ba3be4e47d6368f8577b045366d8d57f03db333d3098280b0bd1bbeb6",
     "research/config/friction_v1.yaml": "sha256:1c09f884a55487ca7bc228efc285b69a865d1df59ee4ea367d9b4c09dc1d4cc9",
-    "research/config/regimes.yaml": "sha256:67b4341a33669a412fb23f52cecb1e2d4d3b9fef3a5bf85349e3fe06af2b02d1",
+    "research/config/regimes.yaml": "sha256:a150f9fa10893b5efbfd16760376ae891eb586c6d6742d39150243f44e7da660",
     "research/experiments/EXP-A01/config.yaml": "sha256:1e3c52bbaae5576f01e555195c266ebfc62f57320fcac4433b8bece79d9c5b0a",
     "research/src/ohcamel_research/battery/__init__.py": "sha256:43612202c7f2f7453b5b5a15a2885383732dca011f35983ce751d20105ffbd6a",
     "research/src/ohcamel_research/battery/config.py": "sha256:2e452f75d56dc48f50a757199553a4ecd5dd1c3912c90fe44f0338094fd8e6a1",
@@ -307,7 +307,7 @@
     "research/src/ohcamel_research/battery/gates.py": "sha256:f442ba32208c99ed20123d6b8f6f39eeb75674adb6ea5030e1252b7768dff35a",
     "research/src/ohcamel_research/battery/pbo.py": "sha256:ccab3973ddcb2b1a87d4300c50762c9da99342ba1ce70d07f7545558acb74d24",
     "research/src/ohcamel_research/battery/regimes.py": "sha256:697dbf5b62664801cf908456c7a9608e3bc230fddda52bcafd54983ac2f05a14",
-    "research/src/ohcamel_research/battery/run.py": "sha256:d7373032d56e224cfde38122d91627d194ada18ea05aacfc229442d9470305be",
+    "research/src/ohcamel_research/battery/run.py": "sha256:8113f3ca362a7174492f45e13961d92dfec49efc340d95c066b765f83830094e",
     "research/uv.lock": "sha256:83d4802a6c029197f776f7865ea755a89a1d9faf6c2fd9b5f089622384dd8b21"
   },
   "holdout_window": {
@@ -322,12 +322,13 @@
     "PBO is max(port, fdq): fdq's CSCV gives a flat column a NaN Sharpe that sorts above every number, and battery/pbo.py's port gives it 0.0; each can come out lower -- fdq when an in-sample winner goes flat out of sample and ranks best, the port when a flat column fdq had ranked above the best ranks below it, or when its 0 is picked in sample over losing columns -- so the fragile label reads the higher; where fdq raises (an in-sample half all flat) the port's figure alone; the pbo gate's detail has both, and how many splits each alone calls overfit",
     "cost sweep: at each level, each fold's own fold_params over its test span and selected_params over the holdout -- the series the gates read, re-evaluated with parameters chosen at the base friction, never re-selected; sharpe_by_bps and total_return_by_bps cover the joined series, holdout_sharpe_by_bps and holdout_total_return_by_bps the holdout alone",
     "walk-forward coverage: 1511 selection bars in 5 blocks of 302; the first 302 (2016-06-01..2017-08-10) only train, and the last 1 (2022-05-31) fall in no fold's test span; each fold's out-of-sample backtest restarts in cash and re-enters",
+    "judged by the gates of docs/CHARTER.md of 2026-11-23: DSR >= 0.95, PSR >= 0.95, excess SPA p <= 0.10, bootstrap lower 5.0th percentile > 0, regimes positive >= 3 of 7 from research/config/regimes.yaml sha256:a150f9fa10893b5efbfd16760376ae891eb586c6d6742d39150243f44e7da660, cost sweep 0/5/15/30 bps round trip, PBO above 0.5 named fragile",
     "stress_multipliers [1, 2, 5] are not read: the cost sweep is cost_sweep_bps_round_trip, in bps round trip"
   ],
   "pbo": 0.786013986013986,
   "psr": 0.9769533438969177,
   "python_version": "3.13.18",
-  "ran_at": "2026-11-24T04:15:13Z",
+  "ran_at": "2026-11-25T00:02:10Z",
   "selected_params": {
     "fast": 1,
     "slow": 150,
@@ -342,5 +343,5 @@
   "symbol": "SPY",
   "turnover": 4.896254034147488,
   "verdict": "fail",
-  "verdict_line": "fail: 3 of 6 gates failed (dsr, excess, regimes_positive); PBO 0.786, above 0.5"
+  "verdict_line": "fail: 2 of 5 measured gates failed (dsr, regimes_positive), excess not computed; PBO 0.786, above 0.5"
 }

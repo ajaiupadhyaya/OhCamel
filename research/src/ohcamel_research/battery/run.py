@@ -106,6 +106,7 @@ from ohcamel_research.battery.gates import (
 from ohcamel_research.battery.pbo import overfit_by_split, probability_backtest_overfitting
 from ohcamel_research.manifest import (
     BATTERY_REL,
+    REGIMES_REL,
     DsrRecord,
     Manifest,
     assert_battery_committed,
@@ -855,32 +856,44 @@ def verdict_line(verdict: str, gates: Sequence[Mapping[str, Any]], pbo: float) -
     the gates and never with a return: every failed gate is named, and PBO is
     always reported, with "above 0.5" when it is. "insufficient data" (too
     few regimes with out-of-sample data, task 2.5) names the coverage first,
-    then every other gate that failed."""
-    decided = [g for g in gates if g["passed"] is not None]
+    then every other gate that failed. A gate the battery could not compute
+    is named "not computed", apart from the measured failures."""
+    # a gate the battery could not compute (value None, a stated reason: the
+    # excess gate, task 2.5) fails the verdict but is named apart -- "not
+    # computed" -- never counted as a measured failure (fix round 1, M-2)
+    unmeasured = [
+        g["name"]
+        for g in gates
+        if g["passed"] is False and g["value"] is None and "reason" in (g.get("detail") or {})
+    ]
+    decided = [g for g in gates if g["passed"] is not None and g["name"] not in unmeasured]
     failed = [g["name"] for g in decided if g["passed"] is False]
     fragile = THRESHOLDS.pbo_fragile_above
     pbo_part = f"PBO {pbo:.3f}" + (f", above {fragile:g}" if pbo > fragile else "")
+    absent = f"{', '.join(unmeasured)} not computed" if unmeasured else ""
+    measured = "measured gates" if unmeasured else "gates"
     if verdict == "insufficient data":
         reg = next(g for g in gates if g["name"] == "regimes_positive")
         others = [n for n in failed if n != "regimes_positive"]
+        plural = "s" if len(others) != 1 else ""
+        parts = [f"{len(others)} other gate{plural} failed ({', '.join(others)})"] if others else []
+        tail = ", ".join([*parts, absent] if absent else parts)
         line = (
             f"insufficient data: {len(reg['detail']['covered'])} of {len(REGIMES)} regimes have "
             f"out-of-sample data (needs {THRESHOLDS.regime_min_positive}); "
-            + (
-                f"{len(others)} other gate{'s' if len(others) != 1 else ''} failed "
-                f"({', '.join(others)}); "
-                if others
-                else ""
-            )
+            + (f"{tail}; " if tail else "")
             + pbo_part
         )
     elif verdict == "fail":
-        if not decided:
+        if not decided and not unmeasured:
             line = f"fail: no gate was decided; {pbo_part}"
+        elif not failed:
+            line = f"fail: {absent}; all {len(decided)} {measured} passed; {pbo_part}"
         else:
             line = (
-                f"fail: {len(failed)} of {len(decided)} gates failed ({', '.join(failed)}); "
-                f"{pbo_part}"
+                f"fail: {len(failed)} of {len(decided)} {measured} failed ({', '.join(failed)})"
+                + (f", {absent}" if absent else "")
+                + f"; {pbo_part}"
             )
     elif verdict == "pass, fragile":
         line = (
@@ -908,6 +921,26 @@ def describe_measure(value: float | None, fmt: str = "{:,.2f}") -> str:
 # --------------------------------------------------------------------------
 
 
+def judged_by_note(hashes: Mapping[str, str]) -> str:
+    """The gates a run was judged by, in its own manifest (completion task 2.5,
+    fix round 1): the charter's date, every threshold, and the regime file's
+    hash. Pre-registrations written before the owner's ruling R3 (EXP-I01 to
+    I03, which quote DSR 0.30, PSR 0.70 and five regimes) are not amended by
+    the code; whichever gates judged a run are stated beside its verdict, so
+    the owner's amendment decision can be checked against the evidence."""
+    t = THRESHOLDS
+    levels = "/".join(f"{b:g}" for b in t.cost_sweep_bps_round_trip)
+    regimes = REGIMES_REL.as_posix()
+    digest = hashes.get(regimes, "unhashed")
+    return (
+        f"judged by the gates of docs/CHARTER.md of {GATES_VERSION}: DSR >= {t.dsr_min:.2f}, "
+        f"PSR >= {t.psr_min:.2f}, excess SPA p <= {t.spa_max_p:.2f}, bootstrap lower "
+        f"{t.bootstrap_lower_percentile}th percentile > 0, regimes positive >= "
+        f"{t.regime_min_positive} of {len(REGIMES)} from {regimes} {digest}, "
+        f"cost sweep {levels} bps round trip, PBO above {t.pbo_fragile_above:g} named fragile"
+    )
+
+
 def _manifest(
     cfg: ExperimentConfig, ev: Evaluation, hashes: dict[str, str], ran_at: str
 ) -> Manifest:
@@ -923,6 +956,7 @@ def _manifest(
         PBO_NOTE,
         SWEEP_NOTE,
         _coverage_note(sel.sel_bars.index, cfg.n_folds),
+        judged_by_note(hashes),
     ]
     if cfg.stress_multipliers is not None:
         notes.append(

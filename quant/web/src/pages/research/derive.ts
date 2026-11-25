@@ -134,12 +134,16 @@ export const GATE_CODE: Record<string, string> = {
 };
 
 /**
- * The gate names a charter verdict's detail lists as failed, lower-case: the label form
+ * The gate names a charter verdict's detail lists as failed, lower-case (a FAIL's, or an INSUFFICIENT DATA's after its
+ * coverage clause): the label form
  * ("FAILED DSR 0.12 (NEEDS >= 0.95), ...") and the earlier sentence form ("failed: dsr 0.12 (needs >= 0.3), ...").
  */
 export function failedGates(detail: string | null | undefined): string[] {
-  if (!detail || !/^failed\b/i.test(detail)) return [];
-  return [...detail.matchAll(/(\w+) (?:[-−]?[\d.]+|n\/a) \(needs/gi)].map((m) => m[1].toLowerCase());
+  // A FAIL leads with them; an INSUFFICIENT DATA verdict names them after its coverage clause ("2 OF 7 REGIMES ... ·
+  // FAILED DSR 0.12 (NEEDS >= 0.95), ...", completion task 2.5 fix round 1).
+  const at = detail ? detail.search(/(^|· )failed\b/i) : -1;
+  if (!detail || at < 0) return [];
+  return [...detail.slice(at).matchAll(/(\w+) (?:[-−]?[\d.]+|n\/a) \(needs/gi)].map((m) => m[1].toLowerCase());
 }
 
 /** True when the verdict named the PBO as high ("· PBO 0.71 HIGH", earlier "; PBO 0.71 (high)"). */

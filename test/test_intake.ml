@@ -1427,12 +1427,13 @@ let test_the_evidence_is_both_manifests_as_committed () =
         [
           ( "exp_a01_spy",
             "fail",
-            "fail: 3 of 6 gates failed (dsr, excess, regimes_positive); PBO 0.786, above \
-             0.5" );
+            "fail: 2 of 5 measured gates failed (dsr, regimes_positive), excess not \
+             computed; PBO 0.786, above 0.5" );
           ( "exp_a01_tlt",
             "fail",
-            "fail: 6 of 6 gates failed (holdout_positive, dsr, psr, excess, \
-             bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5" );
+            "fail: 5 of 5 measured gates failed (holdout_positive, dsr, psr, \
+             bootstrap_sharpe_lower5, regimes_positive), excess not computed; PBO 0.981, \
+             above 0.5" );
         ]
         (List.map (manifests_of body) ~f:(fun m ->
              let s k = Yojson.Safe.Util.to_string (field m k) in

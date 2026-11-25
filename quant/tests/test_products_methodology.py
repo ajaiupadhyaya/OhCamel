@@ -95,3 +95,12 @@ def test_the_farm_entry_states_the_charters_gates():
     assert f"positive in {V.REGIMES_MIN} of {len(V.REGIMES)} regimes" in summary
     assert "fewer than three with out-of-sample data is insufficient data" in summary
     assert "0.30" not in summary and "0.70" not in summary and "three of five" not in summary
+
+
+def test_the_farm_entry_claims_nothing_about_how_many_rows_fail():
+    """Fix round 1 (M-1): the entry is data, not the leaderboard; it says what every row carries, never a count."""
+    models = (WEB / "models.ts").read_text()
+    start = models.index('id: "p4-strategy-farm"')
+    summary = re.search(r'summary: "([^"]+)"', models[start:]).group(1)
+    assert "Most rows fail" not in summary
+    assert "PASS, FAIL, or INSUFFICIENT DATA" in summary and "whole grid and full sweep window" in summary
