@@ -67,7 +67,7 @@
 # hide exactly the miss this exists to catch.
 #
 # PAGING A PERSON (Task 1.11). Five more conditions page a person through
-# OHCAMEL_ALERT_URL in deploy/.env (read for that key only, never sourced,
+# OHCAMEL_ALERT_URL in /etc/ohcamel/ops.env (read for that key only, never sourced,
 # never printed, never on a command line -- the URL is the credential), each
 # at most once in 24 hours per kind (and per strategy or estimator where one
 # is named); docs/runbooks/desk.md says what each means and what to do:
@@ -80,7 +80,11 @@
 #               STATUS line says "halted by hand since <date>" instead.
 #   subledger   `docker logs --since 1h ohcamel-live` has a "sub-ledger at a
 #               sync:" or "sub-ledger at the close of" line (desk/oms.ml's
-#               say_break, the journal's subledger_break alert).
+#               say_break, the journal's subledger_break alert). The onset
+#               and every nightly close repeat page separately (keys
+#               subledger.<SYM>, subledger-close.<SYM>), so a standing break
+#               pages at onset and again after each close, not only in its
+#               first hour.
 #   completions the same log has an intake line "its completion was tried N
 #               times this session" or "its flatten was tried N times this
 #               session" (desk/intake.ml's caps: the order completions and a
@@ -125,7 +129,6 @@
 #   OHCAMEL_WATCH_NOW          epoch seconds to treat as now
 #   OHCAMEL_WATCH_STATE_DIR    default $HOME/.local/state/ohcamel-watch
 #   OHCAMEL_WATCH_OPS_ENV      default /etc/ohcamel/ops.env
-#   OHCAMEL_WATCH_ALERT_ENV    default <checkout>/deploy/.env (OHCAMEL_ALERT_URL)
 #   OHCAMEL_WATCH_BOOK         default <checkout>/book.sexp
 #   OHCAMEL_WATCH_REBOOT_FILE  default /var/run/reboot-required
 #   OHCAMEL_WATCH_SERVICES     default "caddy ohcamel-quant ohcamel-live ohcamel-research"
@@ -159,7 +162,6 @@ PROJECT=ohcamel
 now=${OHCAMEL_WATCH_NOW:-$(date -u +%s)}
 state=${OHCAMEL_WATCH_STATE_DIR:-$HOME/.local/state/ohcamel-watch}
 ops_env=${OHCAMEL_WATCH_OPS_ENV:-/etc/ohcamel/ops.env}
-alert_env=${OHCAMEL_WATCH_ALERT_ENV:-$here/.env}
 book=${OHCAMEL_WATCH_BOOK:-$here/../book.sexp}
 reboot_file=${OHCAMEL_WATCH_REBOOT_FILE:-/var/run/reboot-required}
 services=${OHCAMEL_WATCH_SERVICES:-caddy ohcamel-quant ohcamel-live ohcamel-research}
@@ -184,7 +186,7 @@ kv() {
 }
 slack_url=$(kv "$ops_env" SLACK_WEBHOOK_URL)
 hc_url=$(kv "$ops_env" HEALTHCHECKS_URL)
-alert_url=$(kv "$alert_env" OHCAMEL_ALERT_URL)
+alert_url=$(kv "$ops_env" OHCAMEL_ALERT_URL)
 
 # curl_to URL [curl args...]: the URL through --config on a file descriptor, so
 # it never appears on a command line another user's `ps` can read.
@@ -417,7 +419,7 @@ page() {
 	say "PAGE $kind: $text (docs/runbooks/desk.md, $section)"
 	if [ -z "$alert_url" ]; then
 		printf '%s\n' "$now" >"$f"
-		daily note_nourl "OHCAMEL_ALERT_URL is not set in $alert_env: pages are logged here and posted nowhere; the owner sets it (docs/runbooks/desk.md)"
+		daily note_nourl "OHCAMEL_ALERT_URL is not set in $ops_env: pages are logged here and posted nowhere; the owner sets it (docs/runbooks/desk.md)"
 		return 0
 	fi
 	if curl_to "$alert_url" -H 'Content-Type: application/json' \
@@ -487,9 +489,9 @@ if [ -n "$desk_json" ]; then
 	pf=$(printf '%s' "$desk_json" | jq -r '
 		def ep: if type == "string" then (sub("\\.[0-9]+"; "") | fromdateiso8601 | tostring) else "" end;
 		[ (.switch.state // .kill_switch // "" | tostring),
-		  (.switch.at | ep),
+		  (.switch.at | try ep catch ""),
 		  (.overlay.state // "" | tostring),
-		  (.overlay.as_of | ep),
+		  (.overlay.as_of | try ep catch ""),
 		  (.overlay.age_s // "" | tostring),
 		  (.clock.is_open | tostring) ] | map(gsub("[\u001f\n]"; " ")) | join("\u001f")' 2>/dev/null)
 	IFS=$'\x1f' read -r sw_state sw_at ov_state ov_as_of ov_age_s ov_open <<<"$pf"
@@ -498,11 +500,13 @@ if [ -n "$desk_json" ]; then
 	case "$sw_state" in
 	tripped)
 		if [ -n "$sw_at" ]; then
-			trip_date=$(utc_date $((sw_at - 5 * 3600)))
+			trip_date=$(utc_date $((sw_at + $(et_off "$sw_at"))))
 			touched=$(printf '%s\n' "$sessions" | awk -v d="$trip_date" 'NF && $0 >= d' | wc -l | tr -d ' ')
 			if [ "$touched" -ge 2 ]; then
 				page trip trip "the kill switch has been tripped since $trip_date, across $touched sessions" "A tripped switch"
 			fi
+		else
+			page trip trip "the kill switch is tripped (since unknown: the desk gave no time)" "A tripped switch"
 		fi
 		daily status "desk status: the kill switch is tripped"
 		;;
@@ -539,11 +543,23 @@ if [ -n "$desk_json" ]; then
 	# subledger and completions: the live log's last hour.
 	logs=$(docker logs --since 1h "$live_name" 2>&1) || logs=""
 	if [ -n "$logs" ]; then
-		if printf '%s\n' "$logs" | grep -qE 'sub-ledger at (a sync:|the close of)'; then
-			sym=$(printf '%s\n' "$logs" | grep -E 'sub-ledger at (a sync:|the close of)' | tail -n 1 |
-				sed -n 's/.*position in \([A-Za-z0-9._-]*\) is sent.*/\1/p')
-			page "subledger.${sym:-any}" subledger "a strategy sub-ledger does not sum to the account${sym:+ in $sym}" "A sub-ledger break"
-		fi
+		# Only say_break's lines are breaks: they carry "position in SYM is
+		# sent". The close's "N names checked, no break" and "could not be
+		# checked" lines share the prefix and are not.
+		breaks=$(printf '%s\n' "$logs" | grep -E 'sub-ledger at (a sync|the close of [^:]*):.*position in [A-Za-z0-9._-]+ is sent')
+		for occasion in sync close; do
+			if [ "$occasion" = sync ]; then
+				skey=subledger
+				lines=$(printf '%s\n' "$breaks" | grep -F 'sub-ledger at a sync:')
+			else
+				skey=subledger-close
+				lines=$(printf '%s\n' "$breaks" | grep -F 'sub-ledger at the close of')
+			fi
+			[ -n "$lines" ] || continue
+			for sym in $(printf '%s\n' "$lines" | sed -n 's/.*position in \([A-Za-z0-9._-]*\) is sent.*/\1/p' | sort -u); do
+				page "$skey.$sym" "$skey" "a strategy sub-ledger does not sum to the account in $sym${occasion:+ ($occasion check)}" "A sub-ledger break"
+			done
+		done
 		printf '%s\n' "$logs" | grep -E '(completion|flatten) was tried [0-9]+ times this session' |
 			sed -n 's/^[^"]*"\([A-Za-z0-9_]*\)".*/\1/p' | sort -u | while read -r strat; do
 			page "completions.$strat" completions "order completions exhausted for $strat until tomorrow's session" "Completions exhausted"

@@ -212,8 +212,8 @@ already says.
 Every session from 2026-09-14 to 2026-10-20 closed flat; the **first fills came on 2026-10-21**: 10 fills, five
 positions (SPY, IWM, EWJ and LQD long, EEM short), about 5 % of the $1M paper equity gross, venue and graph
 quantities equal, nothing unmanaged. Two departures from the plan, both the owner's to settle: the cap went to 0.60
-without the three canary sessions at 0.10, and the book's `alerts` block has `(enabled false)` and
-`(kill_switch_enabled false)`, where the canary step called for alerts on and the switch armed on
+without the three canary sessions at 0.10, and the book's `alerts` block had `(enabled false)` and
+`(kill_switch_enabled false)` (the example book has shipped with alerts on, to the log, since Task 1.11), where the canary step called for alerts on and the switch armed on
 `(book-cap var-cap dd-cap)`. The engine's `/api/health` read `healthy: false` because six thin ETFs (BIL, DBA,
 IEI, SHY, SIZE, VGK) had gone minutes without an IEX print, not because a feed failed -- fourteen of them by
 2026-10-27, which is what the per-name thresholds above answer.
@@ -924,7 +924,9 @@ Alerts are edge-triggered (`ALERT` once, `RECOVERED` once, state under
 root:ohcamel) holds `SLACK_WEBHOOK_URL`, each of those lines is also posted
 to Slack; when it holds `HEALTHCHECKS_URL`, every run ends with a ping to
 it, `/fail` appended when a key is firing, so a watch that stops running is
-noticed too. The file is read for those two keys only and never sourced.
+noticed too. The same file's `OHCAMEL_ALERT_URL` is where the watch pages a
+person (docs/runbooks/desk.md). The file is read for those three keys only and
+never sourced.
 
 **From outside: `scripts/uptime.sh`**, run every 15 minutes by
 `.github/workflows/uptime.yml` (read-only GETs, no secrets): the public `/`
@@ -1006,7 +1008,7 @@ corporate action, can be recorded instead of traded away.
 | Alpaca paper trading keys (`ALPACA_TRADING_API_KEY`, `ALPACA_TRADING_SECRET_KEY`), optional | `/etc/ohcamel/live.env` | `ohcamel-live` only |
 | `FRED_API_KEY` | `/etc/ohcamel/live.env` | `ohcamel-live`; `ohcamel-quant` optionally |
 | `SLACK_WEBHOOK_URL` for the book's Slack sink, optional | `/etc/ohcamel/live.env` | `ohcamel-live` |
-| `SLACK_WEBHOOK_URL`, `HEALTHCHECKS_URL` for the watch, optional | `/etc/ohcamel/ops.env`, 0640 root:ohcamel | `deploy/watch.sh` |
+| `SLACK_WEBHOOK_URL`, `HEALTHCHECKS_URL`, `OHCAMEL_ALERT_URL` for the watch, optional | `/etc/ohcamel/ops.env`, 0640 root:ohcamel | `deploy/watch.sh` |
 | The live host's basic-auth hash (`OHCAMEL_LIVE_HASH`) | `deploy/.env` on the droplet; the password is the owner's alone | `caddy` |
 | A GHCR read token, only if the packages stay private | the deploy user's `~/.docker/config.json` (`docker login ghcr.io`) | `docker pull` |
 

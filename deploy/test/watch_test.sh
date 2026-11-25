@@ -186,7 +186,7 @@ fresh_backup() {
 }
 
 reset_scene() {
-	rm -rf "$state" "$work/ops.env" "$work/reboot-required" "$work/alert.env"
+	rm -rf "$state" "$work/ops.env" "$work/reboot-required"
 	: >"$work/log" "$work/logs"
 	ps_all_healthy
 	printf 'exp_a01_spy-2026-09-17.json\nexp_a01_tlt-2026-09-17.json\n' >"$work/signals"
@@ -203,7 +203,6 @@ run() {
 		OHCAMEL_WATCH_NOW="$now" \
 		OHCAMEL_WATCH_STATE_DIR="$state" \
 		OHCAMEL_WATCH_OPS_ENV="$work/ops.env" \
-		OHCAMEL_WATCH_ALERT_ENV="$work/alert.env" \
 		OHCAMEL_WATCH_BOOK="${BOOK:-$book}" \
 		OHCAMEL_WATCH_REBOOT_FILE="$work/reboot-required" \
 		OHCAMEL_BACKUP_DIR="$backups" \
@@ -534,7 +533,8 @@ if [ "$(grep -c '^CURL url=https://hooks.slack.test' "$work/log")" = 1 ]; then o
 # ---------------------------------------------------------------------------
 echo "== the watch pages a person"
 ALERT_URL="https://alert.test/hook/SECRET-TOKEN-1234"
-set_alert_url() { printf '# deploy/.env\nOHCAMEL_ACME_EMAIL=x@y.test\nOHCAMEL_ALERT_URL=%s\n' "$ALERT_URL" >"$work/alert.env"; }
+VS_RED_EARLY='{"var_score":{"scores":[{"estimator":"ewma","n":120,"light":"red"}]}}'
+set_alert_url() { printf '# ops.env\nHEALTHCHECKS_URL_UNUSED=x\nOHCAMEL_ALERT_URL=%s\n' "$ALERT_URL" >"$work/ops.env"; }
 pages() { grep -c '^CURL url=https://alert.test/hook' "$work/log" || true; }
 paged_text() { grep '^CURL url=https://alert.test/hook' "$work/log" | head -n 1; }
 TRIP='{"switch":{"state":"tripped","limit":"dd-cap","why":null,"at":"__AT__"}}'
@@ -587,6 +587,29 @@ expect_count "page: the status line is once a day" "halted by hand since" 0
 run $((T0 + 24 * 3600 + 60))
 expect_count "page: ... and comes again the next day" "halted by hand since 2026-09-01" 1
 
+# A tripped switch with no switch.at still pages.
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+desk "$T0" kill='"tripped"' extra='{"switch":{"state":"tripped","limit":"dd-cap","why":null,"at":null}}'
+run "$T0"
+expect_count "page: a trip with no time still pages (since unknown)" "PAGE trip" 1
+# A bad timestamp in one field does not blank the other pages.
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+desk "$T0" extra="$(jq -cn --argjson v "$VS_RED_EARLY" '$v + {"overlay":{"as_of":"garbage","age_s":null,"state":"stale"}}')"
+run "$T0"
+expect_count "page: an unparseable overlay as_of does not silence a red light" "PAGE varscore" 1
+# The trip's New York date, EST (no DST): a trip at 2026-12-01 03:00Z is 22:00 EST on 11-30.
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+TE=$(epoch 2026-12-01T03:00:00Z)
+desk "$T0" kill='"tripped"' sessions='"2026-11-30","2026-12-01"' extra="$(tripped_at "$TE")"
+run "$T0"
+expect_count "page: the trip's date is New York's (22:00 EST on 11-30), so two sessions count" "since 2026-11-30, across 2 sessions" 1
+# And in EDT: 2026-09-15 02:30Z is 22:30 EDT on 09-14.
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+TD=$(epoch 2026-09-15T02:30:00Z)
+desk "$T0" kill='"tripped"' sessions='"2026-09-14","2026-09-15"' extra="$(tripped_at "$TD")"
+run "$T0"
+expect_count "page: ... and in EDT (22:30 on 09-14)" "since 2026-09-14, across 2 sessions" 1
+
 # --- a sub-ledger break
 reset_scene
 set_alert_url
@@ -601,10 +624,22 @@ if grep '^CURL url=https://alert.test/hook' "$work/log" | sed 's/^.* data=//' | 
 if grep -q '^DOCKER logs .*--since 1h' "$work/log"; then ok "page: the live log is read for the last hour"; else no "page logs" "$(grep '^DOCKER logs' "$work/log" || echo 'no docker logs call')"; fi
 run $((T0 + 300))
 expect_count "page: the same line still in the hour does not page twice" "PAGE subledger" 0
-printf '%s\n' '  2026-09-18 20:35:00.000000Z    desk      sub-ledger at the close of 2026-09-18: SPY' >"$work/logs"
-reset_scene; set_alert_url; desk "$T0"; printf '%s\n' '  x    desk      sub-ledger at the close of 2026-09-18: SPY' >"$work/logs"
+CLOSE_LINE='  2026-09-18 20:35:00.000000Z    desk      sub-ledger at the close of 2026-09-18: SPY: the strategies sum to 1 and the account holds 2; nothing that grows a strategy'"'"'s position in SPY is sent, and a reduction only if it also shrinks the account'"'"'s'
+printf '%s\n' "$CLOSE_LINE" >"$work/logs"
+run $((T0 + 5 * 3600))
+expect_count "page: the same day's close repeat pages although the onset did" "PAGE subledger-close" 1
+run $((T0 + 5 * 3600 + 300))
+expect_count "page: ... once" "PAGE subledger-close" 0
+run $((T0 + 24 * 3600 + 5 * 3600))
+expect_count "page: the next day's close repeat pages again (a standing break is not quiet)" "PAGE subledger-close" 1
+printf '%s\n' '  x    desk      sub-ledger at the close of 2026-09-18: 4 names checked, no break' \
+	'  x    desk      sub-ledger at the close of 2026-09-18 could not be checked: unreadable' >"$work/logs"
+reset_scene; set_alert_url; desk "$T0"
 run "$T0"
-expect_count "page: the close's repeat of a break pages too" "PAGE subledger" 1
+expect_count "page: the close's no-break and could-not-check lines are not breaks" "PAGE subledger" 0
+{ printf '%s\n' "$CLOSE_LINE"; printf '%s\n' "$CLOSE_LINE" | sed 's/SPY/QQQ/g'; } >"$work/logs"
+run "$T0"
+expect_count "page: each broken symbol is its own page (two symbols, two pages)" "PAGE subledger-close" 2
 
 # --- completions exhausted
 reset_scene
@@ -703,7 +738,7 @@ expect_count "page: ... once a day, not every run" "OHCAMEL_ALERT_URL is not set
 run $((T0 + 24 * 3600 + 60))
 expect_count "page: ... and again the next day" "OHCAMEL_ALERT_URL is not set" 1
 # An empty value is unset too.
-printf 'OHCAMEL_ALERT_URL=\n' >"$work/alert.env"
+printf 'OHCAMEL_ALERT_URL=\n' >"$work/ops.env"
 rm -rf "$state"; run "$T0"
 expect_count "page: an empty OHCAMEL_ALERT_URL is unset" "OHCAMEL_ALERT_URL is not set" 1
 

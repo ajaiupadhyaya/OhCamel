@@ -44,7 +44,7 @@ let load () =
         "the example book does not parse, so a fresh deploy would refuse to start: %s"
         (Error.to_string_hum e)
 
-let test_the_example_book_parses_and_ships_inert () =
+let test_the_example_book_parses_and_ships_desk_disabled () =
   let book = load () in
   (* The universe and the limits the rest of the documentation describes. *)
   Alcotest.(check int) "forty-eight instruments" 48 (List.length book.Book.positions);
@@ -1481,7 +1481,7 @@ let suite =
   ( "example book",
     [
       Alcotest.test_case "the example book parses and ships inert" `Quick
-        test_the_example_book_parses_and_ships_inert;
+        test_the_example_book_parses_and_ships_desk_disabled;
       Alcotest.test_case "the example book's limits fit an ETF book" `Quick
         test_the_example_book_limits_fit_an_etf_book;
       Alcotest.test_case "the example book's classes are the site's groups" `Quick

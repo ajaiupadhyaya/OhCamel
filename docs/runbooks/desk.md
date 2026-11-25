@@ -12,13 +12,13 @@ the watch.
 
 ## One-time setup (owner)
 
-Add one line to `deploy/.env` on the droplet (the file docker compose already reads), then wait for the next run:
+Add one line to `/etc/ohcamel/ops.env` on the droplet (0640 root:ohcamel, the file that already holds
+`SLACK_WEBHOOK_URL` and `HEALTHCHECKS_URL`), then wait for the next run:
 
     OHCAMEL_ALERT_URL=https://your-webhook-url
 
 The watch posts `{"text": "..."}` (Slack-shaped; most webhooks accept it). The URL is a credential: it is read for
-that key only, never printed, never on a command line. Note that `deploy/deploy.env.example` calls `.env` secret-free;
-this one key is the exception, so keep the file out of git (it is not tracked) and unreadable to others.
+that key only, never sourced, never printed, never on a command line.
 **While it is unset the watch logs each page as a `PAGE` line in `journalctl -t ohcamel-watch` and says
 "OHCAMEL_ALERT_URL is not set" once a day.** Nothing reaches you.
 
@@ -50,7 +50,9 @@ a script, after you have looked at the limit on the dashboard. The agent never r
 **Means:** the sum of the strategies' own positions (and the hand tickets' fills) in a name disagrees with the
 account's position at two checks in a row (Task 1.6). While it stands, nothing that grows a strategy's position in
 that name is sent. The page fires from the live log's `sub-ledger at a sync:` or `sub-ledger at the close of`
-line within the last hour.
+line within the last hour. The watch pages at onset and again after every nightly close while the break stands
+(each its own once-a-day page, per symbol), so a standing break is not quiet after its first hour. The close's
+"names checked, no break" line is not a break and does not page.
 
 **Read-only check:** `docker logs --since 6h ohcamel-ohcamel-live-1 | grep 'sub-ledger'` (the line carries the
 figures; keep them off chat), and the journal's `subledger_break` alert on the dashboard. Then compare the
