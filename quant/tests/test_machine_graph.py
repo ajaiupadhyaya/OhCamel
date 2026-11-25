@@ -414,7 +414,8 @@ def test_the_book_comes_from_book_summary():
 
 def _pooled_row(**over):
     row = {"experiment": "INC-02", "sessions_done": 120, "sessions_required": 500, "psr": 0.71, "sharpe_se": 0.9,
-           "power_at_1": 0.41, "power_at_half": 0.17, "verdict": "IN PROGRESS", "reason": None, **over}
+           "power_at_1": 0.41, "power_at_half": 0.17, "verdict": "IN PROGRESS", "reason": None,
+           "as_of": "2026-10-09", **over}
     return pd.DataFrame([row])
 
 
@@ -424,6 +425,7 @@ def test_the_book_carries_inc02s_test_as_sessions_a_verdict_and_a_power():
     m = _node(build_graph(_inputs(book_summary=_desk_with(tables, live))), "book")["m"]
     assert (m["pooled_done"], m["pooled_required"], m["pooled_verdict"], m["pooled_power"]) == (
         120, 500, "IN PROGRESS", 0.41)
+    assert m["pooled_asof"] == "2026-10-09"
     assert "pooled_why" not in m and not {"psr", "sharpe_se", "return", "equity"} & set(m)
 
 

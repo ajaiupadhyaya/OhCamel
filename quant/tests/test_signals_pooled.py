@@ -122,7 +122,8 @@ def test_the_statistic_is_the_excess_return_on_the_accounts_prior_close_equity()
     research = {"strategies": [{"name": "a", "record": {"sessions": [
         {"date": "2027-01-05", "allocated": 50_000.0, "pnl": 600.0}]}}]}
     closes = [{"date": "2027-01-04", "equity_close": 100_000.0}, {"date": "2027-01-05", "equity_close": 100_600.0}]
-    got = report._pooled_daily(research, closes, lambda: {"2027-01-05": 0.0002}, [])
+    got, recorded, cause = report._pooled_daily(research, closes, lambda: {"2027-01-05": 0.0002}, [])
+    assert (recorded, cause) == (1, None)
     assert got == [pytest.approx((600.0 - 50_000.0 * 0.0002) / 100_000.0)]
 
 
@@ -131,8 +132,10 @@ def test_a_missing_rate_or_prior_equity_is_a_note_not_a_number():
         {"date": "2027-01-05", "allocated": 1.0, "pnl": 1.0}]}}]}
     notes: list[str] = []
     closes = [{"date": "2027-01-04", "equity_close": 1.0}, {"date": "2027-01-05", "equity_close": 1.0}]
-    assert report._pooled_daily(research, closes, lambda: {}, notes) is None and "risk-free" in notes[0]
-    assert report._pooled_daily(research, closes[1:], lambda: {"2027-01-05": 0.0}, notes) is None
+    got, recorded, cause = report._pooled_daily(research, closes, lambda: {}, notes)
+    assert got is None and recorded == 1 and "risk-free" in cause and "risk-free" in notes[0]
+    got, recorded, cause = report._pooled_daily(research, closes[1:], lambda: {"2027-01-05": 0.0}, notes)
+    assert got is None and recorded == 1 and "prior-close equity" in cause
 
 
 def test_the_public_columns_and_no_return_equity_position_or_size(approved):
@@ -140,3 +143,49 @@ def test_the_public_columns_and_no_return_equity_position_or_size(approved):
     assert sorted(row) == sorted(ALLOWED)
     assert report.POOLED_COLUMNS == ALLOWED
     assert not any(w in c for c in ALLOWED for w in ("return", "equity", "position", "size", "mean", "sd", "pnl"))
+
+
+def test_a_missing_rate_keeps_the_count_and_gives_its_own_reason(approved):
+    research, closes, _, last = _bodies(120)
+    row = _row((research, closes, lambda: {}, last), path=approved)
+    assert row["sessions_done"] == 120 and row["verdict"] == "IN PROGRESS"
+    assert row["psr"] is None and row["sharpe_se"] is None
+    assert row["reason"].startswith("statistic not computable this session: no risk-free rate for ")
+    assert "no INC-02 fill" not in row["reason"]
+
+
+def test_a_running_figure_says_it_is_not_the_result_and_the_result_does_not(approved, monkeypatch):
+    assert _row(_bodies(120), path=approved)["reason"] == "running, not the test's result"
+    assert _row(_bodies(500), path=approved)["reason"] is None
+
+
+def test_record_dates_with_no_close_are_noted_not_silently_dropped():
+    research = {"strategies": [{"name": "a", "record": {"sessions": [
+        {"date": "2027-01-05", "allocated": 1.0, "pnl": 1.0}, {"date": "2027-01-06", "allocated": 1.0, "pnl": 1.0}]}}]}
+    closes = [{"date": "2027-01-04", "equity_close": 1.0}, {"date": "2027-01-05", "equity_close": 1.0}]
+    notes: list[str] = []
+    report._pooled_daily(research, closes, lambda: {"2027-01-05": 0.0}, notes)
+    assert any("1 record dates have no session close" in n and "2027-01-06" in n for n in notes)
+
+
+def test_the_served_record_shape_is_read_end_to_end(tmp_path, monkeypatch):
+    """desk/intake.ml serves ``record: {"sessions": [{date, allocated, pnl}]}`` on the live host."""
+    from tests.test_signals_report import (  # noqa: PLC0415
+        RESEARCH,
+        SESSIONS,
+        _ctx,
+        _Engine,
+        _full,
+        _ok,
+    )
+
+    served = {**RESEARCH, "strategies": [{**RESEARCH["strategies"][0], "record": {"sessions": [
+        {"date": "2026-10-09", "allocated": 25_000.0, "pnl": 100.0}]}}, *RESEARCH["strategies"][1:]]}
+    routes = {**_full(), "/api/research": _ok(served), "/api/desk/sessions": _ok(SESSIONS)}
+    monkeypatch.setattr(report, "roster_draft", lambda *a, **k: None)
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    r = spec.tables["pooled_test"].iloc[0]
+    # one session recorded; the offline test environment has no risk-free rate, so the statistic says so
+    assert r["sessions_done"] == 1 and r["verdict"] == "IN PROGRESS"
+    assert r["reason"].startswith("statistic not computable this session")

@@ -108,6 +108,8 @@ POOLED_COLUMNS = ["experiment", "sessions_done", "sessions_required", "psr", "sh
                   "power_at_half", "verdict", "reason", "statistic", "as_of", "source"]
 POOLED_SOURCE = ("the engine's per-strategy record (net of costs, dividends in, marked to the official close) "
                  "and /api/desk/sessions' closes")
+#: A PSR before session 500 is a display (INC-02 T4), never an interim test.
+RUNNING_NOTE = "running, not the test's result"
 #: Said beside every row of the TCA table: the paper venue fills at the simulator's price.
 PAPER_SENTENCE = ("Paper fills have no market impact and no queue; realised shortfall here is a floor on what a "
                   "real venue would charge.")
@@ -439,14 +441,16 @@ def _var_score(desk: dict[str, Any] | None, notes: list[str]) -> list[dict[str, 
 
 
 def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any,
-                  notes: list[str]) -> list[float] | None:
+                  notes: list[str]) -> tuple[list[float] | None, int, str | None]:
     """INC-02's T1, the proposed statistic: per session ``sum_i (pnl_i - allocated_i * r_f) / prior-close equity``,
     i.e. ``sum_i w_i (r_i - r_f)`` with ``w_i`` the share of the account allocated. Each strategy's ``record`` is
     ``{"sessions": [{date, allocated, pnl}]}`` (desk/record.ml's session, from the strategy's first fill); a
     session in which no strategy has a row counts as zero (T2: a flat or halted session still counts). The series
-    runs from the first date any strategy has a row to the newest session close. None when there is no record, no
-    close, or a close without a prior equity or rate; the notes say which. ``rf_for()`` reads the rate, and is
-    called only once there is a record to need it."""
+    runs from the first date any strategy has a row to the newest session close. Returns ``(series, recorded,
+    cause)``: ``recorded`` counts the sessions recorded from the first fill; ``series`` is None, with the
+    ``cause``, when a close lacks a prior equity or a rate (the statistic is then not computable, but the
+    sessions still happened), and ``(None, 0, None)`` when there is no record at all. ``rf_for()`` reads the
+    rate, and is called only once there is a record to need it."""
     rows: dict[str, list[tuple[float, float]]] = {}
     strategies = (research or {}).get("strategies")
     for s in strategies if isinstance(strategies, list) else []:
@@ -459,25 +463,36 @@ def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, r
             if alloc is not None and pnl is not None:
                 rows.setdefault(r["date"], []).append((alloc, pnl))
     if not rows:
-        return None
+        return None, 0, None
     closes = sorted((c["date"], _num(c.get("equity_close"))) for c in sessions or []
                     if isinstance(c, dict) and isinstance(c.get("date"), str))
-    rf = rf_for()
     first = min(rows)
+    recorded = sum(1 for d, _ in closes if d >= first)
+    unmatched = sorted(d for d in rows if d not in {c for c, _ in closes})
+    if unmatched:
+        notes.append(f"pooled_test: {len(unmatched)} record dates have no session close in /api/desk/sessions "
+                     f"and are not counted (first: {unmatched[0]})")
+    if recorded == 0:
+        cause = "no session close at or after the first record"
+        notes.append(f"pooled_test: {cause}")
+        return None, 0, cause
+    rf = rf_for()
     out: list[float] = []
     for i, (d, _) in enumerate(closes):
         if d < first:
             continue
         prior = closes[i - 1][1] if i > 0 else None
         if prior is None or prior <= 0:
-            notes.append(f"pooled_test: no prior-close equity for {d}: the statistic is not computed")
-            return None
+            cause = f"no prior-close equity for {d}"
+            notes.append(f"pooled_test: {cause}: the statistic is not computed")
+            return None, recorded, cause
         drag = rf.get(d) if rf else None
         if drag is None:
-            notes.append(f"pooled_test: no risk-free rate for {d}: the statistic is not computed")
-            return None
+            cause = f"no risk-free rate for {d}"
+            notes.append(f"pooled_test: {cause}: the statistic is not computed")
+            return None, recorded, cause
         out.append(sum(pnl - alloc * drag for alloc, pnl in rows.get(d, [])) / prior)
-    return out
+    return out, recorded, None
 
 
 def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any, session: date,
@@ -492,13 +507,17 @@ def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf
     idle = {"sessions_done": 0, "psr": None, "sharpe_se": None, "verdict": "NOT STARTED", "statistic": label}
     if unapproved:
         return [{**head, **idle, "reason": "INC-02 awaits the owner's approval"}]
-    daily = _pooled_daily(research, sessions, rf_for, notes)
-    if not daily:
+    daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes)
+    if recorded == 0 and cause is None:
         return [{**head, **idle, "reason": "no INC-02 fill yet"}]
-    done = min(len(daily), SESSIONS)
+    done = min(recorded, SESSIONS)
+    if daily is None:     # sessions happened; the statistic cannot be computed this session
+        return [{**head, "sessions_done": done, "psr": None, "sharpe_se": None, "verdict": "IN PROGRESS",
+                 "reason": f"statistic not computable this session: {cause}", "statistic": label}]
     psr, se = psr_and_se(daily[:SESSIONS])
-    return [{**head, "sessions_done": done, "psr": psr, "sharpe_se": se, "verdict": verdict_at(done, psr),
-             "reason": None, "statistic": label}]
+    verdict = verdict_at(done, psr)
+    return [{**head, "sessions_done": done, "psr": psr, "sharpe_se": se, "verdict": verdict,
+             "reason": RUNNING_NOTE if verdict == "IN PROGRESS" else None, "statistic": label}]
 
 
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],

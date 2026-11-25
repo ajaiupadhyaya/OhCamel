@@ -535,8 +535,10 @@ def _pooled(p: Product | None) -> dict:
     if not ok:
         return {}
     why = r.get("reason")
+    asof = r.get("as_of")
     return {"pooled_done": int(done), "pooled_required": int(need), "pooled_verdict": verdict,
-            "pooled_power": float(power), **({"pooled_why": why} if isinstance(why, str) and why else {})}
+            "pooled_power": float(power), **({"pooled_why": why} if isinstance(why, str) and why else {}),
+            **({"pooled_asof": asof} if isinstance(asof, str) and asof else {})}
 
 
 def _signal_source(c: Cell) -> str:

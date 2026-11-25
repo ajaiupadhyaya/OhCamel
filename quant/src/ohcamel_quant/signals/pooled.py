@@ -8,6 +8,11 @@ what the pre-registration prints). The PSR is ``backtest.metrics.probabilistic_s
 Prado's formula, the one the research battery's ``psr_gate`` evaluates, with the sample skewness and
 kurtosis.
 
+Both ``psr`` and ``sharpe_se`` are published, and together they determine the Sharpe estimate exactly:
+PSR = Phi(SR_hat sqrt(n - 1) / sqrt(d)) and se = sqrt(252 d / (n - 1)) give z * se = SR_hat * sqrt(252), with
+z = Phi^-1(PSR). So the annualised Sharpe estimate is public by construction; that is the test's own
+statistic, the one thing the page exists to state, and it is not a return, equity, position or size.
+
 Nothing returned here is a return, an equity, a position or a size: counts, a probability, a standard error
 (of the annualised Sharpe estimate), the power and a verdict word.
 """
