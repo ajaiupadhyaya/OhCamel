@@ -130,6 +130,54 @@ let expected_shortfall ~returns ~confidence =
   let tail = loss_tail ~returns ~confidence in
   -.(Array.fold tail ~init:0.0 ~f:( +. ) /. float_of_int (Array.length tail))
 
+(* Expected shortfall with the tail count INTERPOLATED: the mean of the worst
+   (1 - c) x n observations, where a fractional count takes the next
+   observation at its fractional weight. The book's tripping risk limit reads
+   this one (Types.Limit.Expected_shortfall, Task 1.9).
+
+   With k = (1 - c) x n, m = floor k and x(1) <= x(2) <= ... the returns
+   sorted ascending,
+
+     ES = -( x(1) + ... + x(m) + (k - m) x(m+1) ) / k.
+
+   At 99% over 250 sessions k = 2.5: ES = -(x(1) + x(2) + 0.5 x(3)) / 2.5.
+   [expected_shortfall] above rounds the count UP (nearest rank, [tail_count])
+   and averages ceil(k) observations at full weight: (x(1) + x(2) + x(3)) / 3
+   there, which weights the third worst day as heavily as the worst and so
+   reports a SMALLER shortfall whenever the third is milder. Where k is a whole
+   number the two are the same mean; they differ only on a fractional count,
+   and at 250 sessions a 99% count is always fractional.
+
+   VaR keeps the nearest-rank convention ([historical_var]), as does the
+   dashboard's 95% ES: changing either would move every number the desk has
+   journaled. This is a second estimator beside them, not a replacement.
+
+   k is rounded to nine decimals first: (1 - 0.99) x 250 is
+   2.5000000000000022 in floating point, and an unrounded k would carry that
+   last-bit noise into the weight. A k below one observation is the single
+   worst loss, as [tail_count]'s floor of one is. *)
+let expected_shortfall_interpolated ~returns ~confidence =
+  validate_confidence ~confidence;
+  validate_non_empty ~name:"returns" returns;
+  validate_finite ~who:"expected_shortfall_interpolated" returns;
+  let n = Array.length returns in
+  let sorted = Array.copy returns in
+  Array.sort sorted ~compare:Float.compare;
+  let k =
+    Float.round_nearest ((1.0 -. confidence) *. float_of_int n *. 1e9) /. 1e9
+    |> Float.min (float_of_int n)
+  in
+  if Float.( < ) k 1.0 then -.sorted.(0)
+  else
+    let m = Float.iround_down_exn k in
+    let whole = ref 0.0 in
+    for i = 0 to m - 1 do
+      whole := !whole +. sorted.(i)
+    done;
+    let fraction = k -. float_of_int m in
+    let partial = if m < n then fraction *. sorted.(m) else 0.0 in
+    -.((!whole +. partial) /. k)
+
 (* The standard normal quantile, e.g. -1.6449 at p = 0.05.
 
    Delegated to Owl rather than hand-rolled: an inverse-CDF approximation is easy

@@ -1158,6 +1158,10 @@ let run_live ~book_path ~(serve_port : int option) =
          instead of one, on a path that does thirty of them per tick. *)
       let log = Recompute_log.create () in
       let counter = Counter.create () in
+      (* The return window is the book's var_window (Config.load applies
+         Runtime.with_risk): an Expected_shortfall limit reads only a full
+         window, so the graph's window is the shortfall's, and the backfill
+         below fetches that many sessions. *)
       let graph =
         Graph.create
           ~on_compute:(fun name ->
@@ -1165,7 +1169,8 @@ let run_live ~book_path ~(serve_port : int option) =
             Recompute_log.note log name)
           ~on_value_change:(Recompute_log.note_change log)
           ~starting_cash:(Notional.of_float book.Config.Book.cash)
-          ~drawdown_window:book.Config.Book.risk.Config.Risk.drawdown_window ~instruments
+          ~drawdown_window:book.Config.Book.risk.Config.Risk.drawdown_window
+          ~es_confidence:book.Config.Book.risk.Config.Risk.es_confidence ~instruments
           ~limits ~confidence:runtime.Config.Runtime.confidence
           ~return_window:runtime.Config.Runtime.return_window
           ~staleness_threshold:runtime.Config.Runtime.staleness_threshold

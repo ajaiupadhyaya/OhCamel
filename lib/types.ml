@@ -328,6 +328,27 @@ module Limit = struct
            component limit without trading that name at all, which is correct
            and is the entire point, but it does mean the limit is not a
            property of the position in isolation the way a notional cap is. *)
+    | Class_gross of float
+      (* The GROSS of one sector class -- the sum of |exposure| over its names
+         -- as a fraction of equity: 0.35 = 35%. Sector scope only, and a book
+         that writes one writes one for every sector it holds (Limits.validate),
+         so no name sits outside every class cap. Gross rather than net: a long
+         and a short in one class are both exposure to it, and a class cap that
+         netted them would read a hedged pair as an empty class. *)
+    | Name_weight of float
+      (* The heaviest name's |exposure| as a fraction of equity: 0.15 = 15%.
+         Portfolio scope, and it applies to every instrument the book holds --
+         one limit, read as the largest weight, rather than one limit per name
+         that a new name could arrive without. *)
+    | Expected_shortfall of Notional.t
+      (* 1-day expected shortfall of the current book, in dollars: the mean
+         loss over the worst (1 - c) of the return window's sessions, c the
+         book's es_confidence (0.99), a fractional tail count interpolated
+         (Risk_metrics.expected_shortfall_interpolated). Portfolio scope only,
+         for the reason VaR is: a quantile statistic does not decompose. It
+         reads only a FULL return window -- the live book's is 250 sessions
+         (Config.Risk.var_window) -- and is unevaluable until the window is
+         full, never computed over what there is. *)
   [@@deriving sexp_of, compare, equal]
 
   type t = { name : string; scope : scope; kind : kind }
@@ -343,8 +364,9 @@ module Breach = struct
   (* The result of evaluating one limit.
 
      [observed], [threshold] and [excess] are plain floats whose unit is
-     determined by [limit.kind] -- dollars for Gross_notional and Value_at_risk,
-     a fraction for Max_drawdown. They are not Notional.t precisely because they
+     determined by [limit.kind] -- dollars for Gross_notional, Value_at_risk and
+     Expected_shortfall, a fraction for Max_drawdown, Class_gross and
+     Name_weight. They are not Notional.t precisely because they
      are not always notional. Read the kind before formatting the number.
 
      [excess] is observed - threshold, so it is positive exactly when [breached]

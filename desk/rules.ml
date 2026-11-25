@@ -313,7 +313,7 @@ let is_timing_refusal ?(desk = false) (failures : Failure.t list) =
    hold on the other side -- their long, hedged until then, becomes
    unhedged. Under a drawdown trip nothing at the account's level bounds
    that beyond the other strategies' own positions; the gate still judges
-   every such order against every limit, so under a gross or VaR trip the
+   every such order against every limit, so under a gross or shortfall trip the
    cover may still be refused there. R2 is the spec's default awaiting the
    owner, and the book's word stays off until the owner approves it.
 

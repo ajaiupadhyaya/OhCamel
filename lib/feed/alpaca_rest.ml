@@ -43,6 +43,26 @@ let path = "/v2/stocks/bars"
    and nothing else. *)
 let lookback_days ~window = (window * 2) + 30
 
+(* The most bars one request may return: the request's own [limit] below.
+   Alpaca answers a multi-symbol bars request with at most this many bars IN
+   ALL, symbol by symbol, and a page token for the rest -- so a request whose
+   names together hold more bars than this comes back with the later names cut
+   short or missing, and the common window, the shortest series, with them.
+   At the 60-session window that never happened (64 names x ~105 trading days
+   is ~6,700 bars); at the book's 250-session risk window (Task 1.9) one
+   request for 48 names asks for ~530 calendar days, ~365 trading days each,
+   ~17,500 bars. *)
+let max_bars_per_request = 10_000
+
+(* The symbols, cut into requests that cannot reach [max_bars_per_request]:
+   no more names per request than the bars cap over the LOOKBACK's calendar
+   days -- a bound on each name's trading days, so a batch is always under
+   the cap whatever the holidays -- and at least one. A name's bars are then
+   never split across a page, and no page token is ever needed. *)
+let symbol_batches ~window (symbols : 'a list) : 'a list list =
+  let per_request = Int.max 1 (max_bars_per_request / lookback_days ~window) in
+  List.chunks_of symbols ~length:per_request
+
 (* Alpaca wants an RFC-3339 date. Sliced out of the UTC timestamp rather than
    formatted through a calendar library, because [Time_ns.to_string_utc] is
    fixed-width ("2026-07-30 16:35:12.930764000Z") and the first ten characters
@@ -76,7 +96,7 @@ let build_uri ~symbols ~window ~feed =
            return that dominates the tail for the life of the window. *)
         ("adjustment", [ "all" ]);
         ("feed", [ feed ]);
-        ("limit", [ "10000" ]);
+        ("limit", [ Int.to_string max_bars_per_request ]);
       ]
     ()
 
@@ -211,9 +231,8 @@ let parse_latest_trades (json : Yojson.Safe.t) : (Types.Symbol.t * Types.Tick.t)
 (* Fetching                                                                  *)
 (* ------------------------------------------------------------------------ *)
 
-let fetch_daily_returns ~(credentials : Config.Credentials.t)
-    ~(symbols : Types.Symbol.t list) ~(window : int) ~(feed : string) :
-    Series.t list Or_error.t Deferred.t =
+let fetch_batch ~(credentials : Config.Credentials.t) ~(symbols : Types.Symbol.t list)
+    ~(window : int) ~(feed : string) : Series.t list Or_error.t Deferred.t =
   if List.is_empty symbols then return (Ok [])
   else
     let uri = build_uri ~symbols ~window ~feed in
@@ -236,6 +255,16 @@ let fetch_daily_returns ~(credentials : Config.Credentials.t)
         Or_error.errorf "alpaca_rest: %s returned %s (%s)" (Uri.to_string uri)
           (Cohttp.Code.string_of_status status)
           (String.prefix body 200)
+
+(* Every symbol's daily returns, one request per [symbol_batches] batch, in
+   turn. The first batch that fails fails the whole fetch, naming its request:
+   a backfill missing a batch would cap the common window at nothing, which is
+   the failure the batching exists to prevent, so it is reported, not hidden. *)
+let fetch_daily_returns ~(credentials : Config.Credentials.t)
+    ~(symbols : Types.Symbol.t list) ~(window : int) ~(feed : string) :
+    Series.t list Or_error.t Deferred.t =
+  Deferred.Or_error.List.concat_map ~how:`Sequential (symbol_batches ~window symbols)
+    ~f:(fun symbols -> fetch_batch ~credentials ~symbols ~window ~feed)
 
 (* Backfill every instrument's return window AND its opening mark, then settle
    once.

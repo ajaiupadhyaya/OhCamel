@@ -14,16 +14,38 @@
 ; Quantities are signed: positive is long, negative is short.
 ;
 ; Limit scopes:   (Instrument SYM) | (Sector NAME) | Portfolio
-; Limit kinds:    (Gross_notional DOLLARS)   |exposure| may not exceed this
-;                 (Value_at_risk DOLLARS)    portfolio VaR, Portfolio scope only
-;                 (Component_var DOLLARS)    a name's or sector's share of portfolio VaR
-;                 (Max_drawdown FRACTION)    0.10 = 10%, Portfolio scope only
+; Limit kinds:    (Gross_notional DOLLARS)      |exposure| may not exceed this
+;                 (Value_at_risk DOLLARS)       portfolio VaR, Portfolio scope only
+;                 (Component_var DOLLARS)       a name's or sector's share of portfolio VaR
+;                 (Max_drawdown FRACTION)       0.10 = 10%, Portfolio scope only
+;                 (Name_weight FRACTION)        the heaviest name's |exposure| over
+;                                               equity, Portfolio scope only: it
+;                                               applies to every instrument
+;                 (Class_gross FRACTION)        a sector class's gross (the sum of
+;                                               its names' |exposure|) over equity,
+;                                               Sector scope only
+;                 (Expected_shortfall DOLLARS)  1-day expected shortfall of the
+;                                               current book at the risk block's
+;                                               es_confidence over its var_window
+;                                               sessions, Portfolio scope only
 ; Steady-state gross is $550,000; $700,000 is the bug trip; 10% drawdown is the book halt; $30,000 VaR is about three times the 10% target's one-day 95% VaR.
 ;
-; Value_at_risk and Max_drawdown are portfolio statistics and this engine keeps
-; no per-name version of either, so a sector- or instrument-scoped one is
-; rejected at startup rather than answered with the book-level number.
-; Component_var is additive by construction, so it is valid at every scope.
+; Value_at_risk, Expected_shortfall and Max_drawdown are portfolio statistics
+; and this engine keeps no per-name version of any, so a sector- or
+; instrument-scoped one is rejected at startup rather than answered with the
+; book-level number. Component_var is additive by construction, so it is valid
+; at every scope.
+;
+; The limits fit an ETF book (Task 1.9): no name above 15% of equity
+; (name-cap); no sector class above 35% of equity, gross (one class-* limit per
+; sector below -- once a book writes one Class_gross limit it must write one
+; for every sector it holds, or it is refused, so no name escapes every class
+; cap); and a 1-day 99% expected shortfall over 250 sessions of $45,000 as the
+; risk limit the kill switch trips on (es-cap). The sectors are the site's
+; universe groups (quant/src/ohcamel_quant/universes.json), one class per
+; group; the six single names keep their own sectors and each sector its own
+; class. var-cap stays, as an alert the switch does not trip on. No net-beta
+; limit and no borrow or buying-power rule (the completion spec's Cut).
 
 ((cash 1000000.0)
  (positions
@@ -52,7 +74,9 @@
    ; 3 minutes (XLRE, LQD, EWJ, EFA, TLT, CVX, XLU, HYG, XLI, XLB, GLD, XLP,
    ; XLF, EEM, JPM, XLK, XLY). The rest never went a minute without one.
    ((symbol SPY)  (sector INDEX)      (qty 0.0))
-   ((symbol TLT)  (sector TREASURIES) (qty 0.0) (stale_after_s 300))
+   ; TLT is in the site's rates group with BIL, SHY, IEI, IEF and TIP, so it
+   ; is RATES: a class of its own would give the Treasury curve two 35% caps.
+   ((symbol TLT)  (sector RATES)      (qty 0.0) (stale_after_s 300))
    ; The rest of the site's 42 ETFs (quant/src/ohcamel_quant/universes.json,
    ; less its crypto and volatility groups), one sector per group, for the
    ; farm's strategies below. SPY and TLT above are two of the 42.
@@ -104,16 +128,24 @@
    ((symbol DBA)  (sector COMMODITY)  (qty 0.0) (stale_after_s 1800))
    ((symbol DBC)  (sector COMMODITY)  (qty 0.0) (stale_after_s 1800))))
  (limits
-  (((name aapl-cap)   (scope (Instrument AAPL))  (kind (Gross_notional 150000.0)))
-   ((name nvda-cap)   (scope (Instrument NVDA))  (kind (Gross_notional 60000.0)))
-   ((name tech-cap)   (scope (Sector TECH))      (kind (Gross_notional 260000.0)))
-   ((name energy-cap) (scope (Sector ENERGY))    (kind (Gross_notional 150000.0)))
-   ((name book-cap)   (scope Portfolio)          (kind (Gross_notional 700000.0)))
-   ((name var-cap)    (scope Portfolio)          (kind (Value_at_risk 30000.0)))
-   ((name dd-cap)     (scope Portfolio)          (kind (Max_drawdown 0.10)))))
+  (((name name-cap)         (scope Portfolio)           (kind (Name_weight 0.15)))
+   ((name class-commodity)  (scope (Sector COMMODITY))  (kind (Class_gross 0.35)))
+   ((name class-credit)     (scope (Sector CREDIT))     (kind (Class_gross 0.35)))
+   ((name class-energy)     (scope (Sector ENERGY))     (kind (Class_gross 0.35)))
+   ((name class-financials) (scope (Sector FINANCIALS)) (kind (Class_gross 0.35)))
+   ((name class-index)      (scope (Sector INDEX))      (kind (Class_gross 0.35)))
+   ((name class-intl)       (scope (Sector INTL))       (kind (Class_gross 0.35)))
+   ((name class-rates)      (scope (Sector RATES))      (kind (Class_gross 0.35)))
+   ((name class-sector)     (scope (Sector SECTOR))     (kind (Class_gross 0.35)))
+   ((name class-style)      (scope (Sector STYLE))      (kind (Class_gross 0.35)))
+   ((name class-tech)       (scope (Sector TECH))       (kind (Class_gross 0.35)))
+   ((name book-cap)         (scope Portfolio)           (kind (Gross_notional 700000.0)))
+   ((name es-cap)           (scope Portfolio)           (kind (Expected_shortfall 45000.0)))
+   ((name var-cap)          (scope Portfolio)           (kind (Value_at_risk 30000.0)))
+   ((name dd-cap)           (scope Portfolio)           (kind (Max_drawdown 0.10)))))
 
  ; ---------------------------------------------------------------------------
- ; The drawdown's window. OPTIONAL -- omit it and the window is 250 closes.
+ ; The risk windows. OPTIONAL -- omit any word and it takes the value below.
  ;
  ;   drawdown_window         the live drawdown -- what a Max_drawdown limit and
  ;                           the drawdown governor read -- is the live equity's
@@ -122,7 +154,21 @@
  ;                           trading year. From the all-time peak instead, a
  ;                           book the governor had cut could never earn its
  ;                           size back by holding still. 1 to 10000.
- (risk ((drawdown_window 250)))
+ ;   var_window              how many daily returns the live risk model reads:
+ ;                           the engine's return window, so VaR, the
+ ;                           covariance and the shortfall all read these
+ ;                           sessions, and the startup backfill fetches them.
+ ;                           An Expected_shortfall limit reads only a FULL
+ ;                           window: until it is full the limit cannot be
+ ;                           evaluated, and while it is one the switch trips
+ ;                           on, a proposal that raises gross is refused. 250
+ ;                           is a trading year. 2 to 2520.
+ ;   es_confidence           the confidence an Expected_shortfall limit takes
+ ;                           its tail at: 0.99 is the worst 1% of the window,
+ ;                           2.5 of 250 sessions, the third worst at half
+ ;                           weight. The VaR's own confidence (95%) is
+ ;                           separate. Strictly between 0 and 1.
+ (risk ((drawdown_window 250) (var_window 250) (es_confidence 0.99)))
 
  ; ---------------------------------------------------------------------------
  ; Phase 4: alerting and the kill switch. OPTIONAL -- omit this block entirely
@@ -169,7 +215,7 @@
    (sinks (Log))
    (clear_below 0.95)
    (kill_switch_enabled false)
-   (kill_switch_trips_on ())))
+   (kill_switch_trips_on (book-cap es-cap dd-cap))))
 
  ; ---------------------------------------------------------------------------
  ; Phase A2: the desk. OPTIONAL -- omit this block, or leave trading disabled,

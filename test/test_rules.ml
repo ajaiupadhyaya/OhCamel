@@ -86,8 +86,8 @@ let test_the_book_and_the_desk_decide_whether_to_trade_at_all () =
   check_rules "a tripped switch" [ "kill_switch" ]
     {
       context with
-      halt_state = Halt.State.Tripped { limit = "nvda-cap"; at = now };
-      halt_why = Some "tripped by nvda-cap";
+      halt_state = Halt.State.Tripped { limit = "es-cap"; at = now };
+      halt_why = Some "tripped by es-cap";
     }
     (request 10);
   check_rules "no clock read, a closed session" [ "session" ]
@@ -281,8 +281,8 @@ let switched ?(on = true) ?(netted = false) ~state ~own ~account () =
   let halt_state, halt_why =
     match state with
     | `Tripped ->
-        ( Halt.State.Tripped { limit = "aapl-cap"; at = now },
-          Some "the kill switch was tripped by aapl-cap at 2026-09-14T14:00:00Z" )
+        ( Halt.State.Tripped { limit = "es-cap"; at = now },
+          Some "the kill switch was tripped by es-cap at 2026-09-14T14:00:00Z" )
     | `Halted ->
         ( Halt.State.Halted { why = "halted by hand"; at = now },
           Some "the desk was halted by hand at 2026-09-14T14:00:00Z: halted by hand" )
@@ -446,7 +446,7 @@ let test_a_trip's_refusal_quotes_the_switch () =
            (switched ~state:`Tripped ~own:100.0 ~account:80.0 ()) with
            halt_why =
              Some
-               "the kill switch was tripped by aapl-cap at 2026-09-14T14:00:00Z (held \
+               "the kill switch was tripped by es-cap at 2026-09-14T14:00:00Z (held \
                 across a restart)";
          }
          (sell 90))
@@ -799,11 +799,43 @@ let test_a_timing_refusal_is_the_session_rule_alone () =
       timing [ f "quote"; f "notional" ];
     ]
 
+(* What the spec cut (Task 1.9): no net-beta limit, and no borrow or
+   buying-power rule. The limits an ETF book needs are the book's own -- a name
+   weight, a class gross, a shortfall -- and live in the graph, where the gate
+   reads them; none is a rule here. *)
+let test_no_borrow_buying_power_or_beta_rule () =
+  Alcotest.(check (list string))
+    "no rule names borrow, buying power, margin or beta" []
+    (List.filter Rules.names ~f:(fun n ->
+         List.exists [ "borrow"; "buying"; "power"; "margin"; "beta"; "locate" ]
+           ~f:(fun word -> String.is_substring (String.lowercase n) ~substring:word)));
+  Alcotest.(check (list string))
+    "the fourteen rules, as they were"
+    [
+      "universe";
+      "whole_shares";
+      "trading";
+      "kill_switch";
+      "session";
+      "mark";
+      "quote";
+      "tick";
+      "collar";
+      "notional";
+      "adv";
+      "duplicate";
+      "wash";
+      "open_orders";
+    ]
+    Rules.names
+
 let suite =
   ( "rules",
     [
       Alcotest.test_case "a timing refusal is the session rule alone" `Quick
         test_a_timing_refusal_is_the_session_rule_alone;
+      Alcotest.test_case "no borrow, buying-power or beta rule" `Quick
+        test_no_borrow_buying_power_or_beta_rule;
       Alcotest.test_case
         "Cls legal at 15:30, refused at 15:51 naming the cut-off, refused when closed"
         `Quick test_a_market_on_close_order_until_ten_minutes_before_the_close;

@@ -56,7 +56,7 @@ let test_the_example_book_parses_and_ships_inert () =
     "SPY, TLT and the forty ETFs after them held at zero"
     (List.init 42 ~f:(fun _ -> 0.0))
     (List.map (List.drop book.Book.positions 6) ~f:(fun p -> p.Book.Position_spec.qty));
-  Alcotest.(check int) "seven limits" 7 (List.length book.Book.limits);
+  Alcotest.(check int) "fifteen limits" 15 (List.length book.Book.limits);
   (* Inert as shipped: no orders, and no alerting, until a person edits it. *)
   Alcotest.(check bool)
     "the desk ships disabled" true
@@ -69,6 +69,145 @@ let test_the_example_book_parses_and_ships_inert () =
   Alcotest.(check bool)
     "the kill switch ships disarmed" false
     book.Book.alerts.Ohcamel.Config.Alerts.kill_switch_enabled
+
+(* The limits that fit an ETF book (Task 1.9). The single-stock era's caps --
+   a dollar cap on AAPL, on NVDA, on TECH and on ENERGY -- are gone. In their
+   place a name cap (no instrument above 15% of equity), one class cap per
+   sector the book holds (no class above 35% of equity, gross), and a 1-day
+   99% expected shortfall over 250 sessions as the risk limit the switch trips
+   on. The VaR cap stays, as an alert the switch does not act on. Every limit
+   the switch names is a limit the book has. *)
+let test_the_example_book_limits_fit_an_etf_book () =
+  let book = load () in
+  let module L = Book.Limit_spec in
+  let find name =
+    match List.find book.Book.limits ~f:(fun l -> String.equal l.L.name name) with
+    | Some l -> l
+    | None -> Alcotest.failf "the example book has no limit %S" name
+  in
+  let es = find "es-cap" in
+  Alcotest.(check bool)
+    "es-cap: $45,000 of 1-day expected shortfall, over the book" true
+    (match (es.L.scope, es.L.kind) with
+    | L.Portfolio, L.Expected_shortfall d -> Float.equal d 45_000.0
+    | _ -> false);
+  let name_cap = find "name-cap" in
+  Alcotest.(check bool)
+    "name-cap: 15% of equity in any one name" true
+    (match (name_cap.L.scope, name_cap.L.kind) with
+    | L.Portfolio, L.Name_weight f -> Float.equal f 0.15
+    | _ -> false);
+  let sectors =
+    List.map book.Book.positions ~f:(fun p -> p.Book.Position_spec.sector)
+    |> List.dedup_and_sort ~compare:String.compare
+  in
+  let classes =
+    List.filter_map book.Book.limits ~f:(fun l ->
+        match (l.L.scope, l.L.kind) with
+        | L.Sector s, L.Class_gross f -> Some (s, f)
+        | _ -> None)
+  in
+  Alcotest.(check (list string))
+    "one class cap per sector the book holds, no sector twice and none left out" sectors
+    (List.sort (List.map classes ~f:fst) ~compare:String.compare);
+  Alcotest.(check bool)
+    "every class capped at 35% of equity" true
+    (List.for_all classes ~f:(fun (_, f) -> Float.equal f 0.35));
+  Alcotest.(check (list string))
+    "no single-stock-era cap survives" []
+    (List.filter_map book.Book.limits ~f:(fun l ->
+         Option.some_if
+           (List.mem
+              [ "aapl-cap"; "nvda-cap"; "tech-cap"; "energy-cap" ]
+              l.L.name ~equal:String.equal)
+           l.L.name));
+  Alcotest.(check (list string))
+    "no dollar cap on one name or one sector; the book's own is the only one"
+    [ "book-cap" ]
+    (List.filter_map book.Book.limits ~f:(fun l ->
+         match l.L.kind with L.Gross_notional _ -> Some l.L.name | _ -> None));
+  let alerts = book.Book.alerts in
+  Alcotest.(check (list string))
+    "the switch trips on the gross cap, the shortfall and the drawdown"
+    [ "book-cap"; "es-cap"; "dd-cap" ]
+    alerts.Config.Alerts.kill_switch_trips_on;
+  Alcotest.(check bool)
+    "var-cap is still a limit" true
+    (match (find "var-cap").L.kind with L.Value_at_risk _ -> true | _ -> false);
+  Alcotest.(check bool)
+    "and only an alert: the switch does not trip on it" false
+    (List.mem alerts.Config.Alerts.kill_switch_trips_on "var-cap" ~equal:String.equal);
+  Alcotest.(check (list string))
+    "every name the switch trips on is a limit the book has" []
+    (List.filter alerts.Config.Alerts.kill_switch_trips_on ~f:(fun n ->
+         not (List.exists book.Book.limits ~f:(fun l -> String.equal l.L.name n))));
+  Alcotest.(check int)
+    "the shortfall's window: 250 sessions" 250 book.Book.risk.Config.Risk.var_window;
+  Alcotest.(check (float 0.0)) "at 99%" 0.99 book.Book.risk.Config.Risk.es_confidence;
+  (* No limit kind the spec cut: no net beta, and nothing about borrow or
+     buying power, among the kinds a book can write. *)
+  Alcotest.(check (list string))
+    "the limit kinds a book can write"
+    [
+      "gross_notional";
+      "value_at_risk";
+      "component_var";
+      "max_drawdown";
+      "class_gross";
+      "name_weight";
+      "expected_shortfall";
+    ]
+    (List.map
+       [
+         L.Gross_notional 1.0;
+         L.Value_at_risk 1.0;
+         L.Component_var 1.0;
+         L.Max_drawdown 0.1;
+         L.Class_gross 0.1;
+         L.Name_weight 0.1;
+         L.Expected_shortfall 1.0;
+       ] ~f:(fun k ->
+         Summary.kind_name
+           (L.to_limit { L.name = "x"; scope = L.Portfolio; kind = k })
+             .Ohcamel.Types.Limit.kind))
+
+(* The classes are the site's universe groups (quant/src/ohcamel_quant/
+   universes.json), one class per group, so a class cap is a cap on what the
+   site calls one kind of thing. TLT is in the rates group with BIL, SHY, IEI,
+   IEF and TIP: in a class of its own it would have its own 35%, and the
+   Treasury curve could reach 70% of equity under two caps that each read
+   inside their line. *)
+let test_the_example_books_classes_are_the_sites_groups () =
+  let book = load () in
+  let groups =
+    [
+      ("us_equity_indices", "INDEX");
+      ("sectors", "SECTOR");
+      ("style_factors", "STYLE");
+      ("rates", "RATES");
+      ("credit", "CREDIT");
+      ("international", "INTL");
+      ("commodities", "COMMODITY");
+    ]
+  in
+  let json = Yojson.Safe.from_file "../quant/src/ohcamel_quant/universes.json" in
+  let open Yojson.Safe.Util in
+  let universes = json |> member "universes" in
+  List.iter groups ~f:(fun (group, class_) ->
+      let tickers =
+        universes |> member group |> member "members" |> to_list
+        |> List.map ~f:(fun m -> m |> member "ticker" |> to_string)
+      in
+      List.iter tickers ~f:(fun ticker ->
+          match
+            List.find book.Book.positions ~f:(fun p ->
+                String.equal p.Book.Position_spec.symbol ticker)
+          with
+          | None -> Alcotest.failf "%s (%s) is not in the example book" ticker group
+          | Some p ->
+              Alcotest.(check string)
+                (sprintf "%s sits in %s's class" ticker group)
+                class_ p.Book.Position_spec.sector))
 
 (* The roster, as shipped: EXP-A01's two strategies and the farm's 21 cells,
    every one incubation and none live, each with the stop rules written before
@@ -176,6 +315,58 @@ let refusal_of path =
 
 let names substring errors = List.exists errors ~f:(String.is_substring ~substring)
 
+(* The shortfall's two words (Task 1.9), in the risk block beside the drawdown
+   window. Absent, they are 250 sessions and 99%; written, they are what is
+   written; out of range, check-book names them. The live engine's return
+   window is the book's var_window (Config.Runtime.with_risk), so a VaR, a
+   covariance and the shortfall all read the same 250 sessions. *)
+let test_the_shortfall_words () =
+  let parse extra =
+    match Book.of_string (book ~limits:"" ~extra) with
+    | Ok b -> b.Book.risk
+    | Error e -> Alcotest.failf "did not parse: %s" (Error.to_string_hum e)
+  in
+  let absent = parse "" in
+  Alcotest.(check int) "absent: 250 sessions" 250 absent.Config.Risk.var_window;
+  Alcotest.(check (float 0.0)) "absent: 99%" 0.99 absent.Config.Risk.es_confidence;
+  let written = parse "(risk ((var_window 60) (es_confidence 0.975)))" in
+  Alcotest.(check int) "written: 60" 60 written.Config.Risk.var_window;
+  Alcotest.(check (float 0.0)) "written: 97.5%" 0.975 written.Config.Risk.es_confidence;
+  Alcotest.(check int)
+    "the drawdown window is still its own" 250 written.Config.Risk.drawdown_window;
+  Alcotest.(check int)
+    "the live engine's return window is the book's" 60
+    (Config.Runtime.with_risk written Config.Runtime.default).Config.Runtime.return_window;
+  List.iter
+    [
+      ("(risk ((var_window 1)))", "var_window");
+      ("(risk ((var_window 100000)))", "var_window");
+      ("(risk ((es_confidence 1.0)))", "es_confidence");
+      ("(risk ((es_confidence 0.0)))", "es_confidence");
+      ("(risk ((es_confidence nan)))", "es_confidence");
+    ]
+    ~f:(fun (extra, word) ->
+      with_book (book ~limits:"" ~extra) ~f:(fun p ->
+          Alcotest.(check bool)
+            (sprintf "%s is refused, naming %s" extra word)
+            true
+            (names word (refusal_of p))))
+
+(* A class cap on TECH alone leaves SPY's INDEX outside every class cap, and
+   check-book says so once -- coverage is a rule about the set, so the limit
+   alone is not also refused for every sector it does not name. *)
+let test_check_names_a_sector_with_no_class_cap () =
+  with_book
+    (book ~limits:"((name class-tech) (scope (Sector TECH)) (kind (Class_gross 0.35)))"
+       ~extra:"") ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int)
+        (sprintf "one sentence: %s" (String.concat ~sep:" | " errors))
+        1
+        (List.count errors ~f:(String.is_substring ~substring:"escape every class cap"));
+      Alcotest.(check bool) "naming INDEX" true (names "INDEX" errors);
+      Alcotest.(check bool) "and SPY" true (names "SPY" errors))
+
 (* Five separate mistakes of five kinds, in one file: a VaR limit at instrument
    scope (a kind/scope pairing the graph refuses), a limit on a sector the book
    does not hold, a clear_below outside (0, 1], a 150% price collar, and a
@@ -212,7 +403,7 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
            8);
       Alcotest.(check int) "48 names" 48 (List.length summary.Summary.universe);
       Alcotest.(check (list string))
-        "the eleven sectors those names sit in"
+        "the ten sectors those names sit in"
         [
           "COMMODITY";
           "CREDIT";
@@ -224,20 +415,27 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
           "SECTOR";
           "STYLE";
           "TECH";
-          "TREASURIES";
         ]
         summary.Summary.sectors;
       (* Rendered through the graph's own renderers, so the summary says what the
          engine will call each scope and each threshold rather than a second
          spelling of it. *)
       Alcotest.(check (list (triple string string string)))
-        "seven limits, with the scope and threshold the graph will read"
+        "fifteen limits, with the scope and threshold the graph will read"
         [
-          ("aapl-cap", "instrument:AAPL", "$150000.00");
-          ("nvda-cap", "instrument:NVDA", "$60000.00");
-          ("tech-cap", "sector:TECH", "$260000.00");
-          ("energy-cap", "sector:ENERGY", "$150000.00");
+          ("name-cap", "portfolio", "15.00%");
+          ("class-commodity", "sector:COMMODITY", "35.00%");
+          ("class-credit", "sector:CREDIT", "35.00%");
+          ("class-energy", "sector:ENERGY", "35.00%");
+          ("class-financials", "sector:FINANCIALS", "35.00%");
+          ("class-index", "sector:INDEX", "35.00%");
+          ("class-intl", "sector:INTL", "35.00%");
+          ("class-rates", "sector:RATES", "35.00%");
+          ("class-sector", "sector:SECTOR", "35.00%");
+          ("class-style", "sector:STYLE", "35.00%");
+          ("class-tech", "sector:TECH", "35.00%");
           ("book-cap", "portfolio", "$700000.00");
+          ("es-cap", "portfolio", "$45000.00");
           ("var-cap", "portfolio", "$30000.00");
           ("dd-cap", "portfolio", "10.00%");
         ]
@@ -246,16 +444,10 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
                l.Summary.Limit_line.scope,
                l.Summary.Limit_line.threshold )));
       Alcotest.(check (list string))
-        "five notional caps, one VaR cap, one drawdown cap"
-        [
-          "gross_notional";
-          "gross_notional";
-          "gross_notional";
-          "gross_notional";
-          "gross_notional";
-          "value_at_risk";
-          "max_drawdown";
-        ]
+        "a name cap, ten class caps, the book's gross, the shortfall, VaR, drawdown"
+        ([ "name_weight" ]
+        @ List.init 10 ~f:(fun _ -> "class_gross")
+        @ [ "gross_notional"; "expected_shortfall"; "value_at_risk"; "max_drawdown" ])
         (List.map summary.Summary.limits ~f:(fun l -> l.Summary.Limit_line.kind));
       Alcotest.(check (list (pair string string)))
         "EXP-A01's two first, both incubation"
@@ -643,7 +835,7 @@ let no_backtrace out = not (String.is_substring out ~substring:"Fatal error")
 let test_check_book_exits_zero_on_the_example_book () =
   let status, out = run [ "check-book"; path ] in
   Alcotest.(check int) "exit 0" 0 status;
-  List.iter [ "AAPL"; "aapl-cap"; "exp_a01_spy"; "trading"; "disabled" ]
+  List.iter [ "AAPL"; "es-cap"; "exp_a01_spy"; "trading"; "disabled" ]
     ~f:(fun substring ->
       Alcotest.(check bool)
         (sprintf "the summary says %s" substring)
@@ -1289,6 +1481,13 @@ let suite =
     [
       Alcotest.test_case "the example book parses and ships inert" `Quick
         test_the_example_book_parses_and_ships_inert;
+      Alcotest.test_case "the example book's limits fit an ETF book" `Quick
+        test_the_example_book_limits_fit_an_etf_book;
+      Alcotest.test_case "the example book's classes are the site's groups" `Quick
+        test_the_example_books_classes_are_the_sites_groups;
+      Alcotest.test_case "the shortfall's words" `Quick test_the_shortfall_words;
+      Alcotest.test_case "check names a sector with no class cap" `Quick
+        test_check_names_a_sector_with_no_class_cap;
       Alcotest.test_case "the example book registers the incubation roster" `Quick
         test_the_example_book_registers_the_incubation_roster;
       Alcotest.test_case "the book's half-spreads are friction v1's, halved" `Quick

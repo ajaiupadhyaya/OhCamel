@@ -242,19 +242,51 @@ end
    equity_history_limit), so a longer window would only claim a memory the
    engine does not have. A backtest's reported maximum drawdown is a
    different number, the full path's, and this word does not touch it. *)
+(* The shortfall's two words (Task 1.9).
+
+   [var_window] is how many daily returns the live engine's risk model reads:
+   the graph's return window on the live host (Runtime.with_risk), so the VaR,
+   the covariance, the beta and the expected shortfall all read the same
+   sessions, and Alpaca_rest.backfill fetches that many. An Expected_shortfall
+   limit reads only a FULL window and is unevaluable until it is full. 250
+   sessions is a trading year. From 2, the least the graph takes, to
+   [max_var_window], ten trading years: the backfill asks Alpaca for twice the
+   window in calendar days, and a longer window would mostly be a claim on
+   history a young ETF does not have.
+
+   [es_confidence] is the confidence an Expected_shortfall limit reads its tail
+   at: 0.99, so the worst 1% of the window -- 2.5 of 250 sessions, interpolated
+   (Risk_metrics.expected_shortfall_interpolated). The graph's VaR confidence
+   (Runtime.confidence, 0.95) is a separate number and is left alone. *)
 module Risk = struct
-  type t = { drawdown_window : int [@sexp.default 250] } [@@deriving sexp]
+  type t = {
+    drawdown_window : int; [@sexp.default 250]
+    var_window : int; [@sexp.default 250]
+    es_confidence : float; [@sexp.default 0.99]
+  }
+  [@@deriving sexp]
 
   let default = t_of_sexp (Sexp.List [])
   let max_drawdown_window = 10_000
+  let max_var_window = 2_520
 
   let validate (t : t) : unit Or_error.t =
-    if t.drawdown_window >= 1 && t.drawdown_window <= max_drawdown_window then Ok ()
-    else
+    if not (t.drawdown_window >= 1 && t.drawdown_window <= max_drawdown_window) then
       Or_error.errorf
         "risk: drawdown_window must be a whole number of closes from 1 to %d, got %d -- \
          it is how many closes the live drawdown's peak is taken over"
         max_drawdown_window t.drawdown_window
+    else if not (t.var_window >= 2 && t.var_window <= max_var_window) then
+      Or_error.errorf
+        "risk: var_window must be a whole number of sessions from 2 to %d, got %d -- it \
+         is how many daily returns the risk model and the expected shortfall read"
+        max_var_window t.var_window
+    else if not (Float.( > ) t.es_confidence 0.0 && Float.( < ) t.es_confidence 1.0) then
+      Or_error.errorf
+        "risk: es_confidence must be strictly between 0 and 1, got %g -- it is the \
+         confidence an Expected_shortfall limit takes its tail at"
+        t.es_confidence
+    else Ok ()
 end
 
 (* ------------------------------------------------------------------------ *)
@@ -709,6 +741,9 @@ module Book = struct
       | Value_at_risk of float
       | Component_var of float
       | Max_drawdown of float
+      | Class_gross of float
+      | Name_weight of float
+      | Expected_shortfall of float
     [@@deriving sexp]
 
     type t = { name : string; scope : scope; kind : kind } [@@deriving sexp]
@@ -726,7 +761,11 @@ module Book = struct
           | Gross_notional n -> Types.Limit.Gross_notional (Types.Notional.of_float n)
           | Value_at_risk n -> Types.Limit.Value_at_risk (Types.Notional.of_float n)
           | Component_var n -> Types.Limit.Component_var (Types.Notional.of_float n)
-          | Max_drawdown f -> Types.Limit.Max_drawdown f);
+          | Max_drawdown f -> Types.Limit.Max_drawdown f
+          | Class_gross f -> Types.Limit.Class_gross f
+          | Name_weight f -> Types.Limit.Name_weight f
+          | Expected_shortfall n ->
+              Types.Limit.Expected_shortfall (Types.Notional.of_float n));
       }
   end
 
@@ -744,8 +783,8 @@ module Book = struct
     desk : Desk_spec.t; [@sexp.default Desk_spec.default] [@sexp_drop_default.sexp]
     (* Optional, and absent means the engine's default deviation (5%). *)
     feed : Feed.t; [@sexp.default Feed.default] [@sexp_drop_default.sexp]
-    (* Optional, and absent means the engine's default drawdown window (250
-       closes). *)
+    (* Optional, and absent means the engine's defaults: a drawdown window of
+       250 closes, a risk window of 250 sessions and a 99% shortfall. *)
     risk : Risk.t; [@sexp.default Risk.default] [@sexp_drop_default.sexp]
     (* Optional, and absent means no intake: the desk registers no strategy and
        reads no signal file. An existing book keeps parsing unchanged. *)
@@ -908,8 +947,12 @@ module Book = struct
       whole_and_parts
         ~parts:
           (List.filter_map each ~f:(fun l ->
-               raised (fun () -> Limits.validate ~instruments [ l ])))
-        ~wholes:[ raised (fun () -> Limits.validate ~instruments each) ]
+               raised (fun () -> Limits.validate_members ~instruments [ l ])))
+        ~wholes:
+          [
+            raised (fun () -> Limits.validate ~instruments each);
+            raised (fun () -> Limits.validate_class_coverage ~instruments each);
+          ]
     in
     let alert_errors = Option.to_list (returned (Alerts.validate t.alerts)) in
     let position_errors =
@@ -1028,7 +1071,7 @@ module Summary = struct
   }
   [@@deriving sexp_of]
 
-  (* A limit's kind as one word. The same five words graph.ml's topology uses;
+  (* A limit's kind as one word. The same eight words graph.ml's topology uses;
      it cannot be borrowed from there, because graph.ml is downstream of this
      module. The Greek case is unreachable from a book -- Book.Limit_spec has no
      Greek constructor, so no file can ask for one -- and is here because the
@@ -1039,6 +1082,9 @@ module Summary = struct
     | Types.Limit.Component_var _ -> "component_var"
     | Types.Limit.Max_drawdown _ -> "max_drawdown"
     | Types.Limit.Greek_limit (greek, _) -> "greek:" ^ Types.Greek.to_string greek
+    | Types.Limit.Class_gross _ -> "class_gross"
+    | Types.Limit.Name_weight _ -> "name_weight"
+    | Types.Limit.Expected_shortfall _ -> "expected_shortfall"
 
   let of_book ~(path : string) (book : Book.t) : t =
     let holdings =
@@ -1219,6 +1265,14 @@ module Runtime = struct
      without a test that mutates the process environment. Same rule as
      Credentials.required, and for the same reason: `export FOO=` is how
      people end up without a value. *)
+  (* The live engine's return window is the book's risk window (Task 1.9):
+     Config.load applies this, so the graph, the backfill and the FRED factor
+     window all read [Risk.var_window] sessions. [return_window] above stays
+     60 for everything that has no book -- the CLI's synthetic book, the
+     demo -- and on the live host it is never read before this. *)
+  let with_risk (risk : Risk.t) (t : t) : t =
+    { t with return_window = risk.Risk.var_window }
+
   let peer_origin_of (raw : string option) : string option =
     match raw with
     | Some v when not (String.is_empty (String.strip v)) -> Some (String.strip v)
@@ -1250,7 +1304,7 @@ let load ?(book_path = default_book_path) () : t Or_error.t =
   let open Or_error.Let_syntax in
   let%bind credentials = Credentials.load () in
   let%map book = Book.load book_path in
-  { credentials; book; runtime = Runtime.of_env () }
+  { credentials; book; runtime = Runtime.with_risk book.Book.risk (Runtime.of_env ()) }
 
 (* One book, every validation, and no credentials.
 

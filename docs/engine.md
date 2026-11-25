@@ -1206,7 +1206,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->978<!-- /count --> tests, plus <!-- count:scheduler-tests -->106<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->998<!-- /count --> tests, plus <!-- count:scheduler-tests -->106<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall

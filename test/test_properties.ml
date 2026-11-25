@@ -45,6 +45,13 @@
                            exactly why nobody writes the test, and it is the
                            invariant that an off-by-one in the tail rank breaks.
 
+     THE BOOK'S LIMITS     Task 1.9. The interpolated expected shortfall the
+                           tripping limit reads is never below VaR, never
+                           falls as confidence rises, and is the nearest-rank
+                           mean wherever the tail count is whole; and the name
+                           weight a graph reports is the heaviest |exposure|
+                           over equity on generated books.
+
    WHAT A GENERATOR HAS TO BE HONEST ABOUT
 
    A covariance matrix of random entries is not a covariance matrix -- it is
@@ -290,6 +297,128 @@ let property_var_monotone_in_confidence =
       && Float.( <= ) (parametric lo) (parametric hi +. slack))
 
 (* ------------------------------------------------------------------------ *)
+(* 3b. The book's shortfall and its name weight (Task 1.9)                   *)
+(* ------------------------------------------------------------------------ *)
+
+(* The interpolated expected shortfall the book's tripping limit reads, over
+   arbitrary series and confidence pairs, holds three things at once:
+
+   - it is never below historical VaR at the same confidence -- every
+     observation it averages is at or beyond the VaR observation;
+   - it is non-decreasing in confidence -- a wider tail only adds milder
+     observations to the mean, a narrower one only removes them; and
+   - where (1 - c) x n is a whole number of observations it IS the
+     nearest-rank mean the dashboard's ES reports, so the two conventions
+     differ only where the tail count is fractional.
+
+   The slack is 1e-12 for the same float reason as the VaR property above. *)
+let gen_es_case =
+  let open Gen in
+  let* m = int_range 2 300 in
+  let* series = array_size (return m) gen_return in
+  let* a = float_range 0.50 0.995 in
+  let* b = float_range 0.50 0.995 in
+  return (series, Float.min a b, Float.max a b)
+
+let property_es_dominates_var_and_is_monotone =
+  prop ~name:"ES: interpolated ES >= VaR, and non-decreasing in confidence"
+    ~print:(fun (s, lo, hi) ->
+      Printf.sprintf "%d observations, confidence %.4f -> %.4f" (Array.length s) lo hi)
+    gen_es_case
+    (fun (returns, lo, hi) ->
+      let es c = RM.expected_shortfall_interpolated ~returns ~confidence:c in
+      let var c = RM.historical_var ~returns ~confidence:c in
+      let slack = 1e-12 in
+      Float.( >= ) (es lo) (var lo -. slack)
+      && Float.( >= ) (es hi) (var hi -. slack)
+      && Float.( <= ) (es lo) (es hi +. slack))
+
+let gen_whole_tail =
+  let open Gen in
+  let* hundreds = int_range 1 4 in
+  let n = 100 * hundreds in
+  let* series = array_size (return n) gen_return in
+  let* confidence = oneof_list [ 0.99; 0.98; 0.975; 0.95; 0.90 ] in
+  return (series, confidence)
+
+let property_es_whole_tail_is_the_nearest_rank_mean =
+  prop ~name:"ES: a whole tail count gives the nearest-rank mean"
+    ~print:(fun (s, c) -> Printf.sprintf "%d observations at %.3f" (Array.length s) c)
+    gen_whole_tail
+    (fun (returns, confidence) ->
+      (* 0.975 over 100 is 2.5 observations, a fractional count: skipped, the
+         equality is claimed only for a whole one. *)
+      let count = (1.0 -. confidence) *. float_of_int (Array.length returns) in
+      Float.( > ) (Float.abs (count -. Float.round_nearest count)) 1e-6
+      || Float.( <= )
+           (Float.abs
+              (RM.expected_shortfall_interpolated ~returns ~confidence
+              -. RM.expected_shortfall ~returns ~confidence))
+           1e-12)
+
+(* The name weight a graph reports is the heaviest name's |exposure| over
+   equity, on generated books: up to five names in two classes, signed
+   quantities, prices and cash chosen so equity stays positive. The limit's
+   observed value is checked against that sum done here by hand, and its
+   breach against the comparison with 0.15. *)
+let gen_weight_book =
+  let open Gen in
+  let* qtys = array_size (int_range 1 5) (float_range (-500.0) 500.0) in
+  let* prices = array_size (return (Array.length qtys)) (float_range 1.0 500.0) in
+  let* cash = float_range 1_300_000.0 2_500_000.0 in
+  return (qtys, prices, cash)
+
+let property_name_weight_is_the_heaviest_name =
+  prop ~name:"NAME WEIGHT: the limit reads the heaviest |exposure| over equity"
+    ~print:(fun (q, p, c) ->
+      Printf.sprintf "qty [%s] price [%s] cash %.2f"
+        (String.concat ~sep:"; " (Array.to_list (Array.map q ~f:(Printf.sprintf "%.2f"))))
+        (String.concat ~sep:"; " (Array.to_list (Array.map p ~f:(Printf.sprintf "%.2f"))))
+        c)
+    gen_weight_book
+    (fun (qtys, prices, cash) ->
+      let symbols =
+        Array.mapi qtys ~f:(fun i _ -> Symbol.of_string (Printf.sprintf "E%d" i))
+      in
+      let instruments =
+        Array.to_list
+          (Array.mapi symbols ~f:(fun i symbol ->
+               {
+                 Instrument.symbol;
+                 sector = Sector.of_string (if i % 2 = 0 then "INDEX" else "RATES");
+               }))
+      in
+      let name_cap =
+        {
+          Limit.name = "name-cap";
+          scope = Limit.Portfolio;
+          kind = Limit.Name_weight 0.15;
+        }
+      in
+      let graph =
+        Graph.create ~starting_cash:(Notional.of_float cash) ~instruments
+          ~limits:[ name_cap ] ~confidence:0.95 ~return_window:10 ()
+      in
+      Exn.protect
+        ~finally:(fun () -> Graph.destroy graph)
+        ~f:(fun () ->
+          Array.iteri symbols ~f:(fun i s ->
+              Graph.set_price graph s (Price.of_float prices.(i));
+              Graph.set_qty graph s (Qty.of_float qtys.(i)));
+          Graph.stabilize graph;
+          let exposures = Array.mapi qtys ~f:(fun i q -> q *. prices.(i)) in
+          let equity = Array.fold exposures ~init:cash ~f:( +. ) in
+          let heaviest =
+            Array.fold exposures ~init:0.0 ~f:(fun acc x -> Float.max acc (Float.abs x))
+          in
+          let expected = heaviest /. equity in
+          match Graph.limit_results graph with
+          | [ (_, Some b) ] ->
+              Float.( <= ) (Float.abs (Breach.observed b -. expected)) 1e-12
+              && Bool.equal (Breach.breached b) Float.(expected > 0.15)
+          | _ -> false))
+
+(* ------------------------------------------------------------------------ *)
 (* 4. The backtest cannot see the day it is forecasting                      *)
 (* ------------------------------------------------------------------------ *)
 
@@ -450,6 +579,9 @@ let suite =
       property_component_var_sums_to_portfolio_var;
       property_a_hedge_reduces_risk;
       property_var_monotone_in_confidence;
+      property_es_dominates_var_and_is_monotone;
+      property_es_whole_tail_is_the_nearest_rank_mean;
+      property_name_weight_is_the_heaviest_name;
       property_backtest_has_no_lookahead;
       property_a_scenario_leaves_no_trace;
     ] )

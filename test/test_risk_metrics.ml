@@ -59,6 +59,31 @@ let test_expected_shortfall () =
   Alcotest.check feq "80%" 0.045 (RM.expected_shortfall ~returns ~confidence:0.80);
   Alcotest.check feq "70%" 0.04 (RM.expected_shortfall ~returns ~confidence:0.70)
 
+(* The interpolated ES the book's tripping limit reads (Task 1.9): the mean of
+   the worst (1 - c) x n observations, a fractional count taking the next
+   observation at the fractional weight.
+   c = 0.75 -> 2.5 obs -> (0.05 + 0.04 + 0.5 x 0.03) / 2.5 = 0.105 / 2.5 = 0.042
+   c = 0.80 -> 2.0 obs -> (0.05 + 0.04) / 2                  = 0.045, the
+                          nearest-rank answer: a whole count is the same mean
+   c = 0.70 -> 3.0 obs -> (0.05 + 0.04 + 0.03) / 3           = 0.04, though
+                          (1 - 0.70) x 10 is 3.0000000000000004 in floating point
+   c = 0.95 -> 0.5 obs -> less than one observation: the worst, 0.05
+   c = 0.99 over 250 -> 2.5 obs: test_graph.ml's fixture. *)
+let test_expected_shortfall_interpolated () =
+  let es confidence = RM.expected_shortfall_interpolated ~returns ~confidence in
+  Alcotest.check feq "75%" 0.042 (es 0.75);
+  Alcotest.check feq "80%" 0.045 (es 0.80);
+  Alcotest.check feq "70%" 0.04 (es 0.70);
+  Alcotest.check feq "95%" 0.05 (es 0.95);
+  Alcotest.check feq "shuffled" 0.042
+    (RM.expected_shortfall_interpolated ~returns:returns_shuffled ~confidence:0.75);
+  check_invalid_arg "empty" (fun () ->
+      RM.expected_shortfall_interpolated ~returns:[||] ~confidence:0.99);
+  check_invalid_arg "nan" (fun () ->
+      RM.expected_shortfall_interpolated ~returns:[| 0.01; Float.nan |] ~confidence:0.99);
+  check_invalid_arg "confidence 1" (fun () ->
+      RM.expected_shortfall_interpolated ~returns ~confidence:1.0)
+
 (* ES >= VaR is a mathematical invariant, not a coincidence of this series: the
    mean of the tail cannot be less severe than the tail's least severe point.
    Equality holds only when the tail is a single observation. *)
@@ -698,6 +723,8 @@ let suite =
       Alcotest.test_case "historical VaR sorts its input" `Quick
         test_historical_var_is_order_independent;
       Alcotest.test_case "expected shortfall" `Quick test_expected_shortfall;
+      Alcotest.test_case "expected shortfall, interpolated" `Quick
+        test_expected_shortfall_interpolated;
       Alcotest.test_case "ES >= VaR invariant" `Quick test_es_dominates_var;
       Alcotest.test_case "normal ppf" `Quick test_normal_ppf;
       Alcotest.test_case "parametric VaR" `Quick test_parametric_var;

@@ -1787,6 +1787,384 @@ let test_validation () =
   check_invalid "empty limit name" (fun () ->
       make ~limits:[ limit "" Limit.Portfolio (Limit.Gross_notional (dollars 1.0)) ] ())
 
+(* ------------------------------------------------------------------------ *)
+(* 5b. Limits that fit an ETF book (Task 1.9)                                *)
+(* ------------------------------------------------------------------------ *)
+
+(* Three ETFs in two classes. Cash is 80,000 and the book holds SPY alone:
+
+     SPY  INDEX  500.00 x 40 = +20,000
+     QQQ  INDEX  400.00 x  0 =       0
+     TLT  RATES  100.00 x  0 =       0
+
+   equity = 80,000 + 20,000 = 100,000, so SPY is 20% of equity: over a 15%
+   name cap, and inside a 35% class cap. *)
+let spy = sym "SPY"
+let qqq = sym "QQQ"
+let tlt = sym "TLT"
+let index = sec "INDEX"
+let rates = sec "RATES"
+
+let etf_book =
+  [
+    { Instrument.symbol = spy; sector = index };
+    { Instrument.symbol = qqq; sector = index };
+    { Instrument.symbol = tlt; sector = rates };
+  ]
+
+let etf_limits =
+  [
+    limit "name-cap" Limit.Portfolio (Limit.Name_weight 0.15);
+    limit "class-index" (Limit.Sector index) (Limit.Class_gross 0.35);
+    limit "class-rates" (Limit.Sector rates) (Limit.Class_gross 0.35);
+  ]
+
+let with_etf_graph ?(limits = etf_limits) ?(cash = 80_000.0) ~f () =
+  let graph =
+    Graph.create ~starting_cash:(dollars cash) ~instruments:etf_book ~limits
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Graph.set_price graph spy (Price.of_float 500.0);
+  Graph.set_price graph qqq (Price.of_float 400.0);
+  Graph.set_price graph tlt (Price.of_float 100.0);
+  Graph.set_qty graph spy (Qty.of_float 40.0);
+  Exn.protect ~f:(fun () -> f graph) ~finally:(fun () -> Graph.destroy graph)
+
+let limit_result graph name =
+  match
+    List.find (Graph.limit_results graph) ~f:(fun (l, _) ->
+        String.equal (Limit.name l) name)
+  with
+  | Some (_, result) -> result
+  | None -> Alcotest.failf "no limit %S in this graph" name
+
+let test_a_name_over_its_weight_breaches () =
+  with_etf_graph
+    ~f:(fun graph ->
+      let s = Graph.snapshot graph in
+      let name_cap = find_breach s "name-cap" in
+      Alcotest.check float_eq "SPY is 20,000 of 100,000 equity" 0.20
+        (Breach.observed name_cap);
+      Alcotest.check float_eq "against 0.15" 0.15 (Breach.threshold name_cap);
+      Alcotest.(check bool) "20% breaches a 15% name cap" true (Breach.breached name_cap);
+      (* Rendered as a fraction, not as dollars. *)
+      Alcotest.(check string)
+        "rendered as a percentage"
+        "name-cap [portfolio] BREACH: 20.00% > 15.00% (over by 5.00%)"
+        (Limits.to_string name_cap);
+      (* A short is as heavy as a long: -20,000 of SPY is 20% of equity too
+         (equity = 80,000 - 20,000 = 60,000, so 20,000 / 60,000). *)
+      Graph.set_qty graph spy (Qty.of_float (-40.0));
+      let s = Graph.snapshot graph in
+      Alcotest.check float_eq "a short's weight is its magnitude" (20_000.0 /. 60_000.0)
+        (Breach.observed (find_breach s "name-cap"));
+      (* The heaviest name is the one measured: QQQ at 12,000 and SPY at 8,000
+         on equity 80,000 + 20,000 = 100,000 read 0.12, inside the cap. *)
+      Graph.set_qty graph spy (Qty.of_float 16.0);
+      Graph.set_qty graph qqq (Qty.of_float 30.0);
+      let s = Graph.snapshot graph in
+      let name_cap = find_breach s "name-cap" in
+      Alcotest.check float_eq "the heaviest name, QQQ" 0.12 (Breach.observed name_cap);
+      Alcotest.(check bool) "12% is inside 15%" false (Breach.breached name_cap))
+    ()
+
+(* Class gross is the sum of the class's MAGNITUDES over equity, not its net:
+   SPY long 20,000 and QQQ short 20,000 net to nothing, and are 40,000 of
+   gross in INDEX against equity of 80,000 + 0 = 80,000 -- 0.50, over 0.35. *)
+let test_class_gross_sums_magnitudes () =
+  with_etf_graph
+    ~f:(fun graph ->
+      let s = Graph.snapshot graph in
+      Alcotest.check float_eq "INDEX holds SPY's 20,000 of 100,000" 0.20
+        (Breach.observed (find_breach s "class-index"));
+      Alcotest.check float_eq "RATES holds nothing" 0.0
+        (Breach.observed (find_breach s "class-rates"));
+      Graph.set_qty graph qqq (Qty.of_float (-50.0));
+      let s = Graph.snapshot graph in
+      let class_index = find_breach s "class-index" in
+      Alcotest.check float_eq "a long and a short both count" 0.50
+        (Breach.observed class_index);
+      Alcotest.(check bool)
+        "50% breaches a 35% class cap" true (Breach.breached class_index);
+      Alcotest.(check bool)
+        "and RATES is untouched" false
+        (Breach.breached (find_breach s "class-rates")))
+    ()
+
+(* A weight against an equity that is not positive is not a number anyone can
+   act on: the limits are unevaluable, as a drawdown with no finite equity is,
+   and Alerts and the gate treat them as unknown, never as clear. *)
+let test_weights_against_no_equity_are_unevaluable () =
+  with_etf_graph ~cash:(-20_000.0)
+    ~f:(fun graph ->
+      Graph.stabilize graph;
+      Alcotest.(check bool)
+        "name-cap on zero equity" true
+        (Option.is_none (limit_result graph "name-cap"));
+      Alcotest.(check bool)
+        "class-index on zero equity" true
+        (Option.is_none (limit_result graph "class-index")))
+    ()
+
+(* The gate reads the new kinds through the same fork as every other limit: an
+   order that takes SPY from 20% to 30% of equity worsens name-cap's breach and
+   is refused; one that brings it to 10% reduces it and passes. *)
+let test_the_gate_reads_a_name_weight () =
+  with_etf_graph
+    ~f:(fun graph ->
+      let fill qty =
+        {
+          Ohcamel.Gate.Fill.symbol = spy;
+          qty = Qty.of_float qty;
+          price = Price.of_float 500.0;
+        }
+      in
+      let up = Ohcamel.Gate.check graph ~fills:[ fill 20.0 ] in
+      Alcotest.(check bool)
+        "buying SPY to 30% is refused" true
+        (Ohcamel.Gate.Outcome.equal up.Ohcamel.Gate.Verdict.outcome
+           Ohcamel.Gate.Outcome.Refused_breach);
+      let down = Ohcamel.Gate.check graph ~fills:[ fill (-20.0) ] in
+      Alcotest.(check bool)
+        "selling SPY to 10% passes" true
+        (Ohcamel.Gate.Verdict.passed down))
+    ()
+
+(* A name in no class would escape every class cap: once a book writes one
+   Class_gross limit, every sector it holds needs one, and a book that leaves a
+   sector out is refused at construction, naming it. *)
+let test_every_class_has_a_class_limit () =
+  check_invalid "RATES has no class limit" (fun () ->
+      Graph.destroy
+        (Graph.create ~instruments:etf_book
+           ~limits:[ limit "class-index" (Limit.Sector index) (Limit.Class_gross 0.35) ]
+           ~confidence:0.95 ~return_window:10 ()));
+  match
+    Limits.validate ~instruments:etf_book
+      [ limit "class-index" (Limit.Sector index) (Limit.Class_gross 0.35) ]
+  with
+  | exception Invalid_argument m ->
+      Alcotest.(check bool)
+        "the message names RATES" true
+        (String.is_substring m ~substring:"RATES");
+      Alcotest.(check bool)
+        "and the name that escapes" true
+        (String.is_substring m ~substring:"TLT")
+  | () -> Alcotest.fail "a book with an unclassed sector was accepted"
+
+let test_etf_limit_validation () =
+  let mk limits =
+    Graph.destroy
+      (Graph.create ~instruments:etf_book ~limits ~confidence:0.95 ~return_window:10 ())
+  in
+  check_invalid "an instrument-scoped name weight" (fun () ->
+      mk [ limit "bad" (Limit.Instrument spy) (Limit.Name_weight 0.15) ]);
+  check_invalid "a sector-scoped name weight" (fun () ->
+      mk [ limit "bad" (Limit.Sector index) (Limit.Name_weight 0.15) ]);
+  check_invalid "a name weight of zero" (fun () ->
+      mk [ limit "bad" Limit.Portfolio (Limit.Name_weight 0.0) ]);
+  check_invalid "a name weight above 100%" (fun () ->
+      mk [ limit "bad" Limit.Portfolio (Limit.Name_weight 1.5) ]);
+  check_invalid "a portfolio-scoped class gross" (fun () ->
+      mk [ limit "bad" Limit.Portfolio (Limit.Class_gross 0.35) ]);
+  check_invalid "an instrument-scoped class gross" (fun () ->
+      mk [ limit "bad" (Limit.Instrument spy) (Limit.Class_gross 0.35) ]);
+  check_invalid "a class gross of zero" (fun () ->
+      mk
+        [
+          limit "bad" (Limit.Sector index) (Limit.Class_gross 0.0);
+          limit "ok" (Limit.Sector rates) (Limit.Class_gross 0.35);
+        ]);
+  check_invalid "a class gross that is not a number" (fun () ->
+      mk
+        [
+          limit "bad" (Limit.Sector index) (Limit.Class_gross Float.nan);
+          limit "ok" (Limit.Sector rates) (Limit.Class_gross 0.35);
+        ]);
+  check_invalid "a sector-scoped expected shortfall" (fun () ->
+      mk [ limit "bad" (Limit.Sector index) (Limit.Expected_shortfall (dollars 1.0)) ]);
+  check_invalid "a negative expected shortfall" (fun () ->
+      mk [ limit "bad" Limit.Portfolio (Limit.Expected_shortfall (dollars (-1.0))) ])
+
+(* THE FIXTURE. 250 daily returns for SPY, held at 100,000 of gross, so the
+   book's P&L on day t is 100,000 x r(t). 247 of them are small, in
+   [-0.005, 0.005]; three are the tail, scattered through the window so the
+   computation has to sort: -0.03 on day 17, -0.05 on day 101, -0.04 on day 249.
+
+   At 99% the tail is 1% of 250 observations = 2.5 of them, so expected
+   shortfall is the mean of the worst 2.5, taking the third worst at half
+   weight (the interpolated convention, Risk_metrics.expected_shortfall_interpolated):
+
+     sorted ascending:  -0.05, -0.04, -0.03, -0.005, ...
+     ES = -(x(1) + x(2) + 0.5 x(3)) / 2.5
+        = (0.05 + 0.04 + 0.5 x 0.03) / 2.5
+        = (0.05 + 0.04 + 0.015) / 2.5
+        = 0.105 / 2.5
+        = 0.042, of 100,000 gross: $4,200.
+
+   The nearest-rank mean -- the worst ceil(2.5) = 3, at full weight -- would be
+   (0.05 + 0.04 + 0.03) / 3 = 0.04, $4,000: inside a $4,100 cap that the
+   interpolated $4,200 breaches. The cap below sits between them, so this test
+   cannot pass on the other convention. *)
+let es_fixture =
+  Array.init 250 ~f:(fun i ->
+      match i with
+      | 17 -> -0.03
+      | 101 -> -0.05
+      | 249 -> -0.04
+      | i -> 0.001 *. Float.of_int ((i mod 11) - 5))
+
+let es_limits =
+  [
+    limit "es-cap" Limit.Portfolio (Limit.Expected_shortfall (dollars 4_100.0));
+    limit "es-roomy" Limit.Portfolio (Limit.Expected_shortfall (dollars 4_300.0));
+  ]
+
+let with_es_graph ~spy_returns ~f () =
+  let graph =
+    Graph.create ~starting_cash:(dollars 900_000.0) ~instruments:etf_book
+      ~limits:es_limits ~confidence:0.95 ~return_window:250 ()
+  in
+  Graph.set_price graph spy (Price.of_float 500.0);
+  Graph.set_price graph qqq (Price.of_float 400.0);
+  Graph.set_price graph tlt (Price.of_float 100.0);
+  Graph.set_qty graph spy (Qty.of_float 200.0);
+  Graph.set_returns graph spy spy_returns;
+  Graph.set_returns graph qqq (Array.create ~len:250 0.0);
+  Graph.set_returns graph tlt (Array.create ~len:250 0.0);
+  Exn.protect ~f:(fun () -> f graph) ~finally:(fun () -> Graph.destroy graph)
+
+let test_expected_shortfall_is_the_mean_of_the_worst_two_and_a_half () =
+  with_es_graph ~spy_returns:es_fixture
+    ~f:(fun graph ->
+      let s = Graph.snapshot graph in
+      let es_cap = find_breach s "es-cap" in
+      Alcotest.check float_eq "ES at 99% over 250 sessions" 4_200.0
+        (Breach.observed es_cap);
+      Alcotest.(check bool) "$4,200 breaches $4,100" true (Breach.breached es_cap);
+      Alcotest.(check bool)
+        "and sits inside $4,300" false
+        (Breach.breached (find_breach s "es-roomy"));
+      Alcotest.(check string)
+        "rendered in dollars"
+        "es-cap [portfolio] BREACH: $4200.00 > $4100.00 (over by $100.00)"
+        (Limits.to_string es_cap);
+      (* The dashboard's own ES -- 95%, nearest rank -- is a different number
+         and is left as it was: the worst ceil(12.5) = 13 days. *)
+      Alcotest.(check bool)
+        "the displayed ES is the 95% one" true
+        (Float.( < )
+           (Notional.to_float
+              (Option.value_exn (Graph.Snapshot.expected_shortfall_notional s)))
+           4_200.0))
+    ()
+
+(* Fewer than 250 sessions: the limit cannot be evaluated, and says so. It is
+   not computed over what there is -- a 99% tail of 249 days is a different
+   number -- and it is not a pass. The gate then refuses a proposal that
+   raises gross while es-cap is one the switch trips on, and passes one that
+   lowers it (Task 1.5's rule, unchanged). *)
+let test_expected_shortfall_without_a_full_window_is_unevaluable () =
+  with_es_graph
+    ~spy_returns:(Array.sub es_fixture ~pos:1 ~len:249)
+    ~f:(fun graph ->
+      let s = Graph.snapshot graph in
+      Alcotest.(check bool)
+        "249 sessions: es-cap unevaluable" true
+        (Option.is_none (limit_result graph "es-cap"));
+      Alcotest.(check (list string))
+        "both ES limits listed as unevaluated" [ "es-cap"; "es-roomy" ]
+        (Graph.Snapshot.unevaluated_limits s);
+      let fill qty =
+        {
+          Ohcamel.Gate.Fill.symbol = spy;
+          qty = Qty.of_float qty;
+          price = Price.of_float 500.0;
+        }
+      in
+      let up = Ohcamel.Gate.check ~trips_on:[ "es-cap" ] graph ~fills:[ fill 10.0 ] in
+      Alcotest.(check bool)
+        "raising gross is refused while es-cap is unknown" true
+        (Ohcamel.Gate.Outcome.equal up.Ohcamel.Gate.Verdict.outcome
+           (Ohcamel.Gate.Outcome.Refused_unevaluable [ "es-cap" ]));
+      let down =
+        Ohcamel.Gate.check ~trips_on:[ "es-cap" ] graph ~fills:[ fill (-10.0) ]
+      in
+      Alcotest.(check bool) "lowering it passes" true (Ohcamel.Gate.Verdict.passed down);
+      (* The 250th session arrives and the limit reads. *)
+      Graph.set_returns graph spy es_fixture;
+      Graph.stabilize graph;
+      Alcotest.(check bool)
+        "250 sessions: evaluated" true
+        (Option.is_some (limit_result graph "es-cap")))
+    ()
+
+(* The confidence is the book's (Config.Risk.es_confidence), not the graph's
+   VaR confidence. At 97.5% the tail is 2.5% of 250 = 6.25 observations: the
+   three tail days, then three of the -0.005 days (i mod 11 = 0) at full
+   weight and a fourth at a quarter:
+     (0.05 + 0.04 + 0.03 + 3 x 0.005 + 0.25 x 0.005) / 6.25
+       = (0.12 + 0.015 + 0.00125) / 6.25 = 0.13625 / 6.25 = 0.0218,
+   of 100,000 gross: $2,180. *)
+let test_expected_shortfall_reads_its_own_confidence () =
+  let graph =
+    Graph.create ~es_confidence:0.975 ~starting_cash:(dollars 900_000.0)
+      ~instruments:etf_book ~limits:es_limits ~confidence:0.95 ~return_window:250 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph spy (Price.of_float 500.0);
+      Graph.set_qty graph spy (Qty.of_float 200.0);
+      Graph.set_returns graph spy es_fixture;
+      Graph.set_returns graph qqq (Array.create ~len:250 0.0);
+      Graph.set_returns graph tlt (Array.create ~len:250 0.0);
+      let s = Graph.snapshot graph in
+      Alcotest.check float_eq "ES at 97.5%" 2_180.0
+        (Breach.observed (find_breach s "es-cap"));
+      (* A fork answers what the graph it came from answers. *)
+      let fork = Graph.fork graph in
+      Exn.protect
+        ~finally:(fun () -> Graph.destroy fork)
+        ~f:(fun () ->
+          Alcotest.check float_eq "the fork's ES at 97.5%" 2_180.0
+            (Breach.observed (find_breach (Graph.snapshot fork) "es-cap"))))
+
+(* The machine graph draws the new limits by name, kind and scope -- the three
+   words server.ml copies, no threshold -- and costs each by its kind, which
+   its name cannot say: the shortfall sorts the window, the weights fold
+   exposures. *)
+let test_the_topology_names_the_new_kinds () =
+  let graph =
+    Graph.create ~starting_cash:(dollars 900_000.0) ~instruments:etf_book
+      ~limits:
+        (etf_limits
+        @ [ limit "es-cap" Limit.Portfolio (Limit.Expected_shortfall (dollars 45_000.0)) ]
+        )
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      let topology = Graph.topology graph in
+      let row name =
+        match Graph.Topology.find topology ("limit:" ^ name) with
+        | None -> Alcotest.failf "no node limit:%s" name
+        | Some n ->
+            ( Graph.Topology.limit_kind_to_string
+                (Limit.kind (Option.value_exn (Graph.Topology.Node.limit n))),
+              Option.value (Graph.Topology.Node.cost n) ~default:"-" )
+      in
+      Alcotest.(check (list (pair string string)))
+        "kind and cost of each new limit"
+        [
+          ("name_weight", "O(n)");
+          ("class_gross", "O(n)");
+          ("class_gross", "O(n)");
+          ("expected_shortfall", "O(w log w)");
+        ]
+        (List.map [ "name-cap"; "class-index"; "class-rates"; "es-cap" ] ~f:row))
+
 (* A feed pushing a symbol the book does not hold means the subscription and the
    position set have diverged. That is not a routine event, so it is loud. *)
 let test_unknown_symbol_is_loud () =
@@ -2326,6 +2704,25 @@ let suite =
       Alcotest.test_case "bulk-seeded returns keep the recent tail" `Quick
         test_set_returns_keeps_the_recent_tail;
       Alcotest.test_case "construction-time validation" `Quick test_validation;
+      Alcotest.test_case "ETF: a name over its weight breaches" `Quick
+        test_a_name_over_its_weight_breaches;
+      Alcotest.test_case "ETF: class gross sums magnitudes" `Quick
+        test_class_gross_sums_magnitudes;
+      Alcotest.test_case "ETF: weights against no equity are unevaluable" `Quick
+        test_weights_against_no_equity_are_unevaluable;
+      Alcotest.test_case "ETF: the gate reads a name weight" `Quick
+        test_the_gate_reads_a_name_weight;
+      Alcotest.test_case "ETF: every class has a class limit" `Quick
+        test_every_class_has_a_class_limit;
+      Alcotest.test_case "ETF: limit validation" `Quick test_etf_limit_validation;
+      Alcotest.test_case "ES: the mean of the worst 2.5 of 250" `Quick
+        test_expected_shortfall_is_the_mean_of_the_worst_two_and_a_half;
+      Alcotest.test_case "ES: without a full window it is unevaluable" `Quick
+        test_expected_shortfall_without_a_full_window_is_unevaluable;
+      Alcotest.test_case "ES: reads its own confidence" `Quick
+        test_expected_shortfall_reads_its_own_confidence;
+      Alcotest.test_case "ETF: the topology names the new kinds" `Quick
+        test_the_topology_names_the_new_kinds;
       Alcotest.test_case "an unknown symbol is loud" `Quick test_unknown_symbol_is_loud;
       Alcotest.test_case "Incremental's process counters move" `Quick
         test_process_counters_move;

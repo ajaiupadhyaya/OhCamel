@@ -795,6 +795,33 @@ let bars_body =
                     {"t":"2026-07-29T04:00:00Z","c":210.0}]},
     "next_page_token":null}|}
 
+(* A 250-session window over the example book's 48 names (Task 1.9) is more
+   bars than one Alpaca response carries, so the backfill asks in batches:
+   530 calendar days a name, at most 10,000 / 530 = 18 names a request, so
+   48 names are three requests of 18, 18 and 12, none able to reach the cap.
+   The 60-session window keeps its single request for 64 names. *)
+let test_backfill_batches_stay_under_the_bar_cap () =
+  let names n = List.init n ~f:(fun i -> i) in
+  Alcotest.(check (list int))
+    "48 names at 250 sessions: three requests" [ 18; 18; 12 ]
+    (List.map (Alpaca_rest.symbol_batches ~window:250 (names 48)) ~f:List.length);
+  Alcotest.(check bool)
+    "every batch's calendar days fit the cap" true
+    (List.for_all
+       (Alpaca_rest.symbol_batches ~window:250 (names 64))
+       ~f:(fun b ->
+         List.length b * Alpaca_rest.lookback_days ~window:250
+         <= Alpaca_rest.max_bars_per_request));
+  Alcotest.(check (list int))
+    "64 names at 60 sessions: one request, as before" [ 64 ]
+    (List.map (Alpaca_rest.symbol_batches ~window:60 (names 64)) ~f:List.length);
+  Alcotest.(check (list int))
+    "every name, in order, once" (names 48)
+    (List.concat (Alpaca_rest.symbol_batches ~window:250 (names 48)));
+  Alcotest.(check (list int))
+    "a window too long for one name a request still asks one at a time" [ 1; 1 ]
+    (List.map (Alpaca_rest.symbol_batches ~window:10_000 (names 2)) ~f:List.length)
+
 let test_bars_to_returns () =
   match Alpaca_rest.returns_of_body bars_body with
   | Error e -> Alcotest.failf "should parse: %s" (Error.to_string_hum e)
@@ -1508,6 +1535,8 @@ let suite =
       Alcotest.test_case "alpaca: one verdict for a session, refusal and socket" `Quick
         test_session_verdict;
       Alcotest.test_case "backfill: daily bars become returns" `Quick test_bars_to_returns;
+      Alcotest.test_case "backfill: batches stay under the bar cap" `Quick
+        test_backfill_batches_stay_under_the_bar_cap;
       Alcotest.test_case "backfill: impossible closes never enter the window" `Quick
         test_bars_reject_impossible_closes;
       Alcotest.test_case "backfill: degenerate series and error responses" `Quick

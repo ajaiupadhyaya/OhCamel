@@ -31,16 +31,17 @@ let threshold (kind : Limit.kind) : float =
   | Limit.Value_at_risk n -> Notional.to_float n
   | Limit.Component_var n -> Notional.to_float n
   | Limit.Greek_limit (_, n) -> Notional.to_float n
-  | Limit.Max_drawdown f -> f
+  | Limit.Expected_shortfall n -> Notional.to_float n
+  | Limit.Max_drawdown f | Limit.Class_gross f | Limit.Name_weight f -> f
 
 type measure = Money | Fraction
 
 let unit_of (kind : Limit.kind) : measure =
   match kind with
   | Limit.Gross_notional _ | Limit.Value_at_risk _ | Limit.Component_var _
-  | Limit.Greek_limit _ ->
+  | Limit.Greek_limit _ | Limit.Expected_shortfall _ ->
       Money
-  | Limit.Max_drawdown _ -> Fraction
+  | Limit.Max_drawdown _ | Limit.Class_gross _ | Limit.Name_weight _ -> Fraction
 
 let render_value (kind : Limit.kind) (v : float) : string =
   match unit_of kind with
@@ -101,13 +102,76 @@ let render_value (kind : Limit.kind) (v : float) : string =
    the pairing is still accepted rather than restricted to a single expiry.
    Bucketing vega by expiry is the fix, it is a larger change than this phase,
    and the README names it rather than leaving a reader to discover it. *)
+(* THE ETF BOOK'S KINDS (Task 1.9) each have one scope.
+
+   Expected shortfall is a quantile statistic, like VaR, and does not
+   decompose: Portfolio only. A class gross is by definition a sector's: Sector
+   only (at Portfolio it would be the book's leverage, which book-cap's dollars
+   already cap, and at one instrument it would be a name weight). A name weight
+   is written once for the whole book and read as the heaviest name, so a name
+   added to the universe is covered the day it arrives: Portfolio only. *)
 let scope_is_valid (kind : Limit.kind) (scope : Limit.scope) : bool =
   match (kind, scope) with
   | (Limit.Gross_notional _ | Limit.Component_var _ | Limit.Greek_limit _), _ -> true
-  | (Limit.Value_at_risk _ | Limit.Max_drawdown _), Limit.Portfolio -> true
-  | (Limit.Value_at_risk _ | Limit.Max_drawdown _), (Limit.Instrument _ | Limit.Sector _)
-    ->
+  | ( ( Limit.Value_at_risk _ | Limit.Max_drawdown _ | Limit.Expected_shortfall _
+      | Limit.Name_weight _ ),
+      Limit.Portfolio ) ->
+      true
+  | ( ( Limit.Value_at_risk _ | Limit.Max_drawdown _ | Limit.Expected_shortfall _
+      | Limit.Name_weight _ ),
+      (Limit.Instrument _ | Limit.Sector _) ) ->
       false
+  | Limit.Class_gross _, Limit.Sector _ -> true
+  | Limit.Class_gross _, (Limit.Instrument _ | Limit.Portfolio) -> false
+
+(* What a refused scope's sentence says the kind is meaningful over. *)
+let valid_scope_words (kind : Limit.kind) : string =
+  match kind with
+  | Limit.Class_gross _ -> "one sector class"
+  | Limit.Gross_notional _ | Limit.Component_var _ | Limit.Greek_limit _
+  | Limit.Value_at_risk _ | Limit.Max_drawdown _ | Limit.Expected_shortfall _
+  | Limit.Name_weight _ ->
+      "the whole portfolio"
+
+(* EVERY CLASS OR NONE (Task 1.9). A book that writes one Class_gross limit
+   has said its names are capped by class, and a sector it left out would hold
+   names that escape every class cap -- silently, since no limit would ever
+   read them. So once any Class_gross limit is written, every sector the book
+   holds needs one, and a book that leaves one out is refused at construction,
+   naming the sector and its names. A sector with no natural class gets one of
+   its own: that is an explicit decision, which is the point. A book with no
+   Class_gross limit at all is unaffected. *)
+let validate_class_coverage ~(instruments : Instrument.t list) (limits : Limit.t list) :
+    unit =
+  let classed =
+    List.filter_map limits ~f:(fun l ->
+        match (Limit.kind l, Limit.scope l) with
+        | Limit.Class_gross _, Limit.Sector s -> Some s
+        | _ -> None)
+    |> Sector.Set.of_list
+  in
+  if not (Set.is_empty classed) then
+    let uncovered =
+      List.filter instruments ~f:(fun i -> not (Set.mem classed (Instrument.sector i)))
+    in
+    match uncovered with
+    | [] -> ()
+    | _ :: _ ->
+        let sectors =
+          List.map uncovered ~f:Instrument.sector
+          |> List.dedup_and_sort ~compare:Sector.compare
+          |> List.map ~f:Sector.to_string
+        in
+        invalid_argf
+          "limits: the book caps classes with Class_gross, but sector%s %s %s none, so \
+           %s would escape every class cap; give %s a Class_gross limit of its own"
+          (match sectors with [ _ ] -> "" | _ -> "s")
+          (String.concat ~sep:", " sectors)
+          (match sectors with [ _ ] -> "has" | _ -> "have")
+          (String.concat ~sep:", "
+             (List.map uncovered ~f:(fun i -> Symbol.to_string (Instrument.symbol i))))
+          (match sectors with [ _ ] -> "it" | _ -> "each")
+          ()
 
 (* Validate a limit set against the book it will be applied to.
 
@@ -118,7 +182,7 @@ let scope_is_valid (kind : Limit.kind) (scope : Limit.scope) : bool =
    worth buying at construction time.
 
    Raises [Invalid_argument] with the offending limit named. *)
-let validate ~(instruments : Instrument.t list) (limits : Limit.t list) : unit =
+let validate_members ~(instruments : Instrument.t list) (limits : Limit.t list) : unit =
   let known_symbols = Symbol.Set.of_list (List.map instruments ~f:Instrument.symbol) in
   let known_sectors = Sector.Set.of_list (List.map instruments ~f:Instrument.sector) in
   (* Duplicate names are rejected because the name is the limit's identity
@@ -139,8 +203,8 @@ let validate ~(instruments : Instrument.t list) (limits : Limit.t list) : unit =
       if not (scope_is_valid kind scope) then
         invalid_argf
           "limits: limit %S is scoped to %s, but that kind of limit is only meaningful \
-           over the whole portfolio"
-          name (Limit.scope_to_string scope) ();
+           over %s"
+          name (Limit.scope_to_string scope) (valid_scope_words kind) ();
       (match scope with
       | Limit.Instrument symbol ->
           if not (Set.mem known_symbols symbol) then
@@ -159,22 +223,48 @@ let validate ~(instruments : Instrument.t list) (limits : Limit.t list) : unit =
                -- a short option book's gamma is negative and its risk is the size of \
                that number, not its sign."
               (Limit.name limit) (Notional.to_float n) ()
-      | Limit.Gross_notional n | Limit.Value_at_risk n | Limit.Component_var n ->
+      | Limit.Gross_notional n
+      | Limit.Value_at_risk n
+      | Limit.Component_var n
+      | Limit.Expected_shortfall n ->
           if Float.is_negative (Notional.to_float n) then
             invalid_argf
               "limits: limit %S has a negative threshold (%f); a notional cap is an \
                absolute magnitude"
               name (Notional.to_float n) ()
+      (* Written positively, so a nan -- which compares false both ways -- is
+         refused rather than let through to a node that would never breach. *)
+      | Limit.Name_weight f ->
+          if not (Float.( > ) f 0.0 && Float.( <= ) f 1.0) then
+            invalid_argf
+              "limits: limit %S has name weight %g; must be a fraction of equity in (0, \
+               1]"
+              name f ()
+      | Limit.Class_gross f ->
+          if not (Float.is_finite f && Float.( > ) f 0.0) then
+            invalid_argf
+              "limits: limit %S has class gross %g; must be a positive, finite fraction \
+               of equity"
+              name f ()
       | Limit.Max_drawdown f ->
           if not (Float.( > ) f 0.0 && Float.( <= ) f 1.0) then
             invalid_argf
               "limits: limit %S has drawdown threshold %f; must be a fraction in (0, 1]"
               name f ())
 
+(* The members and the set's names ([validate_members]), then the class
+   coverage over the whole set. Config.Book.errors validates each limit alone
+   with [validate_members] -- coverage is a rule about the set, which one limit
+   alone would fail for every sector it does not name -- and the set with both. *)
+let validate ~(instruments : Instrument.t list) (limits : Limit.t list) : unit =
+  validate_members ~instruments limits;
+  validate_class_coverage ~instruments limits
+
 (* Evaluate one limit against one observed value.
 
    [observed] must already be in the limit's own unit -- dollars for
-   Gross_notional and Value_at_risk, a fraction for Max_drawdown. This function
+   Gross_notional, Value_at_risk and Expected_shortfall, a fraction of equity
+   for Name_weight and Class_gross, a fraction for Max_drawdown. This function
    cannot check that, which is why graph.ml wires each limit kind to a
    specifically-chosen node rather than to a generic "current value". *)
 let evaluate ~(limit : Limit.t) ~(observed : float) : Breach.t =

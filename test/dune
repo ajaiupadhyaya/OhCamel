@@ -22,8 +22,11 @@
  ; lib/ and lib/feed/ whole: test_desk's kernel-purity case reads every kernel
  ; source for a mention of Venue.Session_clock, which is the desk's type and
  ; may not be named there (invariant 6, ruling 20).
+ ; quant/src/ohcamel_quant/universes.json: the example book's sector classes are
+ ; the site's universe groups, one class per group (Task 1.9).
  (deps
   ../book.example.sexp
+  ../quant/src/ohcamel_quant/universes.json
   ../bin/main.exe
   ../lib/factor_model.ml
   ../research/config/friction_v1.yaml

@@ -205,6 +205,11 @@ module Node_name = struct
       | "attribution" | "feed_health" | "now" -> "state"
       | other -> failwithf "graph: no unit declared for node %S" other ()
 
+  (* A limit node of the kinds that read one computed number. The topology
+     replaces it for the kinds that do more (Task 1.9's name weight, class
+     gross and shortfall), which only the limit's kind, not its name, says. *)
+  let cost_of_limit = "O(1)"
+
   (* What one recomputation of a named node costs, in the README's own terms:
      n instruments, w observations in a return window, h equity marks, L
      limits. From the code, not a measurement -- the drawing weights a node's
@@ -219,7 +224,7 @@ module Node_name = struct
     if
       starts "exposure:" || starts "feed:" || starts "greeks:"
       || starts "option_exposure:" || starts "limit:"
-    then Some "O(1)"
+    then Some cost_of_limit
     else if starts "sector:" then Some "O(n)"
     else if String.is_suffix name ~suffix:"]" then None
     else
@@ -507,6 +512,11 @@ type t = {
   limits : Limit.t list;
   confidence : float;
   return_window : int;
+  (* The confidence an Expected_shortfall limit takes its tail at (the book's
+       Config.Risk.es_confidence, Task 1.9). Beside [confidence], not instead
+       of it: the VaR, the dashboard's ES and every journaled forecast keep the
+       graph's own. *)
+  es_confidence : float;
   ewma_lambda : float;
   covariance_for_attribution : Covariance_estimator.t;
   (* The option contracts this book may hold, by id. Structure, not state: a
@@ -662,6 +672,7 @@ let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : str
 let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
     ?(starting_cash = Notional.zero) ?(equity_history_limit = 10_000)
     ?(drawdown_window = Config.Risk.default.Config.Risk.drawdown_window)
+    ?(es_confidence = Config.Risk.default.Config.Risk.es_confidence)
     ?(staleness_threshold = Time.Span.of_sec 90.0)
     ?(staleness_overrides : Time.Span.t Symbol.Map.t = Symbol.Map.empty)
     ?(ewma_lambda = Vol_estimators.Ewma.default_lambda)
@@ -683,6 +694,9 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
   if not (Float.( > ) confidence 0.0 && Float.( < ) confidence 1.0) then
     invalid_argf "graph: confidence must be strictly between 0 and 1, got %f" confidence
       ();
+  if not (Float.( > ) es_confidence 0.0 && Float.( < ) es_confidence 1.0) then
+    invalid_argf "graph: es_confidence must be strictly between 0 and 1, got %f"
+      es_confidence ();
   if return_window < 2 then
     invalid_argf
       "graph: return_window must be at least 2 (a one-observation window has zero \
@@ -1520,6 +1534,12 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
           note name;
           Some (Limits.evaluate ~limit ~observed:(Float.abs (Notional.to_float v))))
     in
+    let of_equity ~observed equity =
+      let equity = Notional.to_float equity in
+      if Float.is_finite equity && Float.( > ) equity 0.0 && Float.is_finite observed then
+        Some (Limits.evaluate ~limit ~observed:(observed /. equity))
+      else None
+    in
     named name
       (match (Limit.kind limit, Limit.scope limit) with
       | Limit.Gross_notional _, Limit.Instrument symbol ->
@@ -1541,6 +1561,56 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
               note name;
               if Float.is_finite d then Some (Limits.evaluate ~limit ~observed:d)
               else None)
+      (* THE ETF BOOK'S LIMITS (Task 1.9). The two weights are fractions of
+         equity, and an equity that is not a positive number has no weight to
+         take: unevaluable, as a drawdown with no finite equity is, so Alerts
+         neither raises nor clears on it and the gate refuses a raise while a
+         trip-limit reads it. *)
+      | Limit.Name_weight _, Limit.Portfolio ->
+          Inc.map2 exposure_list equity_node ~f:(fun exposures equity ->
+              note name;
+              let heaviest =
+                List.fold exposures ~init:0.0 ~f:(fun acc x ->
+                    Float.max acc (Float.abs (Notional.to_float x)))
+              in
+              of_equity ~observed:heaviest equity)
+      | Limit.Class_gross _, Limit.Sector sector ->
+          let members =
+            List.map
+              (Map.find_exn symbols_by_sector sector)
+              ~f:(Map.find_exn exposure_nodes)
+          in
+          Inc.map2 (Inc.all members) equity_node ~f:(fun exposures equity ->
+              note name;
+              let gross =
+                List.fold exposures ~init:0.0 ~f:(fun acc x ->
+                    acc +. Float.abs (Notional.to_float x))
+              in
+              of_equity ~observed:gross equity)
+      (* The shortfall reads the book's return series -- today's weights
+         through the window's history, the historical simulation the VaR above
+         uses -- times gross, which is the book's P&L in dollars (see
+         [to_notional]). Only a FULL window: fewer sessions than the window is
+         a different statistic (a 99% tail of 249 days is not one of 250) and
+         is unevaluable rather than computed over what there is. *)
+      | Limit.Expected_shortfall _, Limit.Portfolio ->
+          Inc.map2 portfolio_returns_node gross_node ~f:(fun returns gross ->
+              note name;
+              match returns with
+              | Some returns when Array.length returns >= return_window ->
+                  let window =
+                    Array.sub returns
+                      ~pos:(Array.length returns - return_window)
+                      ~len:return_window
+                  in
+                  let fraction =
+                    Risk_metrics.expected_shortfall_interpolated ~returns:window
+                      ~confidence:es_confidence
+                  in
+                  Some
+                    (Limits.evaluate ~limit
+                       ~observed:(fraction *. Notional.to_float gross))
+              | Some _ | None -> None)
       (* Component VaR limits. Note what is NOT here: [Float.abs].
 
        [of_magnitude] above absolute-values an exposure, because a $50,000 short
@@ -1607,8 +1677,10 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
           Inc.map observed_node ~f:(fun v ->
               note name;
               Some (Limits.evaluate ~limit ~observed:(Float.abs v)))
-      | ( (Limit.Value_at_risk _ | Limit.Max_drawdown _),
-          (Limit.Instrument _ | Limit.Sector _) ) ->
+      | ( ( Limit.Value_at_risk _ | Limit.Max_drawdown _ | Limit.Expected_shortfall _
+          | Limit.Name_weight _ ),
+          (Limit.Instrument _ | Limit.Sector _) )
+      | Limit.Class_gross _, (Limit.Instrument _ | Limit.Portfolio) ->
           (* Unreachable: Limits.validate rejects these pairings above. Kept as an
          explicit failure rather than a wildcard so that adding a new scope to
          Types.Limit makes the compiler point here. *)
@@ -1694,6 +1766,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
       limits;
       confidence;
       return_window;
+      es_confidence;
       ewma_lambda;
       covariance_for_attribution;
       option_positions;
@@ -1783,7 +1856,7 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
   let forked =
     create ?on_compute ~starting_cash:(Inc.Var.value t.cash_var)
       ~equity_history_limit:t.equity_history_limit ~drawdown_window:t.drawdown_window
-      ~staleness_threshold:t.staleness_threshold
+      ~es_confidence:t.es_confidence ~staleness_threshold:t.staleness_threshold
       ~staleness_overrides:t.staleness_overrides ~ewma_lambda:t.ewma_lambda
       ~covariance_for_attribution:t.covariance_for_attribution
       ~options:(Map.data t.option_positions) ~rate:(Inc.Var.value t.rate_var)
@@ -2055,6 +2128,9 @@ module Topology = struct
     | Limit.Max_drawdown _ -> "max_drawdown"
     | Limit.Greek_limit (greek, _) -> "greek:" ^ Greek.to_string greek
     | Limit.Component_var _ -> "component_var"
+    | Limit.Class_gross _ -> "class_gross"
+    | Limit.Name_weight _ -> "name_weight"
+    | Limit.Expected_shortfall _ -> "expected_shortfall"
 
   let names (t : t) : string list = List.map t.nodes ~f:Node.name
 
@@ -2173,6 +2249,18 @@ let topology ?(alerts = false) ?kill_switch_wired_to ?(desk = false) ?(signals =
     | Some rest -> String.chop_suffix rest ~suffix:"]"
     | None -> None
   in
+  (* A limit node's cost is its kind's, which a name cannot tell: most read
+     one number that is already computed, but a name weight folds every
+     exposure, a class gross folds its class's, and an expected shortfall sorts
+     the return window -- the work [expected_shortfall] does, done again at
+     the limit's own confidence (Task 1.9). *)
+  let limit_cost : Limit.kind -> string = function
+    | Limit.Expected_shortfall _ -> "O(w log w)"
+    | Limit.Name_weight _ | Limit.Class_gross _ -> "O(n)"
+    | Limit.Gross_notional _ | Limit.Value_at_risk _ | Limit.Max_drawdown _
+    | Limit.Greek_limit _ | Limit.Component_var _ ->
+        Node_name.cost_of_limit
+  in
   let classify name =
     let none = (None, None, None, None) in
     match
@@ -2235,7 +2323,10 @@ let topology ?(alerts = false) ?kill_switch_wired_to ?(desk = false) ?(signals =
           rank = rank name;
           observed = r.Raw.observed;
           unit = Node_name.unit_of name;
-          cost = Node_name.cost_of name;
+          cost =
+            (match limit with
+            | Some l -> Some (limit_cost (Limit.kind l))
+            | None -> Node_name.cost_of name);
           symbol;
           sector;
           limit;
