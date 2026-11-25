@@ -609,3 +609,75 @@ let to_string (r : report) : string =
         (Zone.to_string r.zone) r.exceptions r.zone_cumulative_probability;
       Printf.sprintf "  verdict              %s" (verdict r);
     ]
+
+(* ------------------------------------------------------------------------ *)
+(* The nightly score (Task 1.10)                                             *)
+(* ------------------------------------------------------------------------ *)
+
+(* The desk journals a one-day VaR forecast at every session close, and this is
+   the entry that tests those forecasts against what happened. It is pure over
+   two dated lists and knows nothing of the journal, the book or any currency:
+   [forecasts] are positive loss FRACTIONS (the same convention as
+   [Observation.var]) and [realised] are signed returns, so a loss larger than
+   the forecast is an exception and nothing here can produce a dollar figure.
+
+   Both lists are keyed by the date the forecast was MADE: [realised] at [d] is
+   the return over the session that followed the close of [d]. Only dates in
+   both are scored, so a forecast with no outcome yet (tonight's) and an
+   outcome with no forecast are left out rather than guessed at; a pair with a
+   non-finite number in it is left out too, since a nan compared with anything
+   is false and would read as "no exception".
+
+   FEWER THAN [min_sessions] PAIRS IS [None]. Kupiec's chi-square approximation
+   and the Basel zones both mean little on a handful of days, and a light shown
+   from nine sessions would be a verdict with nothing behind it.
+
+   THE LIGHT is [traffic_light]: the Basel zones read off the binomial
+   cumulative probability of the exception count, green below 95%, yellow
+   below 99.99%, red beyond. At 250 observations and 99% that gives Basel's own
+   table (green 0-4, yellow 5-9, red 10 and over); at any other n the same
+   probability cut-offs are applied, which is how the table was built.
+
+   THE INDEPENDENCE P-VALUE is [christoffersen_independence]'s, which is
+   defined for every series: with no exceedance followed by a day (none at all,
+   or only on the last day) the statistic is 0 and p is 1 -- "no evidence of
+   clustering" -- and every other degenerate count goes through [xlogx], so a
+   p-value is never nan. *)
+type score = {
+  n : int;
+  exceptions : int;
+  kupiec_p : float;
+  christoffersen_p : float;
+  light : [ `Green | `Yellow | `Red ];
+}
+
+let min_sessions = 60
+
+let score ~(forecasts : (Date.t * float) list) ~(realised : (Date.t * float) list)
+    ~(level : float) : score option =
+  Risk_metrics.validate_confidence ~confidence:level;
+  let realised_by_date = Date.Map.of_alist_reduce realised ~f:(fun _ later -> later) in
+  let paired =
+    Date.Map.of_alist_reduce forecasts ~f:(fun _ later -> later)
+    |> Map.to_alist
+    |> List.filter_map ~f:(fun (d, var) ->
+        match Map.find realised_by_date d with
+        | Some r when Float.is_finite var && Float.is_finite r ->
+            Some (Observation.create ~var ~realised:r)
+        | _ -> None)
+  in
+  let n = List.length paired in
+  if n < min_sessions then None
+  else begin
+    let hits = exceedances paired in
+    let x = Array.count hits ~f:Fn.id in
+    let _, kupiec_p = kupiec_pof ~n ~x ~confidence:level in
+    let _, christoffersen_p = christoffersen_independence ~exceedances:hits in
+    let light =
+      match fst (traffic_light ~n ~x ~confidence:level) with
+      | Zone.Green -> `Green
+      | Zone.Yellow -> `Yellow
+      | Zone.Red -> `Red
+    in
+    Some { n; exceptions = x; kupiec_p; christoffersen_p; light }
+  end

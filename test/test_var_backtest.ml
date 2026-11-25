@@ -601,6 +601,141 @@ let test_the_report_keeps_the_two_independence_tests_separate () =
     "and the duration test is reported alongside" true
     (Option.is_some (VB.duration_p r))
 
+(* ------------------------------------------------------------------------ *)
+(* Task 1.10: the journaled forecasts scored against what happened           *)
+(* ------------------------------------------------------------------------ *)
+
+let first_day = Date.of_string "2026-01-01"
+let day i = Date.add_days first_day i
+
+(* [n] sessions of a constant 2% forecast, with a 5% loss on each index in
+   [exceptions] and a 0.5% loss on every other. Forecast and realisation are
+   keyed by the date the forecast was made. *)
+let series ~n ~exceptions =
+  let forecasts = List.init n ~f:(fun i -> (day i, 0.02)) in
+  let realised =
+    List.init n ~f:(fun i ->
+        (day i, if List.mem exceptions i ~equal:Int.equal then -0.05 else -0.005))
+  in
+  (forecasts, realised)
+
+let scored ~n ~exceptions =
+  let forecasts, realised = series ~n ~exceptions in
+  VB.score ~forecasts ~realised ~level:0.99
+
+let light_name = function `Green -> "green" | `Yellow -> "yellow" | `Red -> "red"
+
+let test_score_three_exceptions_in_250_is_green () =
+  match scored ~n:250 ~exceptions:[ 10; 100; 200 ] with
+  | None -> Alcotest.fail "250 sessions must score"
+  | Some s ->
+      Alcotest.(check int) "n" 250 s.VB.n;
+      Alcotest.(check int) "exceptions" 3 s.VB.exceptions;
+      Alcotest.(check bool) "kupiec p > 0.05" true (Float.( > ) s.VB.kupiec_p 0.05);
+      Alcotest.(check bool)
+        "independence p is a probability" true
+        (Float.( >= ) s.VB.christoffersen_p 0.0 && Float.( <= ) s.VB.christoffersen_p 1.0);
+      Alcotest.(check string) "green" "green" (light_name s.VB.light)
+
+let test_score_twelve_exceptions_in_250_is_red () =
+  match scored ~n:250 ~exceptions:(List.init 12 ~f:(fun k -> 5 + (k * 20))) with
+  | None -> Alcotest.fail "250 sessions must score"
+  | Some s ->
+      Alcotest.(check int) "exceptions" 12 s.VB.exceptions;
+      Alcotest.(check string) "red" "red" (light_name s.VB.light);
+      Alcotest.(check bool) "kupiec rejects" true (Float.( < ) s.VB.kupiec_p 0.05)
+
+(* Basel's table for 250 observations at 99%: green 0-4, yellow 5-9, red 10+.
+   For another n the same cumulative-probability cut-offs apply, so at 100
+   sessions P[X <= 2] = 0.9206 is green and P[X <= 3] = 0.9816 is yellow. *)
+let test_score_light_zones () =
+  let light ~n x =
+    match scored ~n ~exceptions:(List.init x ~f:(fun k -> 3 * k)) with
+    | Some s -> light_name s.VB.light
+    | None -> "none"
+  in
+  Alcotest.(check string) "250: 4 is green" "green" (light ~n:250 4);
+  Alcotest.(check string) "250: 5 is yellow" "yellow" (light ~n:250 5);
+  Alcotest.(check string) "250: 9 is yellow" "yellow" (light ~n:250 9);
+  Alcotest.(check string) "250: 10 is red" "red" (light ~n:250 10);
+  Alcotest.(check string) "100: 2 is green" "green" (light ~n:100 2);
+  Alcotest.(check string) "100: 3 is yellow" "yellow" (light ~n:100 3)
+
+let test_score_needs_sixty_sessions () =
+  Alcotest.(check bool) "59 is None" true (Option.is_none (scored ~n:59 ~exceptions:[]));
+  Alcotest.(check bool) "60 scores" true (Option.is_some (scored ~n:60 ~exceptions:[]));
+  Alcotest.(check int) "the floor is 60" 60 VB.min_sessions
+
+(* A VaR is stored positive; a LOSS larger than it is an exception. A loss of
+   exactly the VaR, a smaller loss and a gain of any size are not. *)
+let test_score_sign_convention () =
+  let n = 60 in
+  let forecasts = List.init n ~f:(fun i -> (day i, 0.02)) in
+  let realised =
+    List.init n ~f:(fun i ->
+        ( day i,
+          match i with
+          | 0 -> -0.0201 (* larger loss: exception *)
+          | 1 -> -0.02 (* exactly the VaR: not *)
+          | 2 -> 0.50 (* a huge gain: not *)
+          | 3 -> -0.0199 (* smaller loss: not *)
+          | _ -> 0.001 ))
+  in
+  match VB.score ~forecasts ~realised ~level:0.99 with
+  | None -> Alcotest.fail "60 sessions must score"
+  | Some s -> Alcotest.(check int) "only the larger loss" 1 s.VB.exceptions
+
+let test_score_pairs_by_date () =
+  let forecasts, realised = series ~n:70 ~exceptions:[ 5 ] in
+  (* Shuffled, and with ten extra forecast dates that have no realisation and
+     five realisations that have no forecast: neither is scored. *)
+  let extra_f = List.init 10 ~f:(fun i -> (day (200 + i), 0.02)) in
+  let extra_r = List.init 5 ~f:(fun i -> (day (300 + i), -0.9)) in
+  match
+    VB.score
+      ~forecasts:(List.rev (forecasts @ extra_f))
+      ~realised:(realised @ extra_r) ~level:0.99
+  with
+  | None -> Alcotest.fail "70 paired sessions must score"
+  | Some s ->
+      Alcotest.(check int) "only the paired dates" 70 s.VB.n;
+      Alcotest.(check int) "one exception" 1 s.VB.exceptions
+
+let test_score_drops_non_finite_pairs () =
+  let forecasts, realised = series ~n:61 ~exceptions:[] in
+  let forecasts = (day 0, Float.nan) :: List.tl_exn forecasts in
+  match VB.score ~forecasts ~realised ~level:0.99 with
+  | None -> Alcotest.fail "60 finite pairs must score"
+  | Some s -> Alcotest.(check int) "the nan forecast is dropped" 60 s.VB.n
+
+(* Zero exceptions and all exceptions leave the transition counts degenerate;
+   neither may reach a p-value as nan or raise. *)
+let test_score_degenerate_independence () =
+  let check name s =
+    Alcotest.(check bool)
+      (name ^ ": christoffersen p defined")
+      true
+      (Float.is_finite s.VB.christoffersen_p
+      && Float.( >= ) s.VB.christoffersen_p 0.0
+      && Float.( <= ) s.VB.christoffersen_p 1.0);
+    Alcotest.(check bool)
+      (name ^ ": kupiec p defined") true
+      (Float.is_finite s.VB.kupiec_p)
+  in
+  (match scored ~n:80 ~exceptions:[] with
+  | Some s -> check "none" s
+  | None -> Alcotest.fail "80 must score");
+  match scored ~n:80 ~exceptions:(List.init 80 ~f:Fn.id) with
+  | Some s ->
+      check "all" s;
+      Alcotest.(check string) "all exceptions is red" "red" (light_name s.VB.light)
+  | None -> Alcotest.fail "80 must score"
+
+let test_score_rejects_a_bad_level () =
+  check_invalid_arg "level 1.5" (fun () ->
+      let forecasts, realised = series ~n:70 ~exceptions:[] in
+      VB.score ~forecasts ~realised ~level:1.5)
+
 let suite =
   ( "var_backtest",
     [
@@ -653,4 +788,20 @@ let suite =
         test_censoring_is_applied_to_the_ends;
       Alcotest.test_case "DURATION: kept out of the conditional-coverage sum" `Quick
         test_the_report_keeps_the_two_independence_tests_separate;
+      Alcotest.test_case "SCORE: 3 exceptions in 250 is green" `Quick
+        test_score_three_exceptions_in_250_is_green;
+      Alcotest.test_case "SCORE: 12 exceptions in 250 is red" `Quick
+        test_score_twelve_exceptions_in_250_is_red;
+      Alcotest.test_case "SCORE: the Basel zones" `Quick test_score_light_zones;
+      Alcotest.test_case "SCORE: fewer than 60 sessions is None" `Quick
+        test_score_needs_sixty_sessions;
+      Alcotest.test_case "SCORE: a larger loss is the exception" `Quick
+        test_score_sign_convention;
+      Alcotest.test_case "SCORE: pairs by date, unpaired dates unscored" `Quick
+        test_score_pairs_by_date;
+      Alcotest.test_case "SCORE: non-finite pairs are dropped" `Quick
+        test_score_drops_non_finite_pairs;
+      Alcotest.test_case "SCORE: degenerate transition counts" `Quick
+        test_score_degenerate_independence;
+      Alcotest.test_case "SCORE: a bad level raises" `Quick test_score_rejects_a_bad_level;
     ] )

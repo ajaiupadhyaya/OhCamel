@@ -160,6 +160,8 @@ def _desk_report(db, root):
     tables = {name: pd.DataFrame({"symbol": ["AAPL"], "qty": [400.0]})
               for name in ("fills", "pnl_by_strategy", "refusals", "overlay_path")}
     tables["book_summary"] = pd.DataFrame({"limits": ["[]"]})
+    tables["var_score"] = pd.DataFrame({"estimator": ["historical"], "n": [250], "exceptions": [3],
+                                        "kupiec_p": [0.7], "light": ["green"]})
     aid, _ = publish_artifact(db, root, "desk.report", tables, finished=utcnow(), notes=[ACCOUNT_NOTE])
     return aid
 
@@ -179,9 +181,21 @@ def test_the_desks_report_lists_only_its_summary_and_quotes_no_account_figure(ap
     for url in ("/api/artifacts/desk.report/latest", f"/api/artifacts/desk.report/{aid}"):
         r = client.get(url)
         assert r.status_code == 200
-        assert r.json()["manifest"]["tables"] == ["book_summary"]
+        assert r.json()["manifest"]["tables"] == ["book_summary", "var_score"]
         assert "equity_close" not in r.text and "gross_close" not in r.text
     assert client.get(f"/api/artifacts/desk.report/{aid}/book_summary").status_code == 200
+
+
+def test_the_risk_models_score_is_public_and_carries_no_size(api):
+    client, db, root = api
+    aid = _desk_report(db, root)
+    r = client.get(f"/api/artifacts/desk.report/{aid}/var_score")
+    assert r.status_code == 200
+    body = r.json()
+    columns = body["columns"]
+    assert {"estimator", "n", "exceptions", "kupiec_p", "light"} <= set(columns)
+    assert not any(bad in c.lower() for c in columns for bad in ("var", "pnl", "dollar", "notional"))
+    assert "AAPL" not in r.text
 
 
 def test_the_overlay_serves_its_scale_and_not_the_target_book(api):

@@ -52,7 +52,7 @@ MAX_ROWS = 50_000
 #: The tables a kind may serve, for the kinds that hold the live book. A kind absent
 #: here serves every table its manifest lists.
 PUBLIC_TABLES: dict[str, frozenset[str]] = {
-    "desk.report": frozenset({"book_summary"}),
+    "desk.report": frozenset({"book_summary", "var_score"}),
     "signals.overlay": frozenset({"overlay", "sources"}),
 }
 #: Kinds whose notes quote the book: the session's equity, gross, net and P&L.

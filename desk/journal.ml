@@ -990,6 +990,13 @@ let forecasts t =
     ("SELECT " ^ forecast_columns ^ " FROM forecasts ORDER BY date, estimator")
     [] ~row:forecast_of_row
 
+let forecasts_since t ~(date : Date.t) =
+  query t ~what:"forecasts since"
+    ("SELECT " ^ forecast_columns
+   ^ " FROM forecasts WHERE date >= ? ORDER BY date, estimator")
+    [ text (Date.to_string date) ]
+    ~row:forecast_of_row
+
 (* The latest date's forecasts only: three rows a session, and the page shows
    one session's. Dates are YYYY-MM-DD text, so the greatest is the latest. *)
 let latest_forecasts t =

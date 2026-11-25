@@ -655,6 +655,260 @@ let test_an_unrecorded_distribution_is_found_in_the_bars () =
     "not once recorded" []
     (found (fun s -> Symbol.equal s tlt))
 
+(* ------------------------------------------------------------------------ *)
+(* Task 1.10: the forecasts scored against the positions they were made on   *)
+(* ------------------------------------------------------------------------ *)
+
+module Score = Ohcamel_desk.Var_score
+
+let mark d symbol close qty = { Journal.Mark.date = date d; symbol; close; qty }
+let marks_of table d = Option.value (Map.find table d) ~default:[]
+let table rows = Date.Map.of_alist_exn (List.map rows ~f:(fun (d, ms) -> (date d, ms)))
+
+(* AAPL long 10 and XOM short 5, from one close to the next:
+     10 * (98 - 100) + (-5) * (52 - 50) = -30
+   against a gross of 10 * 100 + 5 * 50 = 1250, which is -2.4% of gross. The
+   forecast's fraction is of gross (Session_close.forecasts), so the realised is
+   in the same unit, and it is the positions of the FIRST close that are held:
+   a trade made during the second session changes nothing here. *)
+let test_the_hypothetical_return_is_the_first_closes_positions () =
+  let marks =
+    table
+      [
+        ( "2026-09-10",
+          [ mark "2026-09-10" aapl 100.0 10.0; mark "2026-09-10" xom 50.0 (-5.0) ] );
+        ( "2026-09-11",
+          [ mark "2026-09-11" aapl 98.0 99.0; mark "2026-09-11" xom 52.0 7.0 ] );
+      ]
+  in
+  let r =
+    Score.hypothetical_returns
+      ~sessions:[ date "2026-09-10"; date "2026-09-11" ]
+      ~marks:(marks_of marks)
+  in
+  Alcotest.(check (list (pair string (float 1e-12))))
+    "keyed by the date the forecast was made"
+    [ ("2026-09-10", -0.024) ]
+    (List.map r.Score.returns ~f:(fun (d, x) -> (Date.to_string d, x)));
+  Alcotest.(check int) "nothing unscorable" 0 r.Score.unscorable
+
+let test_a_pair_that_cannot_be_priced_is_counted_not_guessed () =
+  let held d p = [ mark d aapl p 10.0; mark d xom 50.0 5.0 ] in
+  let marks =
+    table
+      [
+        ("2026-09-08", held "2026-09-08" 100.0);
+        (* XOM has no mark on the 9th: the held name cannot be repriced. *)
+        ("2026-09-09", [ mark "2026-09-09" aapl 101.0 10.0 ]);
+        ("2026-09-10", held "2026-09-10" 100.0);
+        (* A flat book has no exposure to be wrong about. *)
+        ( "2026-09-11",
+          [ mark "2026-09-11" aapl 100.0 0.0; mark "2026-09-11" xom 50.0 0.0 ] );
+        ("2026-09-14", held "2026-09-14" 100.0);
+        (* A week with no close recorded between two sessions is not one day. *)
+        ("2026-09-25", held "2026-09-25" 100.0);
+      ]
+  in
+  let r =
+    Score.hypothetical_returns
+      ~sessions:
+        (List.map
+           [
+             "2026-09-08";
+             "2026-09-09";
+             "2026-09-10";
+             "2026-09-11";
+             "2026-09-14";
+             "2026-09-25";
+           ]
+           ~f:date)
+      ~marks:(marks_of marks)
+  in
+  Alcotest.(check (list (pair string (float 1e-12))))
+    "09-09 holds only AAPL (XOM has no mark that day) and 09-10 is flat"
+    [ ("2026-09-09", -10.0 /. 1010.0); ("2026-09-10", 0.0) ]
+    (List.map r.Score.returns ~f:(fun (d, x) -> (Date.to_string d, x)));
+  Alcotest.(check int)
+    "08->09 (XOM held, no mark), 11->14 (flat book), 14->25 (a gap)" 3 r.Score.unscorable
+
+(* A journal with [n] consecutive sessions from 2026-03-02 (every calendar day:
+   the score reads dates, not a calendar), holding AAPL long 10 at 100 that
+   moves +0.5% or, on [loss_days], -5%. Forecasts of 2% at 99% are written for
+   each, on [windows] i. *)
+let scored_journal ~n ~loss_days ~window_of ~(estimators : string list) =
+  let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
+  let start = date "2026-03-02" in
+  let close = ref 100.0 in
+  List.iter (List.init n ~f:Fn.id) ~f:(fun i ->
+      let d = Date.add_days start i in
+      if i > 0 then
+        close := !close *. if List.mem loss_days i ~equal:Int.equal then 0.95 else 1.005;
+      Journal.record_marks journal
+        [ { Journal.Mark.date = d; symbol = aapl; close = !close; qty = 10.0 } ];
+      Journal.record_session journal
+        {
+          Journal.Session.date = d;
+          equity_close = 100_000.0;
+          cash_close = 99_000.0;
+          gross_close = 1_000.0;
+          net_close = 1_000.0;
+          recorded_at = at;
+        };
+      Journal.record_forecasts journal
+        (List.map estimators ~f:(fun estimator ->
+             {
+               Journal.Forecast.date = d;
+               estimator;
+               confidence = 0.99;
+               var_fraction = Some 0.02;
+               var_notional = Some 20.0;
+               es_notional = None;
+               return_window = window_of i;
+             })));
+  journal
+
+let field_of j k = Yojson.Safe.Util.member k j
+let scores_of j = Yojson.Safe.Util.to_list (field_of j "scores")
+
+let test_a_score_is_published_as_counts_p_values_and_a_light () =
+  let journal =
+    scored_journal ~n:131 ~loss_days:[ 20; 100 ]
+      ~window_of:(fun _ -> Some 250)
+      ~estimators:[ "historical"; "ewma" ]
+  in
+  let j = Score.to_json (Score.of_journal journal) in
+  Alcotest.(check int)
+    "the window it is for" 250
+    (Yojson.Safe.Util.to_int (field_of j "window"));
+  Alcotest.(check string) "the level" "0.99" (Yojson.Safe.to_string (field_of j "level"));
+  Alcotest.(check string)
+    "as of the last session scored" "2026-07-10"
+    (Yojson.Safe.Util.to_string (field_of j "as_of"));
+  (match scores_of j with
+  | [ a; b ] ->
+      Alcotest.(check (list string))
+        "by estimator" [ "ewma"; "historical" ]
+        (List.map [ a; b ] ~f:(fun s ->
+             Yojson.Safe.Util.to_string (field_of s "estimator")));
+      (* 131 sessions make 130 forecasts with an outcome, and the last
+         session's forecast has none yet. Two days lost 5% against a 2% VaR. *)
+      Alcotest.(check int) "n" 130 (Yojson.Safe.Util.to_int (field_of a "n"));
+      Alcotest.(check int)
+        "exceptions" 2
+        (Yojson.Safe.Util.to_int (field_of a "exceptions"));
+      Alcotest.(check string)
+        "green" "green"
+        (Yojson.Safe.Util.to_string (field_of a "light"));
+      Alcotest.(check bool)
+        "a p-value" true
+        (Float.( > ) (Yojson.Safe.Util.to_number (field_of a "kupiec_p")) 0.05)
+  | l -> Alcotest.failf "two estimators expected, got %d" (List.length l));
+  (* Nothing in what is published names a size, a loss or a limit. *)
+  let rec keys = function
+    | `Assoc kv -> List.concat_map kv ~f:(fun (k, v) -> k :: keys v)
+    | `List l -> List.concat_map l ~f:keys
+    | _ -> []
+  in
+  List.iter (keys j) ~f:(fun k ->
+      List.iter [ "var"; "pnl"; "dollar"; "notional"; "es_" ] ~f:(fun bad ->
+          if String.is_substring k ~substring:bad then
+            Alcotest.failf "the published score has a field named %s" k));
+  Journal.close journal
+
+let test_fewer_than_sixty_sessions_says_n_of_60 () =
+  let journal =
+    scored_journal ~n:13 ~loss_days:[]
+      ~window_of:(fun _ -> Some 250)
+      ~estimators:[ "historical" ]
+  in
+  let j = Score.to_json (Score.of_journal journal) in
+  (match scores_of j with
+  | [ s ] ->
+      Alcotest.(check bool) "no light" true (Poly.equal (field_of s "light") `Null);
+      Alcotest.(check bool) "no p-value" true (Poly.equal (field_of s "kupiec_p") `Null);
+      Alcotest.(check int)
+        "12 outcomes so far" 12
+        (Yojson.Safe.Util.to_int (field_of s "n"));
+      Alcotest.(check string)
+        "the message" "12 of 60 sessions scored"
+        (Yojson.Safe.Util.to_string (field_of s "message"))
+  | _ -> Alcotest.fail "one estimator expected");
+  Journal.close journal
+
+(* Task 1.9 moved the return window from 60 to 250 and journals it. A series
+   is never mixed across the move: only the window of the newest forecast is
+   scored, a row journaled before the window was recorded counts as 60, and
+   the sessions under another window are reported as a count. *)
+let test_a_series_is_never_mixed_across_the_window_change () =
+  (* 70 sessions with no recorded window (60), then 80 at 250. The 60-window
+     sessions would score on their own (69 outcomes, 6 of them losses = a
+     failing series); mixed in with the 250s they would change the answer. *)
+  let journal =
+    scored_journal ~n:150 ~loss_days:[ 5; 10; 15; 20; 25; 30; 35 ]
+      ~window_of:(fun i -> if i < 70 then None else Some 250)
+      ~estimators:[ "historical" ]
+  in
+  let j = Score.to_json (Score.of_journal journal) in
+  Alcotest.(check int)
+    "the current window" 250
+    (Yojson.Safe.Util.to_int (field_of j "window"));
+  Alcotest.(check int)
+    "the 60-window sessions are counted apart" 70
+    (Yojson.Safe.Util.to_int (field_of j "other_window_sessions"));
+  (match scores_of j with
+  | [ s ] ->
+      (* 80 sessions at 250, the last with no outcome yet: 79, no losses. *)
+      Alcotest.(check int)
+        "only the current window" 79
+        (Yojson.Safe.Util.to_int (field_of s "n"));
+      Alcotest.(check int)
+        "none of the old window's exceptions" 0
+        (Yojson.Safe.Util.to_int (field_of s "exceptions"))
+  | _ -> Alcotest.fail "one estimator expected");
+  Journal.close journal
+
+(* The same series with the window recorded as 60 throughout: a NULL row is a
+   60-window row, so it is in the same series as an explicit 60. *)
+let test_a_row_without_a_window_is_a_sixty_window_row () =
+  let journal =
+    scored_journal ~n:100 ~loss_days:[]
+      ~window_of:(fun i -> if i < 50 then None else Some 60)
+      ~estimators:[ "historical" ]
+  in
+  let j = Score.to_json (Score.of_journal journal) in
+  Alcotest.(check int) "window 60" 60 (Yojson.Safe.Util.to_int (field_of j "window"));
+  Alcotest.(check int)
+    "nothing set apart" 0
+    (Yojson.Safe.Util.to_int (field_of j "other_window_sessions"));
+  Journal.close journal
+
+(* Bounded: the demo host records a session every five minutes, so the score
+   reads the newest 250 sessions' forecasts and no more. *)
+let test_the_score_reads_a_bounded_tail () =
+  let journal =
+    scored_journal ~n:400 ~loss_days:[ 10 ]
+      ~window_of:(fun _ -> Some 250)
+      ~estimators:[ "historical" ]
+  in
+  let j = Score.to_json (Score.of_journal journal) in
+  (match scores_of j with
+  | [ s ] ->
+      Alcotest.(check int)
+        "250 outcomes of 400 sessions" 250
+        (Yojson.Safe.Util.to_int (field_of s "n"));
+      Alcotest.(check int)
+        "the old loss is out of the tail" 0
+        (Yojson.Safe.Util.to_int (field_of s "exceptions"))
+  | _ -> Alcotest.fail "one estimator expected");
+  Journal.close journal
+
+let test_an_empty_journal_scores_nothing () =
+  let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
+  let j = Score.to_json (Score.of_journal journal) in
+  Alcotest.(check int) "no estimators" 0 (List.length (scores_of j));
+  Alcotest.(check bool) "no window" true (Poly.equal (field_of j "window") `Null);
+  Journal.close journal
+
 let suite =
   ( "session_close",
     [
@@ -693,4 +947,20 @@ let suite =
         test_a_failed_write_leaves_the_graph_untouched_and_a_retry_rolls_once;
       Alcotest.test_case "drawdown survives a restart" `Quick
         test_drawdown_survives_a_restart;
+      Alcotest.test_case "SCORE: the hypothetical return is the first close's positions"
+        `Quick test_the_hypothetical_return_is_the_first_closes_positions;
+      Alcotest.test_case "SCORE: a pair that cannot be priced is counted, not guessed"
+        `Quick test_a_pair_that_cannot_be_priced_is_counted_not_guessed;
+      Alcotest.test_case "SCORE: published as counts, p-values and a light" `Quick
+        test_a_score_is_published_as_counts_p_values_and_a_light;
+      Alcotest.test_case "SCORE: fewer than sixty sessions says n of 60" `Quick
+        test_fewer_than_sixty_sessions_says_n_of_60;
+      Alcotest.test_case "SCORE: never mixed across the window change" `Quick
+        test_a_series_is_never_mixed_across_the_window_change;
+      Alcotest.test_case "SCORE: a row without a window is a 60-window row" `Quick
+        test_a_row_without_a_window_is_a_sixty_window_row;
+      Alcotest.test_case "SCORE: reads a bounded tail" `Quick
+        test_the_score_reads_a_bounded_tail;
+      Alcotest.test_case "SCORE: an empty journal scores nothing" `Quick
+        test_an_empty_journal_scores_nothing;
     ] )

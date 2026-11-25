@@ -796,6 +796,13 @@ let test_api_desk_shows_the_last_thirty_sessions_and_the_latest_forecasts () =
       Alcotest.(check int)
         "all 32 counted" 32
         (Yojson.Safe.Util.to_int (field b "sessions"));
+      (* The score rides on the same body: this journal has 32 sessions and no
+         marks, so it is a count short of 60 and says so rather than a light. *)
+      Alcotest.(check string)
+        "var_score is on the body, and a short record has no light" "null"
+        (match Yojson.Safe.Util.(member "var_score" b |> member "scores" |> to_list) with
+        | [] -> "null"
+        | s :: _ -> Yojson.Safe.to_string (Yojson.Safe.Util.member "light" s));
       let shown = Yojson.Safe.Util.to_list (field b "recent_sessions") in
       let date_of s = Yojson.Safe.Util.(to_string (member "date" s)) in
       let equity_of s = Yojson.Safe.Util.(to_number (member "equity_close" s)) in

@@ -177,6 +177,11 @@ end
 val record_forecasts : t -> Forecast.t list -> unit
 val forecasts : t -> Forecast.t list
 
+val forecasts_since : t -> date:Date.t -> Forecast.t list
+(** The forecasts dated [date] or later, oldest first: the bounded read the score uses,
+    since [forecasts] is every row ever written and the demo host writes a session every
+    five minutes. *)
+
 val latest_forecasts : t -> Forecast.t list
 (** The latest date's forecasts, by estimator. *)
 

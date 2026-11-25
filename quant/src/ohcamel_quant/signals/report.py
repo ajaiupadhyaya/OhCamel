@@ -66,7 +66,7 @@ import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
 
-__all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "ROUTES", "TIMEOUT_S", "run"]
+__all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "ROUTES", "TIMEOUT_S", "VAR_SCORE_COLUMNS", "run"]
 
 KIND = "desk.report"
 TIMEOUT_S = 10.0
@@ -87,6 +87,11 @@ REFUSAL_COLUMNS = ["strategy", "source", "verdict", "rule", "detail", "sequence"
 OVERLAY_COLUMNS = ["read_at", "exposure_scale", "governor", "governor_cap", "value", "as_of", "age_s", "state",
                    "reason", "vol_target", "vol_forecast", "vol_model", "cov_estimator", "inputs", "reported"]
 BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "limits", "desk_switch"]
+# /api/desk's var_score (desk/var_score.ml): the journaled forecasts tested against what happened, as counts,
+# p-values and a light. Public, so no column names a size, a loss, an exposure or a limit.
+VAR_SCORE_COLUMNS = ["as_of", "source", "estimator", "window", "level", "n", "exceptions", "kupiec_p",
+                     "christoffersen_p", "light", "message", "min_sessions", "other_window_sessions"]
+LIGHTS = ("green", "yellow", "red")
 PNL_NOTE = "not on the wire until Stage 3"
 # /api/ops `alerts.kill_switch` (json_of_alerts: off | armed | tripped) in the front page's words. "off" is the
 # Disarmed state; an `enabled: false` book has no switch at all, whatever it says, and reads "disabled" too.
@@ -338,15 +343,58 @@ def _book_summary(desk: dict[str, Any] | None, graph: dict[str, Any] | None, ops
              "desk_switch": desk_switch}]
 
 
+def _count(x: Any) -> int | None:
+    n = _num(x)
+    return int(n) if n is not None and n == int(n) else None
+
+
+def _var_score(desk: dict[str, Any] | None, notes: list[str]) -> list[dict[str, Any]]:
+    """One row per estimator from ``/api/desk``'s ``var_score``, each field copied by name and by type: the
+    counts, the two p-values, the light and the message, with the window, level, as-of and source that say
+    what they are about. A field that is not what the engine writes is None, with a note; nothing else on the
+    wire object is copied."""
+    raw = desk.get("var_score") if desk is not None else None
+    if not isinstance(raw, dict) or not isinstance(raw.get("scores"), list):
+        notes.append("var_score not read: GET /api/desk "
+                     + ("was not read" if desk is None else "serves no var_score with a scores list"))
+        return []
+    head = {"as_of": raw.get("as_of") if isinstance(raw.get("as_of"), str) else None,
+            "source": raw.get("source") if isinstance(raw.get("source"), str) else None,
+            "window": _count(raw.get("window")), "level": _num(raw.get("level")),
+            "min_sessions": _count(raw.get("min_sessions")),
+            "other_window_sessions": _count(raw.get("other_window_sessions"))}
+    rows, bad = [], 0
+    for s in raw["scores"]:
+        if not isinstance(s, dict) or not isinstance(s.get("estimator"), str):
+            bad += 1
+            continue
+        light = s.get("light")
+        if light is not None and light not in LIGHTS:
+            notes.append(f"var_score: {s['estimator']}'s light is {str(light)[:20]!r}, not one of "
+                         f"{', '.join(LIGHTS)}: not published")
+            light = None
+        rows.append({**head, "estimator": s["estimator"], "n": _count(s.get("n")),
+                     "exceptions": _count(s.get("exceptions")), "kupiec_p": _num(s.get("kupiec_p")),
+                     "christoffersen_p": _num(s.get("christoffersen_p")), "light": light,
+                     "message": s.get("message") if isinstance(s.get("message"), str) else None})
+    if bad:
+        notes.append(f"var_score: {bad} rows skipped (not an object with a string estimator)")
+    if not rows:
+        notes.append("var_score not read: GET /api/desk serves no estimator rows")
+    return rows
+
+
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],
-          provenance: list[dict], notes: list[str], *, book: list[dict]) -> ArtifactSpec:
+          provenance: list[dict], notes: list[str], *, book: list[dict],
+          var: list[dict] | None = None) -> ArtifactSpec:
     notes.append(INC01_SENTENCE)
     return ArtifactSpec(
         tables={"fills": pd.DataFrame(fills, columns=FILL_COLUMNS),
                 "pnl_by_strategy": pd.DataFrame(pnl, columns=PNL_COLUMNS),
                 "refusals": pd.DataFrame(refusals, columns=REFUSAL_COLUMNS),
                 "overlay_path": pd.DataFrame(overlay, columns=OVERLAY_COLUMNS),
-                "book_summary": pd.DataFrame(book, columns=BOOK_COLUMNS)},
+                "book_summary": pd.DataFrame(book, columns=BOOK_COLUMNS),
+                "var_score": pd.DataFrame(var or [], columns=VAR_SCORE_COLUMNS)},
         data_asof=session.isoformat(), provenance=provenance, notes=notes, verdict=None)
 
 
@@ -392,6 +440,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     pnl, refusals = _strategies(research, notes) if research is not None else ([], [])
     overlay = _overlay(desk, research, read_at)
     book = _book_summary(desk, graph, ops, read_at, notes)
+    var = _var_score(desk, notes)
     if tca is not None:
         _tca_notes(tca, notes)
     if sessions is not None:
@@ -399,4 +448,4 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     if desk is not None:
         notes.append(f"account session_pnl {desk.get('session_pnl')} (the whole paper account, not per strategy)")
     provenance = [{"source": "ohcamel-live", "url": base, "route": p, "read": bodies[p] is not None} for p in ROUTES]
-    return _spec(session, fills, pnl, refusals, overlay, provenance, notes, book=book)
+    return _spec(session, fills, pnl, refusals, overlay, provenance, notes, book=book, var=var)

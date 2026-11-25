@@ -84,6 +84,10 @@ type t = {
   (* The latest accepted overlay, re-read only when the journal has been
      written since, as [sessions_seen] is. *)
   mutable overlay_seen : int * (int * string * float * string) option;
+  (* The risk model's score (Var_score), re-read only when the journal has been
+     written since: it walks every session's marks, and a frame is not a
+     reason to. *)
+  mutable var_score_seen : int * Yojson.Safe.t;
 }
 
 let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
@@ -111,6 +115,7 @@ let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
     sessions_seen = (-1, 0);
     gauge = None;
     overlay_seen = (-1, None);
+    var_score_seen = (-1, `Null);
   }
 
 (* The order manager is made after the desk -- its fills re-read the account
@@ -346,6 +351,15 @@ let sessions_count t =
     t.sessions_seen <- (version, count);
     count
 
+let var_score t =
+  let version = Journal.version t.journal in
+  let seen_version, scored = t.var_score_seen in
+  if version = seen_version then scored
+  else
+    let scored = Var_score.(to_json (of_journal t.journal)) in
+    t.var_score_seen <- (version, scored);
+    scored
+
 let latest_overlay t =
   let version = Journal.version t.journal in
   let seen_version, latest = t.overlay_seen in
@@ -554,6 +568,9 @@ let body_json ?now t : Yojson.Safe.t =
                        Option.value_map f.Journal.Forecast.return_window ~default:`Null
                          ~f:(fun n -> `Int n) );
                    ])) );
+        (* The forecasts above, tested against what happened: counts, p-values
+           and a light, never a size (Var_score). *)
+        ("var_score", var_score t);
         ( "switch",
           match t.oms with
           | Some o -> Halt.to_json (Oms.halt o) ~now:(Time_ns.now ())
