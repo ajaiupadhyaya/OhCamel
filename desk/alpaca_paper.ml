@@ -724,6 +724,12 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
                ]
              "/v2/stocks/trades/latest")
           last_prints_of_json);
+    bar_source =
+      sprintf
+        "the venue's raw (unadjusted) daily bar: Alpaca, %s feed -- one venue's session \
+         open, last trade and vw, not the consolidated tape or the official auction \
+         prices"
+        feed;
     session_bars =
       (fun symbols ~date ->
         let day = Date.to_string date in

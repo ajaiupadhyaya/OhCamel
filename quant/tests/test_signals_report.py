@@ -51,6 +51,8 @@ TCA = {"note": "paper fills against one venue's quote",
                    "weighted_shortfall_bps": 6.13, "mean_versus_model_bps": None},
        "by_symbol": {"SPY": {"count": 1, "mean_shortfall_bps": 6.13}},
        "benchmarks": {
+           "source": "the venue's raw daily bar: Alpaca, iex feed -- one venue, not the consolidated tape",
+           "window": "the newest 500 fills, all sessions; every fill counts equally, whatever its size",
            "overall": {"count": 2, "open_n": 2, "close_n": 2, "vwap_n": 1, "mean_vs_open_bps": 4.5,
                        "mean_vs_close_bps": -1.25, "mean_vs_vwap_bps": 2.0},
            "by_strategy": {"signal-x": {"count": 1, "open_n": 1, "close_n": 1, "vwap_n": 0,
@@ -557,6 +559,7 @@ def test_the_tca_table_carries_the_paper_venues_limits_and_basis_points_only(tmp
     assert (overall["fills"], overall["vwap_n"], overall["mean_vs_open_bps"], overall["mean_vs_close_bps"]) == (
         2, 1, 4.5, -1.25)
     assert pd.isna(t.iloc[2]["mean_vs_vwap_bps"]) and t.iloc[2]["vwap_n"] == 0   # unknown stays null
+    assert t["source"].str.contains("one venue").all() and t["window"].str.contains("newest 500 fills").all()
     assert (t["note"] == SENTENCE).all()                  # the sentence rides on every public row
     assert SENTENCE in spec.notes
     assert not any(c in t.columns for c in ("qty", "notional", "price", "usd"))

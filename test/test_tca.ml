@@ -157,7 +157,15 @@ let test_an_unknown_benchmark_is_null_with_a_reason () =
     no_vw.Tca.Bench_costs.vs_open;
   Alcotest.(check bool)
     "and a reason for the vwap" true
-    (Option.is_some no_vw.Tca.Bench_costs.vwap_reason)
+    (Option.is_some no_vw.Tca.Bench_costs.vwap_reason);
+  let bad =
+    Tca.benchmarks buy (bench ~open_:(Some 100.0) ~close:(Some 100.0) ~vwap:(Some 0.0) ())
+  in
+  Alcotest.check bps "a non-positive vw is no vwap" None bad.Tca.Bench_costs.vs_vwap;
+  Alcotest.(check (option string))
+    "and the reason says so, not that it was absent"
+    (Some "the venue's bar carried a volume-weighted price that is not positive")
+    bad.Tca.Bench_costs.vwap_reason
 
 let test_a_strategy_roll_up_is_counts_and_basis_points () =
   let cost o c v =

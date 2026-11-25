@@ -204,6 +204,7 @@ let read (t : t) : Venue.Read.t =
     (* No bar history, so no official close: a mark here is the simulated
        price, tagged as a last print. No account activities and no corporate
        actions: the simulated book pays no dividends and charges no fees. *)
+    bar_source = "the demo venue keeps no bars, so it has none";
     session_bars =
       (fun _ ~date:_ ->
         return (Or_error.error_string "simulated venue: it keeps no bar history"));

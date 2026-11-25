@@ -84,3 +84,29 @@ def test_route_states_its_assumptions_and_its_sigma_and_sits_beside_the_sqrt_num
     assert d["sqrt_impact_usd"] > 0
     assert sum(d["schedule"]["trades"]) == pytest.approx(d["shares"])
     assert any("assumptions" in n for n in d["notes"])
+
+
+def test_a_large_kappa_t_does_not_overflow():
+    # kappa T > 710 overflows sinh; the ratio form must give the front-loaded schedule instead.
+    s = ex.almgren_chriss(X, 20.0, 200, lam=1e-4, sigma=14.4, eta=2.5e-6, gamma=2.5e-7)
+    assert s.kappa * 20.0 > 710
+    assert np.isfinite(s.expected_cost) and np.isfinite(s.variance)
+    assert s.trades.sum() == pytest.approx(X) and np.all(s.trades >= 0)
+    assert s.trades[0] > 0.9 * X                      # nearly immediate
+
+
+def test_the_ratio_form_matches_sinh_where_sinh_is_safe():
+    s = ex.almgren_chriss(X, T, N, lam=1e-4, **KW)
+    tau, k = T / N, s.kappa
+    xs = X * np.sinh(k * (T - np.arange(N + 1) * tau)) / np.sinh(k * T)
+    assert np.allclose(s.trades, xs[:-1] - xs[1:], rtol=1e-9)
+
+
+def test_the_route_survives_the_overflow_case():
+    from fastapi.testclient import TestClient
+
+    from ohcamel_quant.api.app import create_app
+
+    body = {"holdings": [{"ticker": "SPY", "weight": 1.0}], "notional": 10_000_000.0,
+            "horizon_days": 20.0, "intervals": 200, "lams": [0.0, 1e-4]}
+    assert TestClient(create_app()).post("/api/risk/execution", json=body).status_code == 200

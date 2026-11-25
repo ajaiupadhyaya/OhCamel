@@ -165,10 +165,12 @@ let benchmarks (i : Inputs.t) (b : Benchmark.t) : Bench_costs.t =
     vs_close = against b.close;
     vs_vwap;
     vwap_reason =
-      (match (vs_vwap, b.vwap_reason) with
-      | Some _, _ -> None
-      | None, Some r -> Some r
-      | None, None -> Some "the session's bar carried no volume-weighted price");
+      (match (vs_vwap, b.vwap, b.vwap_reason) with
+      | Some _, _, _ -> None
+      | None, _, Some r -> Some r
+      | None, Some _, None ->
+          Some "the venue's bar carried a volume-weighted price that is not positive"
+      | None, None, None -> Some "the venue's bar carried no volume-weighted price");
   }
 
 module Bench_summary = struct

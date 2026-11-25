@@ -113,6 +113,9 @@ type t = {
      Only sessions that have ended are asked for, and only those the venue has
      filed: a session absent here has no benchmarks, and says why. *)
   mutable fill_session_bars : Venue.Bar.t Symbol.Map.t Date.Map.t;
+  (* When the venue was last asked for them, on [time_source]: at most once an
+     hour, the demo's venue (which keeps none and answers an error) included. *)
+  mutable fill_bars_asked_at : Time_ns.t option;
   (* The venue's clock as last read, which the session rule reads at each
      order's own time (Rules.Session); None until a clock answers, and after
      a read that failed. *)
@@ -176,6 +179,7 @@ let create ~graph ~journal ~spec ~trips_on ~read ~trade ~halt ~accepts_tickets ~
     adv20 = Symbol.Map.empty;
     bars_fetched_at = None;
     fill_session_bars = Date.Map.empty;
+    fill_bars_asked_at = None;
     session = None;
     live_loops = String.Hash_set.create ();
     failed_cancels = String.Hash_set.create ();
@@ -2946,29 +2950,47 @@ let fill_session (r : Journal.Fill_row.t) : Date.t option =
    is stored; one that has not filed the bar answers without it, and the
    session is asked for again at the next hourly refresh. *)
 let refresh_fill_session_bars t (read : Venue.Read.t) : unit Deferred.t =
-  match session_date (Time_source.now t.time_source) with
-  | None -> Deferred.unit
-  | Some today ->
+  let now = Time_source.now t.time_source in
+  let due =
+    match t.fill_bars_asked_at with
+    | None -> true
+    | Some at -> Time_ns.Span.( >= ) (Time_ns.diff now at) (Time_ns.Span.of_hr 1.0)
+  in
+  match session_date now with
+  | Some today when due ->
       let fills = Journal.recent_fills t.journal ~limit:500 in
+      (* A (date, name) is wanted until the stored bars hold the name: a date
+         stored with a partial map is asked again for the names it lacks. *)
       let wanted =
         List.filter_map fills ~f:(fun r ->
             Option.bind (fill_session r) ~f:(fun d ->
-                if Date.( < ) d today && not (Map.mem t.fill_session_bars d) then
-                  Some (d, r.Journal.Fill_row.symbol)
+                let held =
+                  Option.value_map (Map.find t.fill_session_bars d) ~default:false
+                    ~f:(fun m -> Map.mem m r.Journal.Fill_row.symbol)
+                in
+                if Date.( < ) d today && not held then Some (d, r.Journal.Fill_row.symbol)
                 else None))
         |> List.sort_and_group ~compare:(fun (a, _) (b, _) -> Date.compare b a)
         |> fun groups -> List.take groups 8
       in
-      Deferred.List.iter ~how:`Sequential wanted ~f:(fun group ->
-          let date = fst (List.hd_exn group) in
-          let symbols =
-            List.dedup_and_sort (List.map group ~f:snd) ~compare:Symbol.compare
-          in
-          match%map read.Venue.Read.session_bars symbols ~date with
-          | Error _ -> ()
-          | Ok bars ->
-              if not (Map.is_empty bars) then
-                t.fill_session_bars <- Map.set t.fill_session_bars ~key:date ~data:bars)
+      if List.is_empty wanted then Deferred.unit
+      else (
+        t.fill_bars_asked_at <- Some now;
+        Deferred.List.iter ~how:`Sequential wanted ~f:(fun group ->
+            let date = fst (List.hd_exn group) in
+            let symbols =
+              List.dedup_and_sort (List.map group ~f:snd) ~compare:Symbol.compare
+            in
+            match%map read.Venue.Read.session_bars symbols ~date with
+            | Error _ -> ()
+            | Ok bars ->
+                if not (Map.is_empty bars) then
+                  t.fill_session_bars <-
+                    Map.update t.fill_session_bars date ~f:(function
+                      | None -> bars
+                      | Some held ->
+                          Map.merge_skewed held bars ~combine:(fun ~key:_ _ n -> n))))
+  | _ -> Deferred.unit
 
 let refresh ?(bars = true) t : unit Deferred.t =
   match t.read with
@@ -3216,6 +3238,14 @@ let tca_json t : Yojson.Safe.t =
       ( "benchmarks",
         `Assoc
           [
+            ( "source",
+              `String
+                (Option.value_map t.read ~default:"no venue is read" ~f:(fun r ->
+                     r.Venue.Read.bar_source)) );
+            ( "window",
+              `String
+                "the newest 500 fills, all sessions; every fill counts equally, whatever \
+                 its size" );
             ( "overall",
               bench_summary (Tca.summarize_benchmarks (List.map bench_rows ~f:snd)) );
             ( "by_strategy",

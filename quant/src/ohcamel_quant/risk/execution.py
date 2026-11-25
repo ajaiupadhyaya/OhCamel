@@ -5,16 +5,16 @@ Liquidate ``X`` shares over ``T`` in ``n`` intervals of ``tau = T / n``. Price m
 permanently by ``gamma n_j`` and costs a temporary ``eta n_j / tau`` per share on that interval's
 trades, both linear (the paper's section 2, and the discrete model of section 3).
 
-Formulas, with the numbering of Almgren & Chriss, *Optimal execution of portfolio transactions*,
-J. Risk 3(2), 2000 (equation numbers as the paper prints them; this file cites them from the
-paper's text and was written offline, so re-check them against the PDF before quoting):
+Formulas (Almgren & Chriss, *Optimal execution of portfolio transactions*, J. Risk 3(2), 2000; equation
+numbers deliberately not quoted, they were not checked against the paper):
 
-* ``eta~ = eta - gamma tau / 2``                                              (eq. 15)
-* ``cosh(kappa tau) = 1 + lambda sigma^2 tau^2 / (2 eta~)``                   (eq. 17-18's kappa)
-* holdings ``x_j = X sinh(kappa (T - t_j)) / sinh(kappa T)``                  (eq. 18)
-* trades ``n_j = x_{j-1} - x_j``                                              (eq. 19)
-* ``E = gamma X^2 / 2 + epsilon X + (eta~ / tau) sum_j n_j^2``                (eq. 20)
-* ``V = sigma^2 tau sum_{j=1..n} x_j^2``                                      (eq. 21)
+* ``eta~ = eta - gamma tau / 2``
+* ``cosh(kappa tau) = 1 + lambda sigma^2 tau^2 / (2 eta~)``
+* holdings ``x_j = X sinh(kappa (T - t_j)) / sinh(kappa T)``, computed in the equivalent ratio form
+  ``X exp(-kappa t_j) (1 - exp(-2 kappa (T - t_j))) / (1 - exp(-2 kappa T))`` so a large ``kappa T`` cannot overflow
+* trades ``n_j = x_{j-1} - x_j``
+* ``E = gamma X^2 / 2 + epsilon X + (eta~ / tau) sum_j n_j^2``
+* ``V = sigma^2 tau sum_{j=1..n} x_j^2``
 
 ``epsilon`` is the fixed cost per share (half-spread, fees). **It is not included here:** the
 signature has no ``epsilon``, so ``expected_cost`` is the impact cost only, ``epsilon = 0``. Add
@@ -25,7 +25,8 @@ slices); it is handled as that limit, not by dividing zero by zero. A sell is th
 so ``X`` is taken by magnitude and ``trades`` are the (positive) sizes to execute each interval.
 
 ``eta`` and ``gamma`` are ASSUMPTIONS the caller states, not estimates; ``sigma`` should be
-estimated from real data and its source stated. Costs come out in price-units x shares (dollars when
+estimated from real data and its source stated. ``lam`` is per dollar: lambda times a variance in dollars^2 is a
+cost in dollars. Costs come out in price-units x shares (dollars when
 ``sigma``, ``eta`` and ``gamma`` are in dollars).
 """
 
@@ -69,7 +70,8 @@ def almgren_chriss(X: float, T: float, n: int, *, sigma: float, eta: float, gamm
         kappa = 0.0
         x = size * (1.0 - j / n)
     else:
-        x = size * np.sinh(kappa * (T - j * tau)) / math.sinh(kappa * T)
+        t = j * tau
+        x = size * np.exp(-kappa * t) * -np.expm1(-2.0 * kappa * (T - t)) / -math.expm1(-2.0 * kappa * T)
     x[-1] = 0.0
     trades = x[:-1] - x[1:]
     cost = 0.5 * gamma * size**2 + eta_t / tau * float(np.sum(trades**2))

@@ -1531,6 +1531,7 @@ let test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs () =
       latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
       daily_bars = (fun _ ~days:_ -> return (Or_error.error_string "unused in this test"));
       last_prints = (fun _ -> return (Or_error.error_string "unused in this test"));
+      bar_source = "unused in this test";
       session_bars =
         (fun _ ~date:_ -> return (Or_error.error_string "unused in this test"));
       activities =
@@ -1623,6 +1624,7 @@ let clock_only_read clock : D.Venue.Read.t =
     latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
     daily_bars = (fun _ ~days:_ -> return (Or_error.error_string "unused in this test"));
     last_prints = (fun _ -> return (Or_error.error_string "unused in this test"));
+    bar_source = "unused in this test";
     session_bars = (fun _ ~date:_ -> return (Or_error.error_string "unused in this test"));
     activities =
       (fun ~since:_ ~kinds:_ -> return (Or_error.error_string "unused in this test"));
@@ -5777,6 +5779,109 @@ let tlt_bar d close =
     vwap = None;
   }
 
+(* Task 4.9, fix round 1: /api/desk/tca end to end. A fill on 2026-11-02 meets that
+   session's bar from the venue (the wall clock is later, so the session has ended);
+   a fill on today's session is not benchmarked, whatever the venue would answer. The
+   keys are the ones signals/report.py reads, and the roll-up says what it is a roll-up
+   of and from which feed. *)
+let test_tca_json_benchmarks_against_the_sessions_bar () =
+  let one_fill ~now =
+    let f = fixture () in
+    let read =
+      {
+        (D.Sim_venue.read f.venue) with
+        D.Venue.Read.name = "alpaca-paper";
+        bar_source = "test bars: one venue, not the consolidated tape";
+        session_bars =
+          (fun _ ~date ->
+            return
+              (Ok
+                 (Symbol.Map.singleton aapl
+                    {
+                      D.Venue.Bar.date;
+                      open_ = 100.0;
+                      high = 101.0;
+                      low = 99.0;
+                      close = 100.2;
+                      volume = 1e6;
+                      vwap = Some 100.1;
+                    })));
+      }
+    in
+    let oms = manager ~read ~now f in
+    let%bind _, o = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 100) in
+    let%bind () = pump f in
+    Alcotest.(check string) "filled" "filled" (state f o);
+    let%bind () = D.Oms.refresh oms in
+    let fill = Option.value_exn (D.Order.avg_fill_price (journaled f o)) in
+    let json = D.Oms.tca_json oms in
+    Graph.destroy f.graph;
+    return (fill, json)
+  in
+  let open Yojson.Safe.Util in
+  let%bind fill, json = one_fill ~now:(fun () -> utc "2026-09-10T15:00:00Z") in
+  let b = member "benchmarks" json in
+  let overall = member "overall" b in
+  Alcotest.(check string)
+    "the feed is said" "test bars: one venue, not the consolidated tape"
+    (to_string (member "source" b));
+  Alcotest.(check bool)
+    "the window is said" true
+    (String.is_substring (to_string (member "window" b)) ~substring:"newest 500 fills");
+  Alcotest.(check (list int))
+    "one fill, and every benchmark known" [ 1; 1; 1; 1 ]
+    (List.map [ "count"; "open_n"; "close_n"; "vwap_n" ] ~f:(fun k ->
+         to_int (member k overall)));
+  let bp bench = (fill -. bench) /. bench *. 10_000.0 in
+  Alcotest.(check (float 1e-6))
+    "vs open" (bp 100.0)
+    (to_float (member "mean_vs_open_bps" overall));
+  Alcotest.(check (float 1e-6))
+    "vs close" (bp 100.2)
+    (to_float (member "mean_vs_close_bps" overall));
+  Alcotest.(check (float 1e-6))
+    "vs vwap" (bp 100.1)
+    (to_float (member "mean_vs_vwap_bps" overall));
+  Alcotest.(check (list string))
+    "by the owner of the order: a ticket is the hand's" [ "hand" ]
+    (keys (member "by_strategy" b));
+  Alcotest.(check bool)
+    "the paper venue's limits are said" true
+    (String.is_prefix
+       (to_string (member "paper_limits" json))
+       ~prefix:"Paper fills have no market impact");
+  let%bind _, today = one_fill ~now:(fun () -> t0) in
+  let overall_today = member "overall" (member "benchmarks" today) in
+  Alcotest.(check (list int))
+    "today's session is not over: no benchmark, and the fill counts" [ 1; 0; 0; 0 ]
+    (List.map [ "count"; "open_n"; "close_n"; "vwap_n" ] ~f:(fun k ->
+         to_int (member k overall_today)));
+  return ()
+
+(* Fix round 1, M-3: a venue that keeps no bars (the demo's, which answers an error)
+   is asked once an hour, not at every refresh. *)
+let test_the_fill_bars_are_asked_for_at_most_hourly () =
+  let f = fixture () in
+  let asked = ref 0 in
+  let read =
+    {
+      (D.Sim_venue.read f.venue) with
+      D.Venue.Read.session_bars =
+        (fun _ ~date:_ ->
+          incr asked;
+          return (Or_error.error_string "simulated venue: it keeps no bar history"));
+    }
+  in
+  let oms = manager ~read ~now:(fun () -> utc "2026-09-10T15:00:00Z") f in
+  let%bind _, _ = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 100) in
+  let%bind () = pump f in
+  let%bind () = D.Oms.refresh oms in
+  let%bind () = D.Oms.refresh oms in
+  let%bind () = D.Oms.refresh oms in
+  Alcotest.(check int) "asked once for the one session, over three refreshes" 1 !asked;
+  Graph.destroy f.graph;
+  return ()
+
 let tlt_strategies =
   [
     {
@@ -5891,6 +5996,7 @@ let tlt_read ~cash_dividends ~adjusted_before =
              (Symbol.Map.singleton tlt
                 [ tlt_bar "2026-11-02" adjusted_before; tlt_bar "2026-11-03" 89.7 ])));
     last_prints = (fun _ -> return (Ok Symbol.Map.empty));
+    bar_source = "test bars";
     session_bars =
       (fun _ ~date ->
         return
@@ -7174,6 +7280,10 @@ let suites =
     ( "orders",
       [
         case "three fills, priced and costed by hand" test_three_fills;
+        case "the fill bars are asked for at most hourly"
+          test_the_fill_bars_are_asked_for_at_most_hourly;
+        case "tca benchmarks a fill against its session's bar"
+          test_tca_json_benchmarks_against_the_sessions_bar;
         case "an unknown answer is resolved, and never resent"
           test_an_unknown_answer_is_resolved_and_never_resent;
         case "a halt refuses new orders and cancels the open ones"

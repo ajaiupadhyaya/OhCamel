@@ -99,7 +99,7 @@ BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "
 VAR_SCORE_COLUMNS = ["as_of", "source", "estimator", "window", "level", "n", "exceptions", "kupiec_p",
                      "christoffersen_p", "light", "message", "min_sessions", "other_window_sessions"]
 TCA_COLUMNS = ["scope", "strategy", "fills", "open_n", "close_n", "vwap_n", "mean_vs_open_bps", "mean_vs_close_bps",
-               "mean_vs_vwap_bps", "note"]
+               "mean_vs_vwap_bps", "source", "window", "note"]
 #: Said beside every row of the TCA table: the paper venue fills at the simulator's price.
 PAPER_SENTENCE = ("Paper fills have no market impact and no queue; realised shortfall here is a floor on what a "
                   "real venue would charge.")
@@ -262,13 +262,19 @@ def _tca_rows(tca: dict[str, Any] | None, notes: list[str]) -> list[dict[str, An
     if not isinstance(block, dict) or not isinstance(block.get("overall"), dict):
         notes.append("tca benchmarks not read: GET /api/desk/tca serves no benchmarks block")
         return []
+    # Said on every public row: the report's notes are withheld, and a mean without its source is a bare number.
+    source = block.get("source") if isinstance(block.get("source"), str) else None
+    window = block.get("window") if isinstance(block.get("window"), str) else None
+    if source is None or window is None:
+        notes.append("tca benchmarks: the engine served no source or window string, so the rows carry none")
     keys = ("fills", "open_n", "close_n", "vwap_n", "mean_vs_open_bps", "mean_vs_close_bps", "mean_vs_vwap_bps")
 
     def row(scope: str, strategy: str | None, x: Any) -> dict[str, Any]:
         x = x if isinstance(x, dict) else {}
         vals = {"fills": _count(x.get("count"))} | {k: (_count(x.get(k)) if k.endswith("_n") else _num(x.get(k)))
                                                     for k in keys[1:]}
-        return {"scope": scope, "strategy": strategy, **vals, "note": PAPER_SENTENCE}
+        return {"scope": scope, "strategy": strategy, **vals, "source": source, "window": window,
+                "note": PAPER_SENTENCE}
 
     by = block.get("by_strategy") if isinstance(block.get("by_strategy"), dict) else {}
     return [row("overall", None, block["overall"])] + [row("strategy", str(k), by[k]) for k in sorted(by)]

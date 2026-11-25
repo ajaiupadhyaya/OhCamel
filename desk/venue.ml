@@ -236,6 +236,9 @@ module Read = struct
            the close and never re-marked. [daily_bars] is split- and
            dividend-adjusted for the returns, and an adjusted close is not a
            price anything traded at. *)
+    bar_source : string;
+        (* What [session_bars]' open, close and VWAP ARE, in words, from the feed
+           actually read: the TCA says it beside every benchmark it reports. *)
     activities :
       since:Date.t -> kinds:string list -> Activity.t Page.t Or_error.t Deferred.t;
         (* The account's activities of [kinds] created on or after [since]. *)

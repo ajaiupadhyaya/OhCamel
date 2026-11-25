@@ -142,7 +142,7 @@ class ExecutionIn(PortfolioIn):
     lams: list[float] = Field(default_factory=lambda: list(EXEC_LAMBDAS), min_length=2, max_length=40)
 
 
-#: Risk aversions in (dollar-variance)^-1 units, spanning a nearly risk-neutral to a nearly immediate schedule.
+#: Risk aversions, per dollar (lambda x a variance in dollars^2 is a cost in dollars), from risk-neutral to nearly immediate.
 EXEC_LAMBDAS = (0.0, 1e-9, 3e-9, 1e-8, 3e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5)
 
 
