@@ -204,7 +204,8 @@ let with_oms ?(now = tuesday) ?(session_date = "2026-09-14")
     ?(closes = [ (aapl, 149.0); (msft, 299.0); (xom, 100.0) ])
     ?(spec = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled })
     ?(book_is_current = true) ?(held = [ (aapl, 400.0); (msft, 100.0); (xom, -200.0) ])
-    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_event = ignore)
+    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_event = ignore) ?(trips_on = [])
+    ?(returns = [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |])
     ?(limits =
       [
         limit "aapl-cap" (Limit.Instrument aapl) 80_000.0;
@@ -231,8 +232,7 @@ let with_oms ?(now = tuesday) ?(session_date = "2026-09-14")
               s ~equal:Symbol.equal
           in
           Graph.set_qty graph s (Qty.of_float q);
-          Graph.set_returns graph s
-            [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
+          Graph.set_returns graph s returns;
           Graph.apply_tick graph
             { Tick.symbol = s; price = Price.of_float p; time = Time.now () });
       Graph.set_now graph (Time.now ());
@@ -264,7 +264,7 @@ let with_oms ?(now = tuesday) ?(session_date = "2026-09-14")
           ~positions:[] ()
       in
       let oms =
-        D.Oms.create ~graph ~journal ~spec ~trips_on:[]
+        D.Oms.create ~graph ~journal ~spec ~trips_on
           ~read:(Some (D.Sim_venue.read venue))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
@@ -791,6 +791,44 @@ let test_a_stopped_strategy's_flatten_passes_the_exposure_limits () =
             ~substring:(name ^ " would be further over its line")
             (refusal (flatten_for oms alpha raise)))
         ())
+
+(* Round 1b: an unevaluable trip-limit does not hold a stop's flatten either.
+   The netted pair alone in the book, es-cap the switch's trip-limit and
+   unevaluable -- nine sessions of a ten-session window. beta's cover raises
+   the account's gross (+50 to +100), so as an ordinary rebalance it is
+   refused while es-cap is unknown; as the stop's flatten it passes. Once it
+   has filled, alpha's raise is refused as before, flatten word or not. *)
+let test_a_stop_flatten_passes_an_unevaluable_trip_limit () =
+  with_oms
+    ~held:[ (aapl, 50.0); (msft, 0.0); (xom, 0.0) ]
+    ~returns:[| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01 |]
+    ~trips_on:[ "es-cap" ]
+    ~limits:
+      [
+        {
+          Limit.name = "es-cap";
+          scope = Limit.Portfolio;
+          kind = Limit.Expected_shortfall (Notional.of_float 1e9);
+        };
+      ]
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      stop journal "beta";
+      let cover = [ leg aapl D.Order.Side.Buy 50 ] in
+      contains "beta's cover as an ordinary rebalance"
+        ~substring:"es-cap cannot be evaluated"
+        (refusal (check_for oms beta cover));
+      passes "beta's stop flatten" (flatten_for oms beta cover);
+      journal_order journal ~n:3 ~source:"signal:beta:2" ~state:D.Order.State.Filled
+        ~fills:[ 50.0 ] 50;
+      set_account oms 100.0;
+      let raise = [ leg aapl D.Order.Side.Buy 10 ] in
+      contains "then alpha's raise" ~substring:"es-cap cannot be evaluated"
+        (refusal (check_for oms alpha raise));
+      contains "and alpha's raise called a flatten"
+        ~substring:"es-cap cannot be evaluated"
+        (refusal (flatten_for oms alpha raise)))
+    ()
 
 (* Under a trip nothing changes: the switch's own rule (R2, its word on here)
    lets beta's reduction past the rules, and the gate still refuses the cover
@@ -2167,6 +2205,8 @@ let suite =
         test_a_stopped_strategy's_flatten_passes_the_exposure_limits;
       Alcotest.test_case "under a trip a stop flatten is gated as before" `Quick
         test_under_a_trip_a_stop_flatten_is_gated_as_before;
+      Alcotest.test_case "a stop flatten passes an unevaluable trip-limit" `Quick
+        test_a_stop_flatten_passes_an_unevaluable_trip_limit;
       Alcotest.test_case "the floor is the adjust pass's, never on a closing leg" `Quick
         test_the_floor_is_never_on_a_closing_leg;
       Alcotest.test_case "every leg is a day limit off its quote" `Quick

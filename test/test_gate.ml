@@ -520,6 +520,42 @@ let test_waive_exposure_waives_exposure_and_nothing_else () =
     "unwaived, created" [ "book-cap" ]
     (names v.Gate.Verdict.created);
   Alcotest.(check bool) "and refused" false (Gate.Verdict.passed v);
+  (* Round 1b: an unevaluable trip-limit on a raise is waived too, and said.
+     A shortfall over the whole ten-session window, nine sessions in. *)
+  let es_cap =
+    {
+      Limit.name = "es-cap";
+      scope = Limit.Portfolio;
+      kind = Limit.Expected_shortfall (money 1e9);
+    }
+  in
+  let unknown ~waive =
+    let graph =
+      Graph.create ~starting_cash:(money 1_000_000.0)
+        ~instruments:[ { Instrument.symbol = spy; sector = Sector.of_string "INDEX" } ]
+        ~limits:[ es_cap ] ~confidence:0.95 ~return_window:10 ()
+    in
+    Exn.protect
+      ~finally:(fun () -> Graph.destroy graph)
+      ~f:(fun () ->
+        Graph.set_price graph spy (Price.of_float 150.0);
+        Graph.set_returns graph spy
+          [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01 |];
+        Graph.stabilize graph;
+        Gate.check ~trips_on:[ "es-cap" ] ~waive_exposure:waive graph
+          ~fills:[ fill spy 100.0 150.0 ])
+  in
+  let v = unknown ~waive:false in
+  Alcotest.(check bool)
+    "an unknown trip-limit refuses a raise" true
+    (Gate.Outcome.equal v.Gate.Verdict.outcome
+       (Gate.Outcome.Refused_unevaluable [ "es-cap" ]));
+  let v = unknown ~waive:true in
+  Alcotest.(check bool) "waived: passes" true (Gate.Verdict.passed v);
+  Alcotest.(check (list string))
+    "es-cap reported as waived" [ "es-cap" ] (names v.Gate.Verdict.waived);
+  Alcotest.(check (list string))
+    "and not as an unknown trip" [] v.Gate.Verdict.unknown_trips;
   let v = run [ book_cap; var_cap ] ~waive:true in
   Alcotest.(check (list string))
     "var-cap is not exposure: still created" [ "var-cap" ]

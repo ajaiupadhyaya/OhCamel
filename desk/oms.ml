@@ -2023,7 +2023,8 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
   in
   (* A STOP'S FLATTEN (Task 1.9, round 1): the intake says the rebalance is
      one ([stop_flatten]), and it is let past the exposure limits' created
-     and worsened (Gate.check's [waive_exposure]) only when all of this is
+     and worsened, and past an unevaluable trip-limit's refusal of a raise in
+     gross (round 1b) -- Gate.check's [waive_exposure] -- only when all of this is
      so here: the journal says the strategy's stop has latched; every leg
      shrinks the strategy's own position without crossing zero; and the
      switch is clear. Under a trip nothing changes -- R2's word decides what

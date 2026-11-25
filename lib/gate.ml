@@ -94,10 +94,11 @@ module Verdict = struct
        in book order; empty otherwise. Kept beside [outcome] so a breach
        that outranks them still leaves them in the reasons. *)
     unknown_trips : string list;
-    (* Exposure limits ([is_exposure]) the fills would breach or take
-       further over, which a stop's flatten is let through anyway
-       ([waive_exposure]); empty for every other proposal, whose created and
-       worsened hold them instead. *)
+    (* What a stop's flatten is let past ([waive_exposure]): the exposure
+       limits ([is_exposure]) the fills would breach or take further over,
+       then the trip-limits that cannot be evaluated while the fills raise
+       gross. Empty for every other proposal, whose created, worsened and
+       unknown_trips hold them instead. *)
     waived : Move.t list;
     gross_before : Notional.t;
     gross_after : Notional.t;
@@ -161,8 +162,10 @@ let apply (graph : Graph.t) (fills : Fill.t list) =
    A strategy whose stop has latched must be able to leave, whatever the
    other strategy holds; the breach its flatten leaves then refuses every
    raise as usual. Every other limit -- the risk statistics, the drawdown --
-   still refuses, and so does an unevaluable trip-limit on a raise. The
-   caller decides when a proposal is such a flatten (Oms.check_rebalance:
+   still refuses a breach it creates or worsens. An unevaluable trip-limit
+   does not refuse such a flatten's raise in gross (round 1b): that raise is
+   the account's, from netting, and the flatten lowers its own strategy's
+   risk; the limit is reported in [waived] too. The caller decides when a proposal is such a flatten (Oms.check_rebalance:
    a latched stop, every leg shrinking the strategy's own position without
    crossing zero, and the switch clear); nothing here knows a strategy. *)
 let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
@@ -222,13 +225,19 @@ let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
       let raises_gross =
         not Float.(Notional.to_float gross_after <= Notional.to_float gross_before)
       in
-      let unknown_trips =
+      let unknown_trip_moves =
         if not raises_gross then []
         else
-          List.filter_map unevaluable ~f:(fun m ->
-              Option.some_if
-                (List.mem trips_on m.Move.limit ~equal:String.equal)
-                m.Move.limit)
+          List.filter unevaluable ~f:(fun m ->
+              List.mem trips_on m.Move.limit ~equal:String.equal)
+      in
+      (* A stop's flatten is not held by an unknown trip-limit either (round
+         1b): the raise in account gross it makes comes from netting, and the
+         flatten lowers its own strategy's risk. Reported as waived. *)
+      let waived = if waive_exposure then waived @ unknown_trip_moves else waived in
+      let unknown_trips =
+        if waive_exposure then []
+        else List.map unknown_trip_moves ~f:(fun m -> m.Move.limit)
       in
       let outcome =
         if not (List.is_empty created && List.is_empty worsened) then
