@@ -13,8 +13,9 @@ import { frameToMatrix } from "../../lib/series";
 import type { PortfolioIn } from "../../lib/types";
 import { INFO, backtestLabel, isConditional, modelInfo, modelLabel } from "../portfolio/info";
 import { KV, PValue, PctUsd, Readline, RunButton, ShareRows, ZoneChip, asDates, esVerdict, useCommitted, usd } from "../portfolio/shared";
-import type { BacktestOut, DecompPosition, DecompositionOut, Estimate, GarchOut, LiquidityLine, LiquidityOut, RiskSummaryOut, Scorecard } from "../portfolio/types";
+import type { BacktestOut, DecompPosition, DecompositionOut, Estimate, ExecutionOut, GarchOut, LiquidityLine, LiquidityOut, RiskSummaryOut, Scorecard } from "../portfolio/types";
 import { splitBreaches } from "./breaches";
+import { EXECUTION_CAVEAT, frontierXY } from "./execution";
 
 type Alpha = "0.95" | "0.99";
 const ALPHAS: { value: Alpha; label: string }[] = [
@@ -32,6 +33,7 @@ export function RiskSections({ req, alpha = "0.99", horizon = "1" }: { req: Port
       <ModelsSection req={req} seedAlpha={alpha} seedHorizon={horizon} />
       <DecompositionSection req={req} seedAlpha={alpha} />
       <LiquiditySection req={req} seedAlpha={alpha} />
+      <ExecutionSection req={req} />
       <BacktestSection req={req} seedAlpha={alpha} />
       <GarchSection req={req} />
     </>
@@ -240,6 +242,51 @@ function LiquiditySection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alp
             <DataTable compact columns={LIQUIDITY_COLS} rows={d.lines} rowKey={(r) => r.ticker} scrollLabel="Liquidity by name" />
           </>
         )}
+      </Panel>
+    </Section>
+  );
+}
+
+// =================================================================== execution
+
+function ExecutionSection({ req }: { req: PortfolioIn }) {
+  const [temp, setTemp] = useState(10);
+  const [perm, setPerm] = useState(2);
+  const body = useMemo(() => ({ ...req, temp_bps_at_adv: temp, perm_bps_at_adv: perm }), [req, temp, perm]);
+  const q = useApiPost<ExecutionOut>("/risk/execution", body);
+  return (
+    <Section
+      title="Execution · Almgren–Chriss"
+      actions={
+        <>
+          <NumberField ariaLabel="Assumed temporary impact in basis points at a day's volume" value={temp} onChange={setTemp} min={0.1} max={1000} step={1} unit="η BP" width={96} />
+          <NumberField ariaLabel="Assumed permanent impact in basis points at a day's volume" value={perm} onChange={setPerm} min={0} max={1000} step={1} unit="γ BP" width={96} />
+        </>
+      }
+    >
+      <Panel<ExecutionOut> title="Cost against risk" info={INFO.execution} query={q} skeletonHeight={300}>
+        {(d) => {
+          const f = frontierXY(d.frontier);
+          return (
+            <>
+              <StatGrid min={150}>
+                <StatTile size="sm" label="SQUARE-ROOT IMPACT" value={d.sqrt_impact_usd} format={(v) => usd(v)} caption={`${d.ticker} · TOTH ET AL.`} />
+                <StatTile size="sm" label="AC · EQUAL SLICES" value={d.frontier[0]?.expected_cost ?? null} format={(v) => usd(v)} caption="λ = 0, IMPACT ONLY" />
+                <StatTile size="sm" label="SIGMA" value={d.sigma.value} format={(v) => `$${fmtNum(v, 2)}`} caption={`${d.sigma.window}D REALISED · ${String(d.sigma.as_of).slice(0, 10)}`} />
+              </StatGrid>
+              <XYChart x={f.x} series={[{ name: "COST", y: f.y, mode: "line", tone: "ink" }]} xFormat="num" yFormat="num" digits={0} height={240} xTitle="STD OF COST, $" ariaLabel={`Expected execution cost against its standard deviation across risk aversions for ${d.ticker}`} />
+              <KV
+                rows={[
+                  { label: "η (assumed)", value: `${fmtNum(d.assumptions.temp_bps_at_adv, 1)} BP AT 1 DAY ADV`, hint: "TEMPORARY" },
+                  { label: "γ (assumed)", value: `${fmtNum(d.assumptions.perm_bps_at_adv, 1)} BP AT 1 DAY ADV`, hint: "PERMANENT" },
+                  { label: "σ source", value: d.sigma.source },
+                  { label: "Horizon", value: `${fmtNum(d.horizon_days, 1)} D IN ${d.intervals}` },
+                ]}
+              />
+              <Readline items={[{ k: "NOTE", v: EXECUTION_CAVEAT }]} />
+            </>
+          );
+        }}
       </Panel>
     </Section>
   );

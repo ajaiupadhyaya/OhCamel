@@ -494,6 +494,29 @@ export interface LiquidityOut extends Envelope {
   method: { participation: number; impact_coefficient: number; adv_window: number };
 }
 
+/** POST /risk/execution: an Almgren-Chriss frontier for the largest holding. eta and gamma are assumptions. */
+export interface ExecutionFrontierRow {
+  lam: number;
+  expected_cost: number;
+  variance: number;
+  std: number;
+}
+
+export interface ExecutionOut extends Envelope {
+  ticker: string;
+  shares: number;
+  price: number;
+  adv20: number;
+  horizon_days: number;
+  intervals: number;
+  sigma: { value: number; daily_return_stddev: number; window: number; source: string; as_of: string };
+  assumptions: { eta: number; gamma: number; temp_bps_at_adv: number; perm_bps_at_adv: number; epsilon: number; kind: string };
+  frontier: ExecutionFrontierRow[];
+  schedule: { lam: number; trades: number[]; expected_cost_usd: number; variance: number };
+  sqrt_impact_usd: number;
+  method: { almgren_chriss: string; sqrt_impact: string };
+}
+
 /** POST /api/factors/cross-section: Fama–MacBeth premia (Newey–West, Shanken) and the GRS test. Monthly. */
 export interface PremiumRow {
   term: string;

@@ -193,6 +193,12 @@ export const INFO = {
     text: "L-VaR adds the cost of crossing the spread today to VaR. The half-spread is an assumption: each line says whether it is the book's figure or the default. Impact is the square-root law's estimate for trading the position, shown beside L-VaR and not added to it.",
     formula: "\\text{L-VaR} = \\text{VaR} + \\sum_i |x_i| h_i",
   },
+  execution: {
+    title: "Execution cost frontier",
+    text: "Almgren and Chriss's schedule for selling the largest holding over a day: the faster it trades, the more it pays in impact and the less price risk it carries. Each point is a risk aversion λ; λ = 0 is equal slices. The temporary (η) and permanent (γ) impact are assumptions stated in the request, not estimates; σ is measured. The fixed half-spread is not in the cost. Shown beside the square-root impact figure, a different model of the same trade.",
+    formula: "E = \\tfrac12\\gamma X^2 + \\tfrac{\\tilde\\eta}{\\tau}\\sum_j n_j^2,\\quad V = \\sigma^2\\tau\\sum_j x_j^2",
+    reference: "Almgren & Chriss (2000), Journal of Risk 3(2)",
+  },
   component_var: {
     title: "Component (Euler) VaR",
     text: "Each position's share of total VaR. Components add up exactly to portfolio VaR, so they show where the risk really sits — not where the money sits.",

@@ -162,6 +162,8 @@ def _desk_report(db, root):
     tables["book_summary"] = pd.DataFrame({"limits": ["[]"]})
     tables["var_score"] = pd.DataFrame({"estimator": ["historical"], "n": [250], "exceptions": [3],
                                         "kupiec_p": [0.7], "light": ["green"]})
+    tables["tca"] = pd.DataFrame({"scope": ["overall"], "fills": [3], "mean_vs_open_bps": [4.2],
+                                  "note": ["Paper fills have no market impact and no queue."]})
     aid, _ = publish_artifact(db, root, "desk.report", tables, finished=utcnow(), notes=[ACCOUNT_NOTE])
     return aid
 
@@ -181,7 +183,7 @@ def test_the_desks_report_lists_only_its_summary_and_quotes_no_account_figure(ap
     for url in ("/api/artifacts/desk.report/latest", f"/api/artifacts/desk.report/{aid}"):
         r = client.get(url)
         assert r.status_code == 200
-        assert r.json()["manifest"]["tables"] == ["book_summary", "var_score"]
+        assert r.json()["manifest"]["tables"] == ["book_summary", "var_score", "tca"]
         assert "equity_close" not in r.text and "gross_close" not in r.text
     assert client.get(f"/api/artifacts/desk.report/{aid}/book_summary").status_code == 200
 
@@ -230,3 +232,13 @@ def test_a_table_added_to_a_book_kind_is_private_until_someone_lists_it(api):
     client, db, root = api
     aid, _ = publish_artifact(db, root, "desk.report", {"brand_new": pd.DataFrame({"x": [1]})}, finished=utcnow())
     assert client.get(f"/api/artifacts/desk.report/{aid}/brand_new").status_code == 404
+
+
+def test_the_execution_cost_roll_up_is_public_and_carries_basis_points_and_counts_only(api):
+    client, db, root = api
+    aid = _desk_report(db, root)
+    r = client.get(f"/api/artifacts/desk.report/{aid}/tca")
+    assert r.status_code == 200
+    columns = r.json()["columns"]
+    assert not any(bad in c.lower() for c in columns for bad in ("qty", "notional", "dollar", "usd", "price", "size"))
+    assert "AAPL" not in r.text

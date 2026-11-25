@@ -26,6 +26,7 @@ from ...data.base import DataUnavailable
 from ...data.market import MarketData, get_market
 from ...risk import backtest as bt
 from ...risk import decomposition as dec
+from ...risk import execution as ex
 from ...risk import garch as gm
 from ...risk import liquidity as lq
 from ...risk import stress as st
@@ -126,6 +127,23 @@ class LiquidityIn(PortfolioIn):
                 raise ValueError("a half-spread must be in [0, 1000] bps")
             out[k.strip().upper()] = x
         return out
+
+
+class ExecutionIn(PortfolioIn):
+    """The largest holding, liquidated over ``horizon_days`` in ``intervals`` slices.
+
+    ``temp_bps_at_adv`` and ``perm_bps_at_adv`` are ASSUMPTIONS: the price concession, in bps of price, that
+    trading one full day's ADV in a day would cost, temporary (eta) and permanent (gamma). They are not estimated.
+    """
+    horizon_days: float = Field(default=1.0, gt=0.0, le=20.0)
+    intervals: int = Field(default=10, ge=2, le=200)
+    temp_bps_at_adv: float = Field(default=lq.DEFAULT_IMPACT_BPS_AT_ADV, gt=0.0, le=1000.0)
+    perm_bps_at_adv: float = Field(default=lq.DEFAULT_PERMANENT_BPS_AT_ADV, ge=0.0, le=1000.0)
+    lams: list[float] = Field(default_factory=lambda: list(EXEC_LAMBDAS), min_length=2, max_length=40)
+
+
+#: Risk aversions in (dollar-variance)^-1 units, spanning a nearly risk-neutral to a nearly immediate schedule.
+EXEC_LAMBDAS = (0.0, 1e-9, 3e-9, 1e-8, 3e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5)
 
 
 class HistoricalStressIn(PortfolioIn):
@@ -371,6 +389,59 @@ def _liquidity(body: LiquidityIn, market: MarketData) -> dict[str, Any]:
             "participation": body.participation, "impact_coefficient": body.impact_coefficient,
             "adv_window": lq.ADV_WINDOW,
         },
+        "notes": notes,
+        "provenance": prov,
+    })
+
+
+@router.post("/execution")
+def execution(body: ExecutionIn, market: Market) -> dict[str, Any]:
+    """An Almgren-Chriss schedule and its cost frontier for the largest holding, beside the square-root impact."""
+    return _cached("execution", body, lambda: _execution(body, market))
+
+
+def _execution(body: ExecutionIn, market: MarketData) -> dict[str, Any]:
+    _, rp, prov, notes = _load_portfolio(body, market)
+    ticker, weight = max(body.weights.items(), key=lambda kv: abs(kv[1]))
+    bars = market.ohlcv(ticker, body.start, body.end).data
+    close = bars["adj_close"].dropna()
+    volume = bars["volume"].dropna().tail(lq.ADV_WINDOW)
+    returns = close.pct_change().dropna().tail(lq.ADV_WINDOW)
+    price = float(bars["close"].dropna().iloc[-1])
+    if len(volume) < lq.ADV_WINDOW or len(returns) < lq.ADV_WINDOW or not price > 0:
+        raise DataUnavailable(f"{ticker}: fewer than {lq.ADV_WINDOW} sessions of volume and returns")
+    adv, daily_sd = float(volume.mean()), float(returns.std(ddof=1))
+    shares = abs(weight) * body.notional / price
+    sigma = daily_sd * price                       # dollars per sqrt(day), from the 20-day realised return
+    eta = price * body.temp_bps_at_adv / 1e4 / adv       # dollars per share per (share/day): an assumption
+    gamma = price * body.perm_bps_at_adv / 1e4 / adv     # dollars per share per share: an assumption
+    kw = {"sigma": sigma, "eta": eta, "gamma": gamma}
+    front = ex.frontier(shares, body.horizon_days, body.intervals, lams=body.lams, **kw)
+    mid = ex.almgren_chriss(shares, body.horizon_days, body.intervals, lam=body.lams[len(body.lams) // 2], **kw)
+    sqrt_frac = lq.DEFAULT_IMPACT_COEFFICIENT * daily_sd * math.sqrt(shares / adv)
+    notes.append("eta and gamma are assumptions, not estimates: the concession for trading a full day's ADV in a "
+                 "day, stated in the request. sigma is the realised 20-day close-to-close volatility. The fixed "
+                 "half-spread (epsilon) is not in these costs.")
+    notes.append("The schedule's impact is linear in the trade rate and the square-root law is concave, so at a small "
+                 "share of daily volume they disagree, the linear model far lower: two models of one trade, not two "
+                 "estimates of one number.")
+    return clean({
+        "portfolio": _portfolio_meta(body, rp),
+        "ticker": ticker, "shares": shares, "price": price, "adv20": adv,
+        "horizon_days": body.horizon_days, "intervals": body.intervals,
+        "sigma": {"value": sigma, "daily_return_stddev": daily_sd, "window": lq.ADV_WINDOW,
+                  "source": "20-day close-to-close return stddev x last close, from the data provider's daily bars",
+                  "as_of": close.index[-1]},
+        "assumptions": {"eta": eta, "gamma": gamma, "temp_bps_at_adv": body.temp_bps_at_adv,
+                        "perm_bps_at_adv": body.perm_bps_at_adv, "epsilon": 0.0,
+                        "kind": "assumed, not estimated"},
+        "frontier": records(front),
+        "schedule": {"lam": body.lams[len(body.lams) // 2], "trades": [float(x) for x in mid.trades],
+                     "expected_cost_usd": mid.expected_cost, "variance": mid.variance},
+        "sqrt_impact_usd": sqrt_frac * shares * price,
+        "method": {"almgren_chriss": "Almgren & Chriss (2000), linear impact, discrete; E = gamma X^2/2 + "
+                                     "(eta~/tau) sum n_j^2, V = sigma^2 tau sum x_j^2, eta~ = eta - gamma tau/2",
+                   "sqrt_impact": "Y sigma sqrt(|q| / ADV) (Toth et al. 2011), the liquidity panel's number"},
         "notes": notes,
         "provenance": prov,
     })

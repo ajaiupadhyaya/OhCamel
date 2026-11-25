@@ -36,6 +36,10 @@ answers with a different newest close, that close's date, with a note.
   a strategy, whatever session received it; ``received_at`` dates each.
 * ``overlay_path`` -- one row: the overlay's reading at this run. The intraday
   path is the sequence of ``signals.overlay`` artifacts, which keeps every one.
+* ``tca`` -- the fills' shortfall against the session's open, close and VWAP: one ``overall`` row and a row a
+  strategy, in basis points and counts only (no quantity, notional or price), each row carrying the sentence
+  that paper fills have no market impact and no queue, so realised shortfall is a floor. A benchmark the venue
+  has no bar for is not in the mean, and its ``*_n`` count says so.
 * ``book_summary`` -- one row, none when the engine is unset or unreachable: the
   live book's configuration and counts for the public front page, and nothing
   more (owner, 2026-10-29). ``positions`` counts the symbols whose ``graph_qty``
@@ -66,7 +70,8 @@ import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
 
-__all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "ROUTES", "TIMEOUT_S", "VAR_SCORE_COLUMNS", "run"]
+__all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "PAPER_SENTENCE", "ROUTES", "TCA_COLUMNS", "TIMEOUT_S",
+           "VAR_SCORE_COLUMNS", "run"]
 
 KIND = "desk.report"
 TIMEOUT_S = 10.0
@@ -93,6 +98,11 @@ BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "
 # conditional coverage). A simulated venue is not scored: one row, no estimator, ``message`` the reason.
 VAR_SCORE_COLUMNS = ["as_of", "source", "estimator", "window", "level", "n", "exceptions", "kupiec_p",
                      "christoffersen_p", "light", "message", "min_sessions", "other_window_sessions"]
+TCA_COLUMNS = ["scope", "strategy", "fills", "open_n", "close_n", "vwap_n", "mean_vs_open_bps", "mean_vs_close_bps",
+               "mean_vs_vwap_bps", "note"]
+#: Said beside every row of the TCA table: the paper venue fills at the simulator's price.
+PAPER_SENTENCE = ("Paper fills have no market impact and no queue; realised shortfall here is a floor on what a "
+                  "real venue would charge.")
 LIGHTS = ("green", "yellow", "red")
 PNL_NOTE = "not on the wire until Stage 3"
 # /api/ops `alerts.kill_switch` (json_of_alerts: off | armed | tripped) in the front page's words. "off" is the
@@ -239,6 +249,29 @@ def _tca_notes(tca: dict[str, Any], notes: list[str]) -> None:
     notes.append(f"tca (the newest 500 fills, not only this session's): {tca.get('note')}; overall "
                  f"count {overall.get('count')}, mean shortfall {overall.get('mean_shortfall_bps')} bps, "
                  f"median {overall.get('median_shortfall_bps')} bps")
+
+
+def _tca_rows(tca: dict[str, Any] | None, notes: list[str]) -> list[dict[str, Any]]:
+    """The shortfall against the open, the close and session VWAP: counts and basis points, nothing else.
+
+    Public (``PUBLIC_TABLES``), so each row carries only what ``/api/desk/tca``'s ``benchmarks`` block serves --
+    never a quantity, a notional or a price -- copied field by field. A mean is over the fills that have the
+    benchmark and ``open_n``/``close_n``/``vwap_n`` say how many that is.
+    """
+    block = tca.get("benchmarks") if tca is not None else None
+    if not isinstance(block, dict) or not isinstance(block.get("overall"), dict):
+        notes.append("tca benchmarks not read: GET /api/desk/tca serves no benchmarks block")
+        return []
+    keys = ("fills", "open_n", "close_n", "vwap_n", "mean_vs_open_bps", "mean_vs_close_bps", "mean_vs_vwap_bps")
+
+    def row(scope: str, strategy: str | None, x: Any) -> dict[str, Any]:
+        x = x if isinstance(x, dict) else {}
+        vals = {"fills": _count(x.get("count"))} | {k: (_count(x.get(k)) if k.endswith("_n") else _num(x.get(k)))
+                                                    for k in keys[1:]}
+        return {"scope": scope, "strategy": strategy, **vals, "note": PAPER_SENTENCE}
+
+    by = block.get("by_strategy") if isinstance(block.get("by_strategy"), dict) else {}
+    return [row("overall", None, block["overall"])] + [row("strategy", str(k), by[k]) for k in sorted(by)]
 
 
 def _session_notes(sessions: list[Any], session: date, notes: list[str]) -> None:
@@ -393,15 +426,17 @@ def _var_score(desk: dict[str, Any] | None, notes: list[str]) -> list[dict[str, 
 
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],
           provenance: list[dict], notes: list[str], *, book: list[dict],
-          var: list[dict] | None = None) -> ArtifactSpec:
+          var: list[dict] | None = None, tca: list[dict] | None = None) -> ArtifactSpec:
     notes.append(INC01_SENTENCE)
+    notes.append(PAPER_SENTENCE)
     return ArtifactSpec(
         tables={"fills": pd.DataFrame(fills, columns=FILL_COLUMNS),
                 "pnl_by_strategy": pd.DataFrame(pnl, columns=PNL_COLUMNS),
                 "refusals": pd.DataFrame(refusals, columns=REFUSAL_COLUMNS),
                 "overlay_path": pd.DataFrame(overlay, columns=OVERLAY_COLUMNS),
                 "book_summary": pd.DataFrame(book, columns=BOOK_COLUMNS),
-                "var_score": pd.DataFrame(var or [], columns=VAR_SCORE_COLUMNS)},
+                "var_score": pd.DataFrame(var or [], columns=VAR_SCORE_COLUMNS),
+                "tca": pd.DataFrame(tca or [], columns=TCA_COLUMNS)},
         data_asof=session.isoformat(), provenance=provenance, notes=notes, verdict=None)
 
 
@@ -455,4 +490,5 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     if desk is not None:
         notes.append(f"account session_pnl {desk.get('session_pnl')} (the whole paper account, not per strategy)")
     provenance = [{"source": "ohcamel-live", "url": base, "route": p, "read": bodies[p] is not None} for p in ROUTES]
-    return _spec(session, fills, pnl, refusals, overlay, provenance, notes, book=book, var=var)
+    return _spec(session, fills, pnl, refusals, overlay, provenance, notes, book=book, var=var,
+                 tca=_tca_rows(tca, notes))

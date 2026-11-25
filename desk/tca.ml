@@ -113,3 +113,96 @@ let by_symbol (rows : (Inputs.t * Costs.t) list) : (Symbol.t * Summary.t) list =
   List.sort_and_group rows ~compare:(fun (a, _) (b, _) ->
       Symbol.compare a.Inputs.symbol b.Inputs.symbol)
   |> List.map ~f:(fun group -> ((fst (List.hd_exn group)).Inputs.symbol, summarize group))
+
+(* SHORTFALL AGAINST THE SESSION'S OWN BENCHMARKS (Task 4.9). The decision-price
+   shortfall above is the cost the desk can hold itself to; the open, the close
+   and the session's VWAP are what an order is customarily compared with, and
+   a fill is read against all three, signed as everywhere here: positive is
+   cost. A buy at 50.10 against an open of 50.00 paid 20 bp; against a close of
+   50.20 it saved 19.92 bp (-0.10 / 50.20 x 10,000), and against a VWAP of
+   50.05 it paid 9.99 bp.
+
+   Each is a venue figure and an unknown stays unknown: a session with no bar
+   has no open, close or VWAP, and a VWAP the venue's bar did not carry is
+   [None] with the reason in [vwap_reason] -- never one made up from the bar's
+   high, low and close, which is a typical price and not a volume-weighted one.
+   The venue's bars are daily and unadjusted (Venue.Read.session_bars); on
+   Alpaca's IEX feed they are IEX's session, one venue's, not the
+   consolidated tape. *)
+module Benchmark = struct
+  type t = {
+    open_ : float option;
+    close : float option;
+    vwap : float option;
+    vwap_reason : string option;
+  }
+  [@@deriving sexp_of]
+
+  let none reason = { open_ = None; close = None; vwap = None; vwap_reason = Some reason }
+end
+
+module Bench_costs = struct
+  type t = {
+    vs_open : float option;
+    vs_close : float option;
+    vs_vwap : float option;
+    vwap_reason : string option;
+  }
+  [@@deriving sexp_of]
+end
+
+let usable x = Float.is_finite x && Float.( > ) x 0.0
+
+let benchmarks (i : Inputs.t) (b : Benchmark.t) : Bench_costs.t =
+  let s = Order.Side.sign i.side in
+  let against = function
+    | Some p when usable p -> Some (s *. (i.fill -. p) /. p *. bp)
+    | _ -> None
+  in
+  let vs_vwap = against b.vwap in
+  {
+    Bench_costs.vs_open = against b.open_;
+    vs_close = against b.close;
+    vs_vwap;
+    vwap_reason =
+      (match (vs_vwap, b.vwap_reason) with
+      | Some _, _ -> None
+      | None, Some r -> Some r
+      | None, None -> Some "the session's bar carried no volume-weighted price");
+  }
+
+module Bench_summary = struct
+  type t = {
+    count : int;
+    open_n : int;
+    close_n : int;
+    vwap_n : int;
+    mean_vs_open_bps : float option;
+    mean_vs_close_bps : float option;
+    mean_vs_vwap_bps : float option;
+  }
+  [@@deriving sexp_of]
+end
+
+(* A roll-up is counts and basis points only: no quantity, notional or price, so
+   it can be public. A mean is over the fills that HAVE the benchmark, and the
+   count beside it says how many that is. *)
+let summarize_benchmarks (rows : Bench_costs.t list) : Bench_summary.t =
+  let pick f = List.filter_map rows ~f in
+  let o = pick (fun c -> c.Bench_costs.vs_open)
+  and c = pick (fun c -> c.Bench_costs.vs_close)
+  and v = pick (fun c -> c.Bench_costs.vs_vwap) in
+  {
+    Bench_summary.count = List.length rows;
+    open_n = List.length o;
+    close_n = List.length c;
+    vwap_n = List.length v;
+    mean_vs_open_bps = mean o;
+    mean_vs_close_bps = mean c;
+    mean_vs_vwap_bps = mean v;
+  }
+
+let by_strategy (rows : (string * Bench_costs.t) list) : (string * Bench_summary.t) list =
+  List.sort_and_group rows ~compare:(fun (a, _) (b, _) -> String.compare a b)
+  |> List.map ~f:(fun group ->
+      (fst (List.hd_exn group), summarize_benchmarks (List.map group ~f:snd)))

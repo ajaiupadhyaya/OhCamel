@@ -52,7 +52,7 @@ MAX_ROWS = 50_000
 #: The tables a kind may serve, for the kinds that hold the live book. A kind absent
 #: here serves every table its manifest lists.
 PUBLIC_TABLES: dict[str, frozenset[str]] = {
-    "desk.report": frozenset({"book_summary", "var_score"}),
+    "desk.report": frozenset({"book_summary", "var_score", "tca"}),
     "signals.overlay": frozenset({"overlay", "sources"}),
     # the freeze's ``volatility`` table holds each strategy's ex-ante volatility, the input of its stop's threshold
     "signals.freeze": frozenset({"params"}),

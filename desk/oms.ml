@@ -108,6 +108,11 @@ type t = {
      [refresh_forever] asks again once an hour has passed since, whatever its
      own interval and however long each refresh's requests take. *)
   mutable bars_fetched_at : Time_ns.t option;
+  (* The venue's daily bar for each session an order of ours filled in, by
+     date then name, kept for the TCA's open, close and VWAP (Tca.benchmarks).
+     Only sessions that have ended are asked for, and only those the venue has
+     filed: a session absent here has no benchmarks, and says why. *)
+  mutable fill_session_bars : Venue.Bar.t Symbol.Map.t Date.Map.t;
   (* The venue's clock as last read, which the session rule reads at each
      order's own time (Rules.Session); None until a clock answers, and after
      a read that failed. *)
@@ -170,6 +175,7 @@ let create ~graph ~journal ~spec ~trips_on ~read ~trade ~halt ~accepts_tickets ~
     recent = [];
     adv20 = Symbol.Map.empty;
     bars_fetched_at = None;
+    fill_session_bars = Date.Map.empty;
     session = None;
     live_loops = String.Hash_set.create ();
     failed_cancels = String.Hash_set.create ();
@@ -2926,6 +2932,44 @@ let reconcile t : unit Deferred.t =
                (List.length rows)
                (if List.length rows = 1 then "" else "s")))
 
+(* The exchange's date of an instant: the session a fill belongs to. None
+   where the zone cannot be loaded, and then no fill has benchmarks. *)
+let session_date (at : Time_ns.t) : Date.t option =
+  Option.map (Lazy.force Desk_time.new_york) ~f:(fun zone -> Time_ns.to_date at ~zone)
+
+let fill_session (r : Journal.Fill_row.t) : Date.t option =
+  session_date r.Journal.Fill_row.fill.Order.Fill.at
+
+(* The newest sessions our fills fell in that ended before today and whose bar
+   is not held yet, at most [eight] a refresh, each asked for once for the
+   names filled in it. A venue that keeps no bars answers an error and nothing
+   is stored; one that has not filed the bar answers without it, and the
+   session is asked for again at the next hourly refresh. *)
+let refresh_fill_session_bars t (read : Venue.Read.t) : unit Deferred.t =
+  match session_date (Time_source.now t.time_source) with
+  | None -> Deferred.unit
+  | Some today ->
+      let fills = Journal.recent_fills t.journal ~limit:500 in
+      let wanted =
+        List.filter_map fills ~f:(fun r ->
+            Option.bind (fill_session r) ~f:(fun d ->
+                if Date.( < ) d today && not (Map.mem t.fill_session_bars d) then
+                  Some (d, r.Journal.Fill_row.symbol)
+                else None))
+        |> List.sort_and_group ~compare:(fun (a, _) (b, _) -> Date.compare b a)
+        |> fun groups -> List.take groups 8
+      in
+      Deferred.List.iter ~how:`Sequential wanted ~f:(fun group ->
+          let date = fst (List.hd_exn group) in
+          let symbols =
+            List.dedup_and_sort (List.map group ~f:snd) ~compare:Symbol.compare
+          in
+          match%map read.Venue.Read.session_bars symbols ~date with
+          | Error _ -> ()
+          | Ok bars ->
+              if not (Map.is_empty bars) then
+                t.fill_session_bars <- Map.set t.fill_session_bars ~key:date ~data:bars)
+
 let refresh ?(bars = true) t : unit Deferred.t =
   match t.read with
   | None -> Deferred.unit
@@ -2939,7 +2983,7 @@ let refresh ?(bars = true) t : unit Deferred.t =
               ("desk      the venue's clock is unavailable, so the session reads closed: "
              ^ Error.to_string_hum e)
       in
-      let%map () =
+      let%bind () =
         match t.adv with
         | Adv.Fixed _ -> Deferred.unit
         | Adv.From_venue when not bars -> Deferred.unit
@@ -2964,6 +3008,7 @@ let refresh ?(bars = true) t : unit Deferred.t =
                           (List.sum (module Float) recent ~f:(fun b -> b.Venue.Bar.volume)
                           /. Float.of_int (List.length recent))))
       in
+      let%map () = if bars then refresh_fill_session_bars t read else Deferred.unit in
       t.on_change ()
 
 (* The manager's own time source, never the wall clock: a test advances its
@@ -3017,10 +3062,49 @@ let incubation_permitted t : (unit, string) Result.t =
   | "alpaca-paper" | "simulated" -> Ok ()
   | name -> Error (sprintf "incubation sizing is refused on venue %s" name)
 
+(* The session's open, close and VWAP for a fill, and why a missing one is
+   missing. The reasons are the three ways it can be: the venue keeps no
+   history, the session is not over or not filed yet, or the bar has no VWAP. *)
+let benchmark_of t (r : Journal.Fill_row.t) : Tca.Benchmark.t =
+  match fill_session r with
+  | None ->
+      Tca.Benchmark.none
+        "the exchange's calendar could not be read, so the fill has no session"
+  | Some d -> (
+      match Map.find t.fill_session_bars d with
+      | None ->
+          Tca.Benchmark.none
+            (if String.equal (venue_name t) "simulated" then
+               "the demo's venue keeps no bar history, so it has no session open, close \
+                or VWAP"
+             else
+               "the venue's bar for the fill's session is not held (the session is not \
+                over, or the venue has not filed it)")
+      | Some bars -> (
+          match Map.find bars r.Journal.Fill_row.symbol with
+          | None ->
+              Tca.Benchmark.none
+                "the venue's bar for that session has no entry for the name"
+          | Some (b : Venue.Bar.t) ->
+              {
+                Tca.Benchmark.open_ = Some b.open_;
+                close = Some b.close;
+                vwap = b.vwap;
+                vwap_reason =
+                  (if Option.is_none b.vwap then
+                     Some "the venue's bar carried no volume-weighted price"
+                   else None);
+              }))
+
+let paper_sentence =
+  "Paper fills have no market impact and no queue; realised shortfall here is a floor on \
+   what a real venue would charge."
+
 let fills_json t (rows : Journal.Fill_row.t list) : Yojson.Safe.t =
   `List
     (List.map2_exn rows (costs t rows)
-       ~f:(fun (r : Journal.Fill_row.t) (_, (c : Tca.Costs.t)) ->
+       ~f:(fun (r : Journal.Fill_row.t) ((inputs : Tca.Inputs.t), (c : Tca.Costs.t)) ->
+         let bc = Tca.benchmarks inputs (benchmark_of t r) in
          let f = r.Journal.Fill_row.fill in
          let opt = Option.value_map ~default:`Null ~f:jnum in
          `Assoc
@@ -3048,6 +3132,12 @@ let fills_json t (rows : Journal.Fill_row.t list) : Yojson.Safe.t =
              ("slippage_bps", opt c.Tca.Costs.slippage_bps);
              ("half_spread_bps", opt c.Tca.Costs.half_spread_bps);
              ("versus_model_bps", opt c.Tca.Costs.versus_model_bps);
+             ("vs_open_bps", opt bc.Tca.Bench_costs.vs_open);
+             ("vs_close_bps", opt bc.Tca.Bench_costs.vs_close);
+             ("vs_vwap_bps", opt bc.Tca.Bench_costs.vs_vwap);
+             ( "vwap_reason",
+               Option.value_map bc.Tca.Bench_costs.vwap_reason ~default:`Null ~f:(fun s ->
+                   `String s) );
              (* A market-on-open order's arrival quote is read when it is
                 proposed, after 19:00 ET, from a thin after-hours book: its
                 delay and slippage are noisy, and say so. *)
@@ -3084,6 +3174,28 @@ let tca_note t (rows : Journal.Fill_row.t list) =
 let tca_json t : Yojson.Safe.t =
   let fills = Journal.recent_fills t.journal ~limit:500 in
   let rows = costs t fills in
+  let bench_rows =
+    List.map2_exn fills rows ~f:(fun r (i, _) ->
+        let owner =
+          match Journal.load_order t.journal r.Journal.Fill_row.client_order_id with
+          | Some o -> Subledger.owner ~source:o.Journal.Order_row.source
+          | None -> Subledger.hand
+        in
+        (owner, Tca.benchmarks i (benchmark_of t r)))
+  in
+  let bench_summary (s : Tca.Bench_summary.t) =
+    let opt = Option.value_map ~default:`Null ~f:jnum in
+    `Assoc
+      [
+        ("count", `Int s.Tca.Bench_summary.count);
+        ("open_n", `Int s.Tca.Bench_summary.open_n);
+        ("close_n", `Int s.Tca.Bench_summary.close_n);
+        ("vwap_n", `Int s.Tca.Bench_summary.vwap_n);
+        ("mean_vs_open_bps", opt s.Tca.Bench_summary.mean_vs_open_bps);
+        ("mean_vs_close_bps", opt s.Tca.Bench_summary.mean_vs_close_bps);
+        ("mean_vs_vwap_bps", opt s.Tca.Bench_summary.mean_vs_vwap_bps);
+      ]
+  in
   let opt = Option.value_map ~default:`Null ~f:jnum in
   let summary (s : Tca.Summary.t) =
     `Assoc
@@ -3098,7 +3210,19 @@ let tca_json t : Yojson.Safe.t =
   `Assoc
     [
       ("note", `String (tca_note t fills));
+      ("paper_limits", `String paper_sentence);
       ("overall", summary (Tca.summarize rows));
+      (* Basis points and counts only: no quantity, notional or price. *)
+      ( "benchmarks",
+        `Assoc
+          [
+            ( "overall",
+              bench_summary (Tca.summarize_benchmarks (List.map bench_rows ~f:snd)) );
+            ( "by_strategy",
+              `Assoc
+                (List.map (Tca.by_strategy bench_rows) ~f:(fun (k, x) ->
+                     (k, bench_summary x))) );
+          ] );
       ( "by_symbol",
         `Assoc
           (List.map (Tca.by_symbol rows) ~f:(fun (s, x) ->

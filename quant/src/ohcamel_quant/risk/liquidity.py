@@ -39,6 +39,9 @@ HALF_SPREAD_BPS: Mapping[str, float] = {"SPY": 1.0, "TLT": 1.5}
 DEFAULT_PARTICIPATION = 0.10
 DEFAULT_IMPACT_COEFFICIENT = 1.0
 ADV_WINDOW = 20
+#: The Almgren-Chriss panel's assumed concessions (bps of price) for trading a full day's ADV in a day.
+DEFAULT_IMPACT_BPS_AT_ADV = 10.0
+DEFAULT_PERMANENT_BPS_AT_ADV = 2.0
 
 
 @dataclass(frozen=True)

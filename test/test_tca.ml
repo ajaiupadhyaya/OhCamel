@@ -95,6 +95,92 @@ let test_a_summary_weights_by_quantity () =
           ])
        ~f:(fun (s, x) -> (Symbol.to_string s, x.Tca.Summary.count)))
 
+(* A buy at 50.10 against open 50.00, close 50.20 and VWAP 50.05, by the formula
+   side x (fill - benchmark) / benchmark x 10,000:
+     open   (50.10 - 50.00) / 50.00 x 10,000 = +20.0
+     close  (50.10 - 50.20) / 50.20 x 10,000 = -19.920... (-20 bp to the nearest bp)
+     vwap   (50.10 - 50.05) / 50.05 x 10,000 = +9.990... (+10 bp to the nearest bp) *)
+let bench ?vwap_reason ~open_ ~close ~vwap () =
+  { Tca.Benchmark.open_; close; vwap; vwap_reason }
+
+let test_a_buy_against_the_open_the_close_and_vwap () =
+  let b =
+    Tca.benchmarks
+      { buy with Tca.Inputs.fill = 50.10 }
+      (bench ~open_:(Some 50.00) ~close:(Some 50.20) ~vwap:(Some 50.05) ())
+  in
+  Alcotest.check bps "vs open" (Some 20.0) b.Tca.Bench_costs.vs_open;
+  Alcotest.check bps "vs close"
+    (Some (-0.10 /. 50.20 *. 10_000.0))
+    b.Tca.Bench_costs.vs_close;
+  Alcotest.check bps "vs vwap"
+    (Some (0.05 /. 50.05 *. 10_000.0))
+    b.Tca.Bench_costs.vs_vwap;
+  let near x = function
+    | Some v -> Float.( < ) (Float.abs (v -. x)) 0.1
+    | None -> false
+  in
+  Alcotest.(check bool)
+    "close is -20 bp to 0.1" true
+    (near (-20.0) b.Tca.Bench_costs.vs_close);
+  Alcotest.(check bool) "vwap is +10 bp to 0.1" true (near 10.0 b.Tca.Bench_costs.vs_vwap);
+  Alcotest.(check (option string))
+    "no reason when it is known" None b.Tca.Bench_costs.vwap_reason
+
+let test_a_sell_against_the_benchmarks_is_the_mirror () =
+  (* Selling at 50.10: above the open and the VWAP is price improvement (negative),
+     below the close is cost (positive). *)
+  let b =
+    Tca.benchmarks
+      { buy with Tca.Inputs.side = Order.Side.Sell; fill = 50.10 }
+      (bench ~open_:(Some 50.00) ~close:(Some 50.20) ~vwap:(Some 50.05) ())
+  in
+  Alcotest.check bps "vs open" (Some (-20.0)) b.Tca.Bench_costs.vs_open;
+  Alcotest.check bps "vs close"
+    (Some (0.10 /. 50.20 *. 10_000.0))
+    b.Tca.Bench_costs.vs_close;
+  Alcotest.check bps "vs vwap"
+    (Some (-0.05 /. 50.05 *. 10_000.0))
+    b.Tca.Bench_costs.vs_vwap
+
+let test_an_unknown_benchmark_is_null_with_a_reason () =
+  let b = Tca.benchmarks buy (Tca.Benchmark.none "the venue keeps no bar history") in
+  Alcotest.check bps "open" None b.Tca.Bench_costs.vs_open;
+  Alcotest.check bps "close" None b.Tca.Bench_costs.vs_close;
+  Alcotest.check bps "vwap is not made up" None b.Tca.Bench_costs.vs_vwap;
+  Alcotest.(check (option string))
+    "says why" (Some "the venue keeps no bar history") b.Tca.Bench_costs.vwap_reason;
+  let no_vw =
+    Tca.benchmarks buy (bench ~open_:(Some 100.0) ~close:(Some 100.0) ~vwap:None ())
+  in
+  Alcotest.check bps "a bar with no vwap still has its open" (Some 7.0)
+    no_vw.Tca.Bench_costs.vs_open;
+  Alcotest.(check bool)
+    "and a reason for the vwap" true
+    (Option.is_some no_vw.Tca.Bench_costs.vwap_reason)
+
+let test_a_strategy_roll_up_is_counts_and_basis_points () =
+  let cost o c v =
+    { Tca.Bench_costs.vs_open = o; vs_close = c; vs_vwap = v; vwap_reason = None }
+  in
+  let rolled =
+    Tca.by_strategy
+      [
+        ("b", cost (Some 4.0) None None);
+        ("a", cost (Some 20.0) (Some (-20.0)) (Some 10.0));
+        ("a", cost (Some 10.0) None (Some 20.0));
+      ]
+  in
+  Alcotest.(check (list string)) "sorted" [ "a"; "b" ] (List.map rolled ~f:fst);
+  let a = List.Assoc.find_exn rolled ~equal:String.equal "a" in
+  Alcotest.(check int) "two fills" 2 a.Tca.Bench_summary.count;
+  Alcotest.(check int) "one has a close" 1 a.Tca.Bench_summary.close_n;
+  Alcotest.check bps "mean open" (Some 15.0) a.Tca.Bench_summary.mean_vs_open_bps;
+  Alcotest.check bps "mean close" (Some (-20.0)) a.Tca.Bench_summary.mean_vs_close_bps;
+  Alcotest.check bps "mean vwap" (Some 15.0) a.Tca.Bench_summary.mean_vs_vwap_bps;
+  let b = List.Assoc.find_exn rolled ~equal:String.equal "b" in
+  Alcotest.check bps "no vwap, no mean" None b.Tca.Bench_summary.mean_vs_vwap_bps
+
 let suite =
   ( "tca",
     [
@@ -104,4 +190,12 @@ let suite =
         test_without_a_quote_only_shortfall_is_known;
       Alcotest.test_case "a summary weights by quantity" `Quick
         test_a_summary_weights_by_quantity;
+      Alcotest.test_case "a buy against the open, the close and vwap" `Quick
+        test_a_buy_against_the_open_the_close_and_vwap;
+      Alcotest.test_case "a sell against the benchmarks is the mirror" `Quick
+        test_a_sell_against_the_benchmarks_is_the_mirror;
+      Alcotest.test_case "an unknown benchmark is null with a reason" `Quick
+        test_an_unknown_benchmark_is_null_with_a_reason;
+      Alcotest.test_case "a strategy roll-up is counts and basis points" `Quick
+        test_a_strategy_roll_up_is_counts_and_basis_points;
     ] )

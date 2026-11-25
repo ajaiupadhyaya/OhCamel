@@ -5774,6 +5774,7 @@ let tlt_bar d close =
     low = close;
     close;
     volume = 1e6;
+    vwap = None;
   }
 
 let tlt_strategies =

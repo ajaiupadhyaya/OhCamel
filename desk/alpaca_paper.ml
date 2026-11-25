@@ -257,7 +257,8 @@ let bar_of_json (json : Yojson.Safe.t) : Venue.Bar.t option =
   match (field json "t", n "o", n "h", n "l", n "c", n "v") with
   | Some (`String t), Some open_, Some high, Some low, Some close, Some volume -> (
       match Desk_time.local_date t with
-      | Some date -> Some { Venue.Bar.date; open_; high; low; close; volume }
+      | Some date ->
+          Some { Venue.Bar.date; open_; high; low; close; volume; vwap = n "vw" }
       | None -> None)
   | _ -> None
 

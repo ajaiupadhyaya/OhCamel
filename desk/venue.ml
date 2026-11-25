@@ -78,6 +78,9 @@ module Bar = struct
     low : float;
     close : float;
     volume : float;
+    vwap : float option;
+        (* The venue's volume-weighted average price for the bar, where it files one
+           (Alpaca's [vw]); None where it does not, and never derived from the OHLC. *)
   }
   [@@deriving sexp_of, compare, equal]
 end

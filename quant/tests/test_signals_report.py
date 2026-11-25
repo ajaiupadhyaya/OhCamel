@@ -49,7 +49,16 @@ DESK = {
 TCA = {"note": "paper fills against one venue's quote",
        "overall": {"count": 2, "mean_shortfall_bps": 6.13, "median_shortfall_bps": 6.13,
                    "weighted_shortfall_bps": 6.13, "mean_versus_model_bps": None},
-       "by_symbol": {"SPY": {"count": 1, "mean_shortfall_bps": 6.13}}}
+       "by_symbol": {"SPY": {"count": 1, "mean_shortfall_bps": 6.13}},
+       "benchmarks": {
+           "overall": {"count": 2, "open_n": 2, "close_n": 2, "vwap_n": 1, "mean_vs_open_bps": 4.5,
+                       "mean_vs_close_bps": -1.25, "mean_vs_vwap_bps": 2.0},
+           "by_strategy": {"signal-x": {"count": 1, "open_n": 1, "close_n": 1, "vwap_n": 0,
+                                        "mean_vs_open_bps": 3.0, "mean_vs_close_bps": 0.5,
+                                        "mean_vs_vwap_bps": None},
+                           "hand": {"count": 1, "open_n": 1, "close_n": 1, "vwap_n": 1,
+                                    "mean_vs_open_bps": 6.0, "mean_vs_close_bps": -3.0,
+                                    "mean_vs_vwap_bps": 2.0}}}}
 
 
 def _latest(verdict: str, rule: str | None, detail: str, rebalance: str | None, seq: int) -> dict[str, Any]:
@@ -209,7 +218,7 @@ def test_a_full_report(tmp_path):
     assert sorted(eng.seen) == sorted(report.ROUTES)
     assert spec.verdict is None
     assert spec.data_asof == "2026-10-09"
-    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score"}
+    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score", "tca"}
 
     fills = spec.tables["fills"]
     # Only this session's fill (13:30Z is 09:30 New York on the 9th), with every field the route serves.
@@ -264,7 +273,7 @@ def test_an_unreachable_engine_is_a_done_job_that_says_so(tmp_path):
     spec = report.run({}, _ctx(tmp_path, url))
     assert spec.verdict is None
     assert all(df.empty for df in spec.tables.values())
-    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score"}
+    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary", "var_score", "tca"}
     assert list(spec.tables["fills"].columns) == report.FILL_COLUMNS
     assert len(spec.tables["book_summary"]) == 0 and list(spec.tables["book_summary"].columns) == report.BOOK_COLUMNS
     notes = " | ".join(spec.notes)
@@ -531,3 +540,32 @@ def test_a_simulated_venue_is_one_row_with_the_reason_and_no_light(tmp_path):
     r = t.iloc[0]
     assert r["message"] == "simulated sessions: not a 1-day VaR, not scored" and r["as_of"] == "2026-10-09"
     assert pd.isna(r["light"]) and pd.isna(r["kupiec_p"]) and pd.isna(r["christoffersen_p"]) and pd.isna(r["n"])
+
+
+SENTENCE = ("Paper fills have no market impact and no queue; realised shortfall here is a floor on what a real "
+            "venue would charge.")
+
+
+def test_the_tca_table_carries_the_paper_venues_limits_and_basis_points_only(tmp_path):
+    with _Engine(_full()) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    t = spec.tables["tca"]
+    assert list(t.columns) == report.TCA_COLUMNS
+    assert list(t["scope"]) == ["overall", "strategy", "strategy"]
+    assert list(t["strategy"].fillna("-")) == ["-", "hand", "signal-x"]      # sorted by name
+    overall = t.iloc[0]
+    assert (overall["fills"], overall["vwap_n"], overall["mean_vs_open_bps"], overall["mean_vs_close_bps"]) == (
+        2, 1, 4.5, -1.25)
+    assert pd.isna(t.iloc[2]["mean_vs_vwap_bps"]) and t.iloc[2]["vwap_n"] == 0   # unknown stays null
+    assert (t["note"] == SENTENCE).all()                  # the sentence rides on every public row
+    assert SENTENCE in spec.notes
+    assert not any(c in t.columns for c in ("qty", "notional", "price", "usd"))
+
+
+def test_a_tca_route_without_benchmarks_is_named_and_the_sentence_still_stands(tmp_path):
+    routes = _full()
+    routes["/api/desk/tca"] = _ok({"note": "x", "overall": {"count": 0}})
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    assert len(spec.tables["tca"]) == 0
+    assert "tca benchmarks not read" in " | ".join(spec.notes) and SENTENCE in spec.notes

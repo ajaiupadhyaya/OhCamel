@@ -102,6 +102,9 @@ let test_daily_bars_carry_their_dates_and_the_page_token () =
     (List.map
        (Map.find_exn bars (Symbol.of_string "SPY"))
        ~f:(fun b -> sprintf "%s %g" (Date.to_string b.Venue.Bar.date) b.Venue.Bar.close));
+  Alcotest.(check (list (option (float 1e-9))))
+    "the venue's own vw is the bar's vwap, never derived" [ Some 652.0; Some 655.0 ]
+    (List.map (Map.find_exn bars (Symbol.of_string "SPY")) ~f:(fun b -> b.Venue.Bar.vwap));
   Alcotest.(check (option string)) "the token" (Some "abc") token
 
 let test_latest_trades_carry_their_instants () =

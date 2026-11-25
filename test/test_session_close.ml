@@ -27,6 +27,7 @@ let bar d close =
     low = close;
     close;
     volume = 1_000.0;
+    vwap = None;
   }
 
 let test_the_close_is_recorded_five_minutes_after_the_venue_closes () =
