@@ -168,8 +168,25 @@ let apply (graph : Graph.t) (fills : Fill.t list) =
    risk; the limit is reported in [waived] too. The caller decides when a proposal is such a flatten (Oms.check_rebalance:
    a latched stop, every leg shrinking the strategy's own position without
    crossing zero, and the switch clear); nothing here knows a strategy. *)
+(* A REDUCTION'S DRAWDOWN IS JUDGED AT THE MARK (Task 1.12). With
+   [reductions_at_mark], a Max_drawdown limit's created and worsened are read
+   from a second fork on which the fills are applied at each name's mark --
+   the live graph's price -- instead of at their own prices: an order's
+   spread and slippage are not counted as a drawdown breach. Every other
+   limit, and equity_before/after, read the fills at their own prices as
+   before; a name with no mark keeps its fill's price. Why: the soak found a
+   stop's flatten and a governor's cut refused on a breached dd-cap because
+   the sale's own cost moved the drawdown a few basis points -- holding the
+   position keeps all its market risk, and the refusal voided R2 for a
+   drawdown trip. The caller decides when a proposal is a reduction
+   (Oms.check_rebalance: every leg shrinks the strategy's own position
+   without crossing zero, and the switch is clear, or tripped by a limit
+   with the book's reduce_through_trip on); nothing here knows a strategy.
+   Cost if wrong: a reduction can take the realised drawdown past its line
+   by at most its own cost. *)
 let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
-    ?(waive_exposure = false) (graph : Graph.t) ~(fills : Fill.t list) : Verdict.t =
+    ?(waive_exposure = false) ?(reductions_at_mark = false) (graph : Graph.t)
+    ~(fills : Fill.t list) : Verdict.t =
   (* The live snapshot first: it stabilizes, so any write the live graph had
      not settled is settled before the fork copies its cells. *)
   let live = Graph.snapshot graph in
@@ -189,8 +206,37 @@ let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
       in
       apply fork fills;
       let after = Graph.snapshot fork in
+      let after_results = Graph.limit_results fork in
+      let is_drawdown (l : Limit.t) =
+        match Limit.kind l with Limit.Max_drawdown _ -> true | _ -> false
+      in
+      let at_mark =
+        if
+          not
+            (reductions_at_mark
+            && List.exists limits_before ~f:(fun (l, _) -> is_drawdown l))
+        then None
+        else
+          let marks = Graph.Snapshot.prices live in
+          let marked = Graph.fork graph in
+          Exn.protect
+            ~finally:(fun () -> Graph.destroy marked)
+            ~f:(fun () ->
+              apply marked base;
+              apply marked
+                (List.map fills ~f:(fun (f : Fill.t) ->
+                     match Map.find marks f.symbol with
+                     | Some price -> { f with price }
+                     | None -> f));
+              Some (Graph.limit_results marked))
+      in
       let moves =
-        List.map2_exn limits_before (Graph.limit_results fork) ~f:(fun (l, b) (_, a) ->
+        List.mapi (List.zip_exn limits_before after_results) ~f:(fun i ((l, b), (_, a)) ->
+            let a =
+              match at_mark with
+              | Some results when is_drawdown l -> snd (List.nth_exn results i)
+              | Some _ | None -> a
+            in
             { Move.limit = Limit.name l; before = b; after = a })
       in
       let created =

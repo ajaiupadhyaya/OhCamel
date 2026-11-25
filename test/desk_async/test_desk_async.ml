@@ -6212,6 +6212,97 @@ let test_one_strategy's_deferral_raising_is_said_and_not_deferred () =
   D.Journal.close journal;
   return ()
 
+(* A REDUCTION NEAR THE DRAWDOWN CAP (Task 1.12), the switch clear: the
+   strategy exp_a01_aapl owns AAPL 1,000 of the account's 1,000 at 100, with
+   900,000 cash, and the equity trail's peak puts the drawdown at 0.995% under
+   a 1% dd-cap. A day limit order is priced a slip past the quote, so selling
+   all 1,000 costs some 150 (0.015%) and, valued at its price, would take the
+   drawdown over the cap; the gate judges a reduction's drawdown at the mark,
+   so the sale goes. A buy of 1,000 (it grows) and a sale of 2,000 (it crosses
+   zero) are not reductions: judged at their prices as before, both are
+   refused, naming dd-cap. *)
+let test_a_reduction_near_the_drawdown_cap_passes_and_a_raise_does_not () =
+  let dd_cap =
+    { Limit.name = "dd-cap"; scope = Limit.Portfolio; kind = Limit.Max_drawdown 0.01 }
+  in
+  let f = fixture ~limits:[ dd_cap ] () in
+  record_close f;
+  Graph.set_qty f.graph aapl (Qty.of_float 1000.0);
+  Graph.set_cash f.graph (Notional.of_float 900_000.0);
+  Graph.set_equity_history f.graph [| 1_000_000.0 /. (1.0 -. 0.00995) |];
+  Graph.stabilize f.graph;
+  let bought =
+    D.Order.create
+      {
+        D.Order.Request.client_order_id =
+          D.Ids.Client_order_id.generate ~now:evening ~rng:(Random.State.make [| 1112 |]);
+        symbol = aapl;
+        side = D.Order.Side.Buy;
+        qty = 1000;
+        kind = D.Order.Kind.Market;
+        tif = D.Order.Tif.Opg;
+      }
+  in
+  D.Journal.insert_order f.journal
+    { bought with D.Order.state = D.Order.State.Filled }
+    ~source:"signal:exp_a01_aapl:0" ~decision_price:(Price.of_float 100.0) ~arrival:None
+    ~verdict:`Null
+    ~at:(Time_ns.sub evening (Time_ns.Span.of_day 1.0));
+  ignore
+    (D.Journal.record_fill f.journal bought
+       {
+         D.Order.Fill.execution_id = "x-1112";
+         qty = 1000.0;
+         price = Price.of_float 100.0;
+         at = Time_ns.sub evening (Time_ns.Span.of_day 1.0);
+         position_qty = None;
+       }
+      : bool);
+  ignore
+    (D.Sim_venue.For_testing.submit_now f.venue
+       {
+         D.Order.Request.client_order_id =
+           D.Ids.Client_order_id.generate ~now:evening ~rng:(Random.State.make [| 1113 |]);
+         symbol = aapl;
+         side = D.Order.Side.Buy;
+         qty = 1000;
+         kind = D.Order.Kind.Market;
+         tif = D.Order.Tif.Day;
+       }
+      : D.Venue.Submission.t);
+  D.Sim_venue.pump f.venue;
+  Alcotest.(check (float 1e-9))
+    "the drawdown sits just under the cap" 0.00995
+    (Graph.current_drawdown f.graph);
+  let oms = manager ~now:(fun () -> morning) ~max_order_notional:500_000.0 f in
+  in_session f oms;
+  let send side qty =
+    D.Oms.send_rebalance oms ~source:aapl_source ~legs:[ rebalance_leg aapl side qty ]
+  in
+  let refused what = function
+    | D.Oms.Rebalance_outcome.Refused why ->
+        Alcotest.(check bool)
+          (what ^ ": refused, naming dd-cap")
+          true
+          (String.is_substring why ~substring:"dd-cap")
+    | other -> Alcotest.failf "%s: %s" what (D.Oms.Rebalance_outcome.to_string other)
+  in
+  let%bind grows = send D.Order.Side.Buy 1000 in
+  refused "a buy of 1,000 grows the strategy's position" grows;
+  let%bind crosses = send D.Order.Side.Sell 2000 in
+  refused "a sale of 2,000 crosses zero" crosses;
+  let received = D.Sim_venue.received f.venue in
+  let%map reduces = send D.Order.Side.Sell 1000 in
+  (match reduces with
+  | D.Oms.Rebalance_outcome.Sent [ _ ] -> ()
+  | other ->
+      Alcotest.failf "the reduction was not sent: %s"
+        (D.Oms.Rebalance_outcome.to_string other));
+  Alcotest.(check int)
+    "the reduction reached the venue" (received + 1)
+    (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph
+
 let suites =
   [
     ( "transport",
@@ -6434,6 +6525,11 @@ let suites =
           test_a_raising_venue_read_does_not_end_the_close;
         case "a raising read does not stop the close"
           test_a_raising_read_does_not_stop_the_close;
+      ] );
+    ( "reductions",
+      [
+        case "a reduction near the drawdown cap passes, and a raise does not"
+          test_a_reduction_near_the_drawdown_cap_passes_and_a_raise_does_not;
       ] );
   ]
 

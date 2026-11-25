@@ -925,8 +925,8 @@ let resting_fills t : (Gate.Fill.t list, string) Result.t =
    The one function [preview] gates through, and so [propose], which takes
    its verdict from [preview]. Every symbol in [fills] must be one the book
    holds; [preview] runs no gate for a ticket that names another. *)
-let gate_scenarios ?(waive_exposure = false) t ~(fills : Gate.Fill.t list) :
-    (Scenarios.t, string) Result.t =
+let gate_scenarios ?(waive_exposure = false) ?(reductions_at_mark = false) t
+    ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.t =
   Result.map (resting_fills t) ~f:(fun resting ->
       let by_symbol fs =
         List.fold fs ~init:Symbol.Map.empty ~f:(fun acc (f : Gate.Fill.t) ->
@@ -980,14 +980,17 @@ let gate_scenarios ?(waive_exposure = false) t ~(fills : Gate.Fill.t list) :
             List.filter_map (List.zip_exn resting taken) ~f:(fun (f, took) ->
                 Option.some_if took f)
           in
-          (scenario, Gate.check t.graph ~base ~trips_on:t.trips_on ~waive_exposure ~fills)))
+          ( scenario,
+            Gate.check t.graph ~base ~trips_on:t.trips_on ~waive_exposure
+              ~reductions_at_mark ~fills )))
 
 (* The gate for orders at their decision prices, each signed by its side:
    what [preview] runs for a ticket's one order and [check_rebalance] for a
    rebalance's many, one call for each combination of them that could be
    its fills (Rebalance.fill_sets). *)
-let gate_orders ?waive_exposure t (priced : (Order.Request.t * Price.t) list) =
-  gate_scenarios ?waive_exposure t
+let gate_orders ?waive_exposure ?reductions_at_mark t
+    (priced : (Order.Request.t * Price.t) list) =
+  gate_scenarios ?waive_exposure ?reductions_at_mark t
     ~fills:
       (List.map priced ~f:(fun ((r : Order.Request.t), price) ->
            {
@@ -2046,9 +2049,27 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
           ~position:(Option.value (Map.find own leg.Rebalance.Leg.symbol) ~default:0.0)
           ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
   in
+  (* A REDUCTION'S DRAWDOWN AT THE MARK (Task 1.12): when every leg shrinks
+     the strategy's own position toward zero without crossing it, the gate
+     judges Max_drawdown with those legs at the mark (Gate.check's
+     [reductions_at_mark]) -- the order's own spread and slippage are not a
+     drawdown breach. While the switch is clear, and under a limit's trip
+     only with the book's reduce_through_trip on; never under a hand's halt
+     or the engine's stop. A leg that grows or crosses zero leaves the whole
+     rebalance judged as before, and every other limit is unchanged. *)
+  let reductions_at_mark =
+    (match Halt.state t.halt with
+      | Halt.State.Clear -> true
+      | Halt.State.Tripped _ -> t.spec.Desk_spec.reduce_through_trip
+      | Halt.State.Halted _ | Halt.State.Stopped _ -> false)
+    && List.for_all legs ~f:(fun (leg : Rebalance.Leg.t) ->
+        Rules.shrinks_position
+          ~position:(Option.value (Map.find own leg.Rebalance.Leg.symbol) ~default:0.0)
+          ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+  in
   let gate ids =
     let orders = List.map ids ~f:(fun i -> (i, by_place.(i))) in
-    match gate_orders ~waive_exposure t (List.map orders ~f:snd) with
+    match gate_orders ~waive_exposure ~reductions_at_mark t (List.map orders ~f:snd) with
     | Error why -> Error why
     | Ok s when Scenarios.passed s -> Ok s
     | Ok s ->

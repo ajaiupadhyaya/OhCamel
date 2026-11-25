@@ -562,9 +562,59 @@ let test_waive_exposure_waives_exposure_and_nothing_else () =
     (names v.Gate.Verdict.created);
   Alcotest.(check bool) "so refused" false (Gate.Verdict.passed v)
 
+(* [reductions_at_mark] (Task 1.12): a reduction's Max_drawdown is judged with
+   its fills at the mark. SPY 1,000 at 100 and 900,000 cash is an equity of
+   1,000,000 against a peak of 1,010,000: a drawdown of 0.990%, under a 1%
+   dd-cap. Selling all 1,000 at 99 costs 1,000: 0.990% -> 1.089%, a breach the
+   sale creates when valued at its price, and none at the mark. With the peak
+   at 1,020,000 the cap is already breached (1.96%), and the same sale takes
+   it further over at its price and leaves it where it was at the mark. The
+   flag moves the drawdown only: the verdict's equity_after is still the
+   price's. *)
+let test_a_reduction's_drawdown_is_judged_at_the_mark () =
+  let spy = Symbol.of_string "SPY" in
+  let dd_cap =
+    { Limit.name = "dd-cap"; scope = Limit.Portfolio; kind = Limit.Max_drawdown 0.01 }
+  in
+  let run ~peak ~at_mark fills =
+    let graph =
+      Graph.create ~starting_cash:(money 900_000.0)
+        ~instruments:[ { Instrument.symbol = spy; sector = Sector.of_string "INDEX" } ]
+        ~limits:[ dd_cap ] ~confidence:0.95 ~return_window:10 ()
+    in
+    Exn.protect
+      ~finally:(fun () -> Graph.destroy graph)
+      ~f:(fun () ->
+        Graph.set_price graph spy (Price.of_float 100.0);
+        Graph.set_qty graph spy (Qty.of_float 1000.0);
+        Graph.set_returns graph spy
+          [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
+        Graph.set_equity_history graph [| peak |];
+        Graph.stabilize graph;
+        Gate.check ~reductions_at_mark:at_mark graph ~fills)
+  in
+  let sale = [ fill spy (-1000.0) 99.0 ] in
+  let v = run ~peak:1_010_000.0 ~at_mark:false sale in
+  Alcotest.(check (pair bool (list string)))
+    "at its price: the sale's cost creates the breach" (false, [ "dd-cap" ])
+    (Gate.Verdict.passed v, names v.Gate.Verdict.created);
+  let v = run ~peak:1_010_000.0 ~at_mark:true sale in
+  Alcotest.(check bool) "at the mark: passes" true (Gate.Verdict.passed v);
+  Alcotest.(check (float 1e-6))
+    "equity_after is still the price's" 999_000.0
+    (Notional.to_float v.Gate.Verdict.equity_after);
+  let v = run ~peak:1_020_000.0 ~at_mark:false sale in
+  Alcotest.(check (pair bool (list string)))
+    "breached already: at its price, further over" (false, [ "dd-cap" ])
+    (Gate.Verdict.passed v, names v.Gate.Verdict.worsened);
+  let v = run ~peak:1_020_000.0 ~at_mark:true sale in
+  Alcotest.(check bool) "at the mark: not worsened, passes" true (Gate.Verdict.passed v)
+
 let suite =
   ( "gate",
     [
+      Alcotest.test_case "a reduction's drawdown is judged at the mark" `Quick
+        test_a_reduction's_drawdown_is_judged_at_the_mark;
       Alcotest.test_case "waive_exposure waives exposure and nothing else" `Quick
         test_waive_exposure_waives_exposure_and_nothing_else;
       Alcotest.test_case "a buy that takes TECH over its cap fails, naming it" `Quick
