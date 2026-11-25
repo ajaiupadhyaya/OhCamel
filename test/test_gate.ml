@@ -480,9 +480,57 @@ let prop_what_the_gate_passes_creates_no_breach_when_traded =
                   || match b with Some b -> not (Breach.breached b) | None -> true)))
            ()))
 
+(* [waive_exposure] (Task 1.9, round 1: a stop's flatten) lets past a breach
+   of an exposure limit and of nothing else. One name, flat; a buy of 100 at
+   150 is 15,000 of gross over a 10,000 book-cap, and 0.02 x 15,000 = 300 of
+   VaR over a $1 var-cap. Waived, book-cap is reported in [waived] and passes;
+   var-cap still refuses, and without the word book-cap refuses too. *)
+let test_waive_exposure_waives_exposure_and_nothing_else () =
+  let spy = Symbol.of_string "SPY" in
+  let run limits ~waive =
+    let graph =
+      Graph.create ~starting_cash:(money 1_000_000.0)
+        ~instruments:[ { Instrument.symbol = spy; sector = Sector.of_string "INDEX" } ]
+        ~limits ~confidence:0.95 ~return_window:10 ()
+    in
+    Exn.protect
+      ~finally:(fun () -> Graph.destroy graph)
+      ~f:(fun () ->
+        Graph.set_price graph spy (Price.of_float 150.0);
+        Graph.set_returns graph spy
+          [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
+        Graph.stabilize graph;
+        Gate.check ~waive_exposure:waive graph ~fills:[ fill spy 100.0 150.0 ])
+  in
+  let book_cap = limit "book-cap" Limit.Portfolio 10_000.0 in
+  let var_cap =
+    {
+      Limit.name = "var-cap";
+      scope = Limit.Portfolio;
+      kind = Limit.Value_at_risk (money 1.0);
+    }
+  in
+  let v = run [ book_cap ] ~waive:true in
+  Alcotest.(check bool) "book-cap waived: passes" true (Gate.Verdict.passed v);
+  Alcotest.(check (list string))
+    "reported as waived" [ "book-cap" ] (names v.Gate.Verdict.waived);
+  Alcotest.(check (list string)) "not as created" [] (names v.Gate.Verdict.created);
+  let v = run [ book_cap ] ~waive:false in
+  Alcotest.(check (list string))
+    "unwaived, created" [ "book-cap" ]
+    (names v.Gate.Verdict.created);
+  Alcotest.(check bool) "and refused" false (Gate.Verdict.passed v);
+  let v = run [ book_cap; var_cap ] ~waive:true in
+  Alcotest.(check (list string))
+    "var-cap is not exposure: still created" [ "var-cap" ]
+    (names v.Gate.Verdict.created);
+  Alcotest.(check bool) "so refused" false (Gate.Verdict.passed v)
+
 let suite =
   ( "gate",
     [
+      Alcotest.test_case "waive_exposure waives exposure and nothing else" `Quick
+        test_waive_exposure_waives_exposure_and_nothing_else;
       Alcotest.test_case "a buy that takes TECH over its cap fails, naming it" `Quick
         test_a_buy_that_takes_tech_over_its_cap_fails_naming_it;
       Alcotest.test_case "the same trade the other way passes" `Quick

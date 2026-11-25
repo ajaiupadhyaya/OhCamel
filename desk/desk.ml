@@ -550,6 +550,9 @@ let body_json ?now t : Yojson.Safe.t =
                      ("var_fraction", jopt jnum f.Journal.Forecast.var_fraction);
                      ("var_notional", jopt jnum f.Journal.Forecast.var_notional);
                      ("es_notional", jopt jnum f.Journal.Forecast.es_notional);
+                     ( "return_window",
+                       Option.value_map f.Journal.Forecast.return_window ~default:`Null
+                         ~f:(fun n -> `Int n) );
                    ])) );
         ( "switch",
           match t.oms with

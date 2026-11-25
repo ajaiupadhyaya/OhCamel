@@ -537,7 +537,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->998<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->106<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->1003<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->106<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -747,6 +747,20 @@ deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant, ohcamel-wor
 **Hold: INC-02.** Deploy no sha at or after `594df16` (completion task 2.1) with `--live` until the owner has
 approved INC-02 and regenerated the live `book.sexp` from `book.example.sexp`. The same applies to `--public-only`,
 which also moves `ohcamel-worker`, whose producers would then read INC-02's draft roster.
+
+**OWNER-PENDING: the risk window (completion Task 1.9).** A `--live` deploy at or after Task 1.9 changes three
+things on the live host even with today's `book.sexp`:
+
+- `var-cap` (in `kill_switch_trips_on`) reads VaR over **250 sessions instead of 60**, because the engine's return
+  window is now the book's `(risk ((var_window ...)))`, default 250. To keep 60, the book writes
+  `(risk ((var_window 60)))`. Every journaled forecast from then on records the window it was made over
+  (`forecasts.return_window`); rows written before it read as not recorded, and every one of them was a
+  60-session forecast.
+- The startup backfill makes **three requests to Alpaca instead of one** (at most 18 names each at 250 sessions,
+  so that no response hits Alpaca's 10,000-bar cap).
+- **Class caps on the live book need TLT in `RATES`.** The example book now puts TLT in `RATES`, its universe
+  group. A book that writes `Class_gross` limits must write one for every sector it holds, so a live book still
+  listing TLT under `TREASURIES` needs either TLT moved to `RATES` or a `TREASURIES` class cap of its own.
 
 `--sha` defaults to `origin/main`, resolved after `git fetch origin`. A run, in
 order: the market guard; `git fetch origin`; a detached checkout of the sha

@@ -204,7 +204,12 @@ let with_oms ?(now = tuesday) ?(session_date = "2026-09-14")
     ?(closes = [ (aapl, 149.0); (msft, 299.0); (xom, 100.0) ])
     ?(spec = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled })
     ?(book_is_current = true) ?(held = [ (aapl, 400.0); (msft, 100.0); (xom, -200.0) ])
-    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_event = ignore) ~f () =
+    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_event = ignore)
+    ?(limits =
+      [
+        limit "aapl-cap" (Limit.Instrument aapl) 80_000.0;
+        limit "tech-cap" (Limit.Sector (Sector.of_string "TECH")) 100_000.0;
+      ]) ~f () =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
@@ -214,12 +219,7 @@ let with_oms ?(now = tuesday) ?(session_date = "2026-09-14")
           { Instrument.symbol = msft; sector = Sector.of_string "TECH" };
           { Instrument.symbol = xom; sector = Sector.of_string "ENERGY" };
         ]
-      ~limits:
-        [
-          limit "aapl-cap" (Limit.Instrument aapl) 80_000.0;
-          limit "tech-cap" (Limit.Sector (Sector.of_string "TECH")) 100_000.0;
-        ]
-      ~confidence:0.95 ~return_window:10 ()
+      ~limits ~confidence:0.95 ~return_window:10 ()
   in
   Exn.protect
     ~finally:(fun () -> Graph.destroy graph)
@@ -701,6 +701,123 @@ let test_both_strategies_of_a_netted_pair_are_sized () =
       Alcotest.(check int)
         "no break alerted" 0
         (List.length (D.Journal.recent_alerts journal ~limit:10)))
+    ()
+
+(* A STOPPED STRATEGY CAN LEAVE (Task 1.9, round 1). The netted pair alone
+   in the book -- alpha +100 AAPL, beta -50, the account +50 (7,500 at 150),
+   MSFT and XOM flat, equity 1,007,500 -- under each exposure limit in turn,
+   each set so the account's +50 is inside it and +100 is over it:
+     name-cap   Name_weight 0.01:  7,500 / 1,007,500 = 0.74%; 100 shares at
+                150 against equity 1,007,500 less the cover's half-spread =
+                1.49%;
+     class-tech Class_gross 0.01 (class-energy 0.35 beside it, so every
+                sector has one): the same figures, TECH holding AAPL alone;
+     book-cap   Gross_notional 10,000: 7,500, then 15,000.
+   beta's stop has latched. Its flatten -- a cover of its own 50 -- raises
+   the account's long, and:
+   - as an ordinary rebalance it is refused, naming the limit, as before;
+   - as the stop's flatten it passes;
+   - as a flatten of a strategy the journal does not say is stopped, or one
+     that would take beta through zero (a cover of 60), it is refused;
+   - once the cover has filled (the account at +100, beta flat), alpha's raise
+     is refused, naming the limit: the breach the flatten left blocks raises
+     as any breach does, and a stop flatten's word does not help alpha. *)
+let exposure_limit_cases =
+  [
+    ( "name-cap",
+      [
+        {
+          Limit.name = "name-cap";
+          scope = Limit.Portfolio;
+          kind = Limit.Name_weight 0.01;
+        };
+      ] );
+    ( "class-tech",
+      [
+        {
+          Limit.name = "class-tech";
+          scope = Limit.Sector (Sector.of_string "TECH");
+          kind = Limit.Class_gross 0.01;
+        };
+        {
+          Limit.name = "class-energy";
+          scope = Limit.Sector (Sector.of_string "ENERGY");
+          kind = Limit.Class_gross 0.35;
+        };
+      ] );
+    ("book-cap", [ limit "book-cap" Limit.Portfolio 10_000.0 ]);
+  ]
+
+let stop journal s =
+  D.Journal.set_strategy_state journal ~strategy:s ~state:`Stopped ~rule:(Some "drawdown")
+    ~at:evening ~detail:"stopped for the test"
+
+let flatten_for oms s legs =
+  D.Oms.check_rebalance ~stop_flatten:true oms ~quotes:(quotes oms) ~source:(source_of s)
+    ~legs
+
+let test_a_stopped_strategy's_flatten_passes_the_exposure_limits () =
+  let flat = [ (aapl, 50.0); (msft, 0.0); (xom, 0.0) ] in
+  List.iter exposure_limit_cases ~f:(fun (name, limits) ->
+      with_oms ~held:flat ~limits
+        ~f:(fun oms journal ->
+          pair_fills journal;
+          let cover = [ leg aapl D.Order.Side.Buy 50 ] in
+          contains
+            (name ^ ": beta's cover, still active, as a flatten")
+            ~substring:(name ^ " would be breached")
+            (refusal (flatten_for oms beta cover));
+          stop journal "beta";
+          contains
+            (name ^ ": beta's cover as an ordinary rebalance")
+            ~substring:(name ^ " would be breached")
+            (refusal (check_for oms beta cover));
+          passes (name ^ ": beta's stop flatten") (flatten_for oms beta cover);
+          contains
+            (name ^ ": a flatten through beta's zero")
+            ~substring:(name ^ " would be breached")
+            (refusal (flatten_for oms beta [ leg aapl D.Order.Side.Buy 60 ]));
+          (* The cover fills: beta flat, the account +100. *)
+          journal_order journal ~n:3 ~source:"signal:beta:2" ~state:D.Order.State.Filled
+            ~fills:[ 50.0 ] 50;
+          set_account oms 100.0;
+          let raise = [ leg aapl D.Order.Side.Buy 10 ] in
+          contains
+            (name ^ ": then alpha's raise")
+            ~substring:(name ^ " would be further over its line")
+            (refusal (check_for oms alpha raise));
+          contains
+            (name ^ ": and alpha's raise called a flatten")
+            ~substring:(name ^ " would be further over its line")
+            (refusal (flatten_for oms alpha raise)))
+        ())
+
+(* Under a trip nothing changes: the switch's own rule (R2, its word on here)
+   lets beta's reduction past the rules, and the gate still refuses the cover
+   that breaches name-cap -- a stop's flatten or not, the same sentence. *)
+let test_under_a_trip_a_stop_flatten_is_gated_as_before () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.restore_trip halt ~limit:"es-cap" ~at:(at "2026-09-14T21:00:00Z");
+  let spec =
+    {
+      Desk_spec.default with
+      Desk_spec.trading = Desk_spec.Enabled;
+      reduce_through_trip = true;
+    }
+  in
+  with_oms ~halt ~spec
+    ~held:[ (aapl, 50.0); (msft, 0.0); (xom, 0.0) ]
+    ~limits:(snd (List.hd_exn exposure_limit_cases))
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      stop journal "beta";
+      let cover = [ leg aapl D.Order.Side.Buy 50 ] in
+      let ordinary = refusal (check_for oms beta cover) in
+      let flatten = refusal (flatten_for oms beta cover) in
+      contains "tripped: the gate refuses the flatten"
+        ~substring:"name-cap would be breached" flatten;
+      Alcotest.(check string)
+        "and says exactly what it says to an ordinary rebalance" ordinary flatten)
     ()
 
 (* The account at +40: a break, {AAPL; 50; 40}. Seen once it refuses
@@ -2046,6 +2163,10 @@ let suite =
       Alcotest.test_case "a desk order's limit is off the far side of the quote" `Quick
         test_a_desk_order's_limit_is_off_the_far_side_of_the_quote;
       Alcotest.test_case "drop_small" `Quick test_drop_small;
+      Alcotest.test_case "a stopped strategy's flatten passes the exposure limits" `Quick
+        test_a_stopped_strategy's_flatten_passes_the_exposure_limits;
+      Alcotest.test_case "under a trip a stop flatten is gated as before" `Quick
+        test_under_a_trip_a_stop_flatten_is_gated_as_before;
       Alcotest.test_case "the floor is the adjust pass's, never on a closing leg" `Quick
         test_the_floor_is_never_on_a_closing_leg;
       Alcotest.test_case "every leg is a day limit off its quote" `Quick

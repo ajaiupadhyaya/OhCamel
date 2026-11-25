@@ -782,6 +782,7 @@ let test_api_desk_shows_the_last_thirty_sessions_and_the_latest_forecasts () =
           var_fraction = Some var_fraction;
           var_notional = None;
           es_notional = None;
+          return_window = Some 250;
         }
       in
       Journal.record_forecasts journal

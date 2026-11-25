@@ -94,6 +94,11 @@ module Verdict = struct
        in book order; empty otherwise. Kept beside [outcome] so a breach
        that outranks them still leaves them in the reasons. *)
     unknown_trips : string list;
+    (* Exposure limits ([is_exposure]) the fills would breach or take
+       further over, which a stop's flatten is let through anyway
+       ([waive_exposure]); empty for every other proposal, whose created and
+       worsened hold them instead. *)
+    waived : Move.t list;
     gross_before : Notional.t;
     gross_after : Notional.t;
     equity_before : Notional.t;
@@ -128,6 +133,17 @@ end
 
 let breached = function Some b -> Breach.breached b | None -> false
 
+(* The limits that cap EXPOSURE -- how much the book holds, in a name, a
+   class or the whole -- as opposed to risk statistics (VaR, shortfall,
+   component VaR, Greeks) and the drawdown. A stop's flatten may breach
+   these and nothing else ([waive_exposure]). *)
+let is_exposure (kind : Limit.kind) =
+  match kind with
+  | Limit.Gross_notional _ | Limit.Name_weight _ | Limit.Class_gross _ -> true
+  | Limit.Value_at_risk _ | Limit.Expected_shortfall _ | Limit.Component_var _
+  | Limit.Max_drawdown _ | Limit.Greek_limit _ ->
+      false
+
 let apply (graph : Graph.t) (fills : Fill.t list) =
   List.iter fills ~f:(fun (f : Fill.t) ->
       Graph.apply_fill graph
@@ -136,8 +152,21 @@ let apply (graph : Graph.t) (fills : Fill.t list) =
 (* [base] is optional and comes first so that it is erased by the graph
    argument: every call without one reads exactly as it did before it
    existed. *)
-let check ?(base : Fill.t list = []) ?(trips_on : string list = []) (graph : Graph.t)
-    ~(fills : Fill.t list) : Verdict.t =
+(* A STOP'S FLATTEN IS NOT HELD BY AN EXPOSURE LIMIT (Task 1.9, round 1).
+   With [waive_exposure], a breach the fills create or worsen on an exposure
+   limit ([is_exposure]: a Gross_notional at any scope, a Name_weight, a
+   Class_gross) does not refuse them: it is reported in [waived] instead.
+   Why: these limits read the ACCOUNT's position, and with two strategies on
+   opposite sides of one name, the short's cover raises the account's long.
+   A strategy whose stop has latched must be able to leave, whatever the
+   other strategy holds; the breach its flatten leaves then refuses every
+   raise as usual. Every other limit -- the risk statistics, the drawdown --
+   still refuses, and so does an unevaluable trip-limit on a raise. The
+   caller decides when a proposal is such a flatten (Oms.check_rebalance:
+   a latched stop, every leg shrinking the strategy's own position without
+   crossing zero, and the switch clear); nothing here knows a strategy. *)
+let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
+    ?(waive_exposure = false) (graph : Graph.t) ~(fills : Fill.t list) : Verdict.t =
   (* The live snapshot first: it stabilizes, so any write the live graph had
      not settled is settled before the fork copies its cells. *)
   let live = Graph.snapshot graph in
@@ -172,6 +201,14 @@ let check ?(base : Fill.t list = []) ?(trips_on : string list = []) (graph : Gra
                 && Float.( > ) (Breach.excess a) (Breach.excess b +. epsilon)
             | _ -> false)
       in
+      let waivable (m : Move.t) =
+        waive_exposure
+        && List.exists limits_before ~f:(fun (l, _) ->
+            String.equal (Limit.name l) m.Move.limit && is_exposure (Limit.kind l))
+      in
+      let waived = List.filter (created @ worsened) ~f:waivable in
+      let created = List.filter created ~f:(fun m -> not (waivable m)) in
+      let worsened = List.filter worsened ~f:(fun m -> not (waivable m)) in
       let cleared =
         List.filter moves ~f:(fun m ->
             breached m.before
@@ -208,6 +245,7 @@ let check ?(base : Fill.t list = []) ?(trips_on : string list = []) (graph : Gra
         cleared;
         unevaluable;
         unknown_trips;
+        waived;
         gross_before;
         gross_after;
         equity_before = before.Graph.Snapshot.equity;

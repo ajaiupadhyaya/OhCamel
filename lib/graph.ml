@@ -1592,25 +1592,44 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
          uses -- times gross, which is the book's P&L in dollars (see
          [to_notional]). Only a FULL window: fewer sessions than the window is
          a different statistic (a 99% tail of 249 days is not one of 250) and
-         is unevaluable rather than computed over what there is. *)
+         is unevaluable rather than computed over what there is.
+
+         The window is aligned over the names the book HOLDS (a non-zero
+         weight), not over every name it declares, as [aligned_returns] is
+         (Task 1.9, round 1): a name held at zero contributes nothing to the
+         book's P&L, and a recently listed one with a short history would
+         otherwise cap the window, leave the limit unevaluable, and -- the
+         switch tripping on it -- refuse every raise in every other name. A
+         proposal that buys such a name makes it held, and the fork then
+         reads the limit unevaluable: the risk of that buy cannot be measured,
+         and it is refused as an unknown trip-limit is. A book holding
+         nothing has no shortfall: 0. *)
       | Limit.Expected_shortfall _, Limit.Portfolio ->
-          Inc.map2 portfolio_returns_node gross_node ~f:(fun returns gross ->
+          let windows = Inc.all (List.map (Map.data returns_vars) ~f:Inc.Var.watch) in
+          Inc.map3 windows weights_node gross_node ~f:(fun series weights gross ->
               note name;
-              match returns with
-              | Some returns when Array.length returns >= return_window ->
-                  let window =
-                    Array.sub returns
-                      ~pos:(Array.length returns - return_window)
-                      ~len:return_window
-                  in
-                  let fraction =
-                    Risk_metrics.expected_shortfall_interpolated ~returns:window
-                      ~confidence:es_confidence
-                  in
-                  Some
-                    (Limits.evaluate ~limit
-                       ~observed:(fraction *. Notional.to_float gross))
-              | Some _ | None -> None)
+              let held =
+                List.filter_mapi series ~f:(fun i s ->
+                    if Float.equal weights.(i) 0.0 then None else Some (weights.(i), s))
+              in
+              let common =
+                List.fold held ~init:Int.max_value ~f:(fun acc (_, s) ->
+                    Int.min acc (Array.length s))
+              in
+              if List.is_empty held then Some (Limits.evaluate ~limit ~observed:0.0)
+              else if common < return_window then None
+              else
+                let window =
+                  Array.init return_window ~f:(fun t ->
+                      List.fold held ~init:0.0 ~f:(fun acc (w, s) ->
+                          acc +. (w *. s.(Array.length s - return_window + t))))
+                in
+                let fraction =
+                  Risk_metrics.expected_shortfall_interpolated ~returns:window
+                    ~confidence:es_confidence
+                in
+                Some
+                  (Limits.evaluate ~limit ~observed:(fraction *. Notional.to_float gross)))
       (* Component VaR limits. Note what is NOT here: [Float.abs].
 
        [of_magnitude] above absolute-values an exposure, because a $50,000 short
@@ -2664,6 +2683,10 @@ let returns (t : t) (symbol : Symbol.t) : float array =
 
 let equity_history (t : t) : float array = Inc.Var.value t.equity_history_var
 let drawdown_window (t : t) : int = t.drawdown_window
+
+(* The return window, in sessions: what a journaled forecast was made over
+   (desk/session_close.ml, Task 1.9 round 1). *)
+let return_window (t : t) : int = t.return_window
 
 (* The macro factor's return window. Set wholesale rather than appended to,
    because fred_client.ml re-fetches the whole series on each poll -- FRED

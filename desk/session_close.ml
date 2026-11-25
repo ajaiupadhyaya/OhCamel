@@ -108,8 +108,8 @@ let roll_plan ~(date : Date.t) ~(symbols : Symbol.t list) ~(silent : Symbol.Set.
    gross. The parametric estimators have no notional node, so the same
    multiplication is applied to their fractions here -- by the one number the
    graph multiplies by, not by a second definition of VaR. *)
-let forecasts ~(date : Date.t) ~(confidence : float) (s : Graph.Snapshot.t) :
-    Journal.Forecast.t list =
+let forecasts ~(date : Date.t) ~(confidence : float) ~(return_window : int)
+    (s : Graph.Snapshot.t) : Journal.Forecast.t list =
   let gross = Notional.to_float (Graph.Snapshot.gross_exposure s) in
   let dollars = Option.map ~f:(fun f -> f *. gross) in
   let row estimator var_fraction var_notional es_notional =
@@ -120,6 +120,7 @@ let forecasts ~(date : Date.t) ~(confidence : float) (s : Graph.Snapshot.t) :
       var_fraction;
       var_notional;
       es_notional;
+      return_window = Some return_window;
     }
   in
   [
@@ -385,7 +386,8 @@ let record ~(session_bars : Venue.Bar.t Symbol.Map.t) ~(graph : Graph.t)
             ~source:(fun symbol ->
               Option.value (Map.find sources symbol) ~default:`Last_print)
             (List.map marked ~f:fst);
-          Journal.record_forecasts journal (forecasts ~date ~confidence s);
+          Journal.record_forecasts journal
+            (forecasts ~date ~confidence ~return_window:(Graph.return_window fork) s);
           Journal.record_session journal
             {
               Journal.Session.date;

@@ -948,11 +948,7 @@ module Book = struct
         ~parts:
           (List.filter_map each ~f:(fun l ->
                raised (fun () -> Limits.validate_members ~instruments [ l ])))
-        ~wholes:
-          [
-            raised (fun () -> Limits.validate ~instruments each);
-            raised (fun () -> Limits.validate_class_coverage ~instruments each);
-          ]
+        ~wholes:[ raised (fun () -> Limits.validate ~instruments each) ]
     in
     let alert_errors = Option.to_list (returned (Alerts.validate t.alerts)) in
     let position_errors =

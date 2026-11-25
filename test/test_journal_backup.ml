@@ -140,6 +140,7 @@ let fill_a_journal j =
         var_fraction = Some 0.0123;
         var_notional = Some 1_107.0;
         es_notional = None;
+        return_window = Some 60;
       };
     ];
   Journal.record_alert j

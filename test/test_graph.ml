@@ -2099,6 +2099,48 @@ let test_expected_shortfall_without_a_full_window_is_unevaluable () =
         (Option.is_some (limit_result graph "es-cap")))
     ()
 
+(* A name held at zero cannot freeze the shortfall (Task 1.9, round 1). QQQ,
+   held at nothing, has only 100 sessions -- a recent listing -- while SPY
+   and TLT have 250. The window is aligned over the names held, so es-cap
+   still reads the fixture's $4,200 and a raise in SPY is judged on it. A
+   proposal that buys QQQ makes it held, and on that fork the shortfall
+   cannot be measured: refused as an unknown trip-limit, naming es-cap. *)
+let test_a_short_history_held_at_zero_does_not_freeze_the_shortfall () =
+  let graph =
+    Graph.create ~starting_cash:(dollars 900_000.0) ~instruments:etf_book
+      ~limits:es_limits ~confidence:0.95 ~return_window:250 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph spy (Price.of_float 500.0);
+      Graph.set_price graph qqq (Price.of_float 400.0);
+      Graph.set_price graph tlt (Price.of_float 100.0);
+      Graph.set_qty graph spy (Qty.of_float 200.0);
+      Graph.set_returns graph spy es_fixture;
+      Graph.set_returns graph qqq (Array.create ~len:100 0.001);
+      Graph.set_returns graph tlt (Array.create ~len:250 0.0);
+      let s = Graph.snapshot graph in
+      Alcotest.check float_eq "es-cap reads over the held names' 250 sessions" 4_200.0
+        (Breach.observed (find_breach s "es-cap"));
+      let fill symbol qty price =
+        { Ohcamel.Gate.Fill.symbol; qty = Qty.of_float qty; price = Price.of_float price }
+      in
+      let sell_spy =
+        Ohcamel.Gate.check ~trips_on:[ "es-cap" ] graph ~fills:[ fill spy (-10.0) 500.0 ]
+      in
+      Alcotest.(check (list string))
+        "a trade in SPY is judged on it, never unknown" []
+        (List.map sell_spy.Ohcamel.Gate.Verdict.unevaluable ~f:(fun m ->
+             m.Ohcamel.Gate.Move.limit));
+      let buy_qqq =
+        Ohcamel.Gate.check ~trips_on:[ "es-cap" ] graph ~fills:[ fill qqq 10.0 400.0 ]
+      in
+      Alcotest.(check bool)
+        "buying QQQ makes it held, and its 100 sessions cannot fill the window" true
+        (Ohcamel.Gate.Outcome.equal buy_qqq.Ohcamel.Gate.Verdict.outcome
+           (Ohcamel.Gate.Outcome.Refused_unevaluable [ "es-cap" ])))
+
 (* The confidence is the book's (Config.Risk.es_confidence), not the graph's
    VaR confidence. At 97.5% the tail is 2.5% of 250 = 6.25 observations: the
    three tail days, then three of the -0.005 days (i mod 11 = 0) at full
@@ -2721,6 +2763,8 @@ let suite =
         test_expected_shortfall_without_a_full_window_is_unevaluable;
       Alcotest.test_case "ES: reads its own confidence" `Quick
         test_expected_shortfall_reads_its_own_confidence;
+      Alcotest.test_case "ES: a short history held at zero does not freeze it" `Quick
+        test_a_short_history_held_at_zero_does_not_freeze_the_shortfall;
       Alcotest.test_case "ETF: the topology names the new kinds" `Quick
         test_the_topology_names_the_new_kinds;
       Alcotest.test_case "an unknown symbol is loud" `Quick test_unknown_symbol_is_loud;

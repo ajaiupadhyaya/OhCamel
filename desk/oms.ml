@@ -820,6 +820,7 @@ module Preview = struct
                     ("worsened", moves_json v.Gate.Verdict.worsened);
                     ("cleared", moves_json v.Gate.Verdict.cleared);
                     ("unevaluable", moves_json v.Gate.Verdict.unevaluable);
+                    ("waived", moves_json v.Gate.Verdict.waived);
                     ("gross_before", money v.Gate.Verdict.gross_before);
                     ("gross_after", money v.Gate.Verdict.gross_after);
                     ("equity_before", money v.Gate.Verdict.equity_before);
@@ -924,7 +925,8 @@ let resting_fills t : (Gate.Fill.t list, string) Result.t =
    The one function [preview] gates through, and so [propose], which takes
    its verdict from [preview]. Every symbol in [fills] must be one the book
    holds; [preview] runs no gate for a ticket that names another. *)
-let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.t =
+let gate_scenarios ?(waive_exposure = false) t ~(fills : Gate.Fill.t list) :
+    (Scenarios.t, string) Result.t =
   Result.map (resting_fills t) ~f:(fun resting ->
       let by_symbol fs =
         List.fold fs ~init:Symbol.Map.empty ~f:(fun acc (f : Gate.Fill.t) ->
@@ -978,14 +980,14 @@ let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.
             List.filter_map (List.zip_exn resting taken) ~f:(fun (f, took) ->
                 Option.some_if took f)
           in
-          (scenario, Gate.check t.graph ~base ~trips_on:t.trips_on ~fills)))
+          (scenario, Gate.check t.graph ~base ~trips_on:t.trips_on ~waive_exposure ~fills)))
 
 (* The gate for orders at their decision prices, each signed by its side:
    what [preview] runs for a ticket's one order and [check_rebalance] for a
    rebalance's many, one call for each combination of them that could be
    its fills (Rebalance.fill_sets). *)
-let gate_orders t (priced : (Order.Request.t * Price.t) list) =
-  gate_scenarios t
+let gate_orders ?waive_exposure t (priced : (Order.Request.t * Price.t) list) =
+  gate_scenarios ?waive_exposure t
     ~fills:
       (List.map priced ~f:(fun ((r : Order.Request.t), price) ->
            {
@@ -1803,7 +1805,7 @@ end
    refused order failed for timing alone (Rules.is_timing_refusal): the
    rebalance may go later unchanged ([Rebalance_outcome.Not_now]). Every
    other refusal leaves it false. *)
-let check_rebalance ?(timing = ref false) t
+let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
     ~(quotes : Symbol.t -> Rebalance.Fetched.t option) ~(source : Rebalance.Source.t)
     ~(legs : Rebalance.Leg.t list) : (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
@@ -2019,9 +2021,33 @@ let check_rebalance ?(timing = ref false) t
         (if n - k = 1 then "" else "s")
         (if n - k = 1 then "is" else "are")
   in
+  (* A STOP'S FLATTEN (Task 1.9, round 1): the intake says the rebalance is
+     one ([stop_flatten]), and it is let past the exposure limits' created
+     and worsened (Gate.check's [waive_exposure]) only when all of this is
+     so here: the journal says the strategy's stop has latched; every leg
+     shrinks the strategy's own position without crossing zero; and the
+     switch is clear. Under a trip nothing changes -- R2's word decides what
+     a trip lets through, and the gate judges it as it always has. An
+     ordinary rebalance is never waived. *)
+  let waive_exposure =
+    stop_flatten
+    && (match Halt.state t.halt with
+      | Halt.State.Clear -> true
+      | Halt.State.Tripped _ | Halt.State.Halted _ | Halt.State.Stopped _ -> false)
+    && (match
+          Or_error.try_with (fun () ->
+              Journal.strategy_state t.journal ~strategy:source.Rebalance.Source.strategy)
+        with
+      | Ok (Some (`Stopped, _, _, _)) -> true
+      | Ok (Some (`Active, _, _, _)) | Ok None | Error _ -> false)
+    && List.for_all legs ~f:(fun (leg : Rebalance.Leg.t) ->
+        Rules.shrinks_position
+          ~position:(Option.value (Map.find own leg.Rebalance.Leg.symbol) ~default:0.0)
+          ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+  in
   let gate ids =
     let orders = List.map ids ~f:(fun i -> (i, by_place.(i))) in
-    match gate_orders t (List.map orders ~f:snd) with
+    match gate_orders ~waive_exposure t (List.map orders ~f:snd) with
     | Error why -> Error why
     | Ok s when Scenarios.passed s -> Ok s
     | Ok s ->
@@ -2075,8 +2101,8 @@ let check_rebalance ?(timing = ref false) t
    sends nothing. After it, what the venue has taken it has; an order already
    acknowledged when the switch is set is cancelled by the switch's own
    machinery ([record], [cancel_all]), as any open order is. *)
-let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
-    Rebalance_outcome.t Deferred.t =
+let send_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
+    ~(legs : Rebalance.Leg.t list) : Rebalance_outcome.t Deferred.t =
   enqueue t (fun () ->
       match send_window t with
       | Some why -> return (Rebalance_outcome.Not_now ("session: " ^ why))
@@ -2096,7 +2122,9 @@ let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t lis
             Option.join (List.Assoc.find fetched symbol ~equal:Symbol.equal)
           in
           let timing = ref false in
-          match check_rebalance ~timing t ~quotes:quote_of ~source ~legs with
+          match
+            check_rebalance ~timing ?stop_flatten t ~quotes:quote_of ~source ~legs
+          with
           | Error why when !timing -> return (Rebalance_outcome.Not_now why)
           | Error why -> return (Rebalance_outcome.Refused why)
           | Ok { Checked_rebalance.orders; gate; own } -> (
@@ -2285,8 +2313,8 @@ let cancel_rebalance t ~(source : Rebalance.Source.t) : unit Deferred.t =
    nothing journaled; a rebalance of one wave that settled inside its wait
    is that wave's own outcome ([Sent], or [Stopped]); anything else -- more
    than one wave, or a wait that ran out -- is [Waved]. *)
-let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
-    Rebalance_outcome.t Deferred.t =
+let propose_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
+    ~(legs : Rebalance.Leg.t list) : Rebalance_outcome.t Deferred.t =
   let position symbol =
     if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
     else 0.0
@@ -2304,7 +2332,7 @@ let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t 
   let rec go sent = function
     | [] -> return (finish sent ~timed_out:false)
     | wave :: rest -> (
-        match%bind send_rebalance t ~source ~legs:wave with
+        match%bind send_rebalance ?stop_flatten t ~source ~legs:wave with
         | (Rebalance_outcome.Refused _ | Rebalance_outcome.Not_now _) as refused
           when List.is_empty sent ->
             return refused

@@ -147,6 +147,7 @@ let test_an_unknown_forecast_stays_unknown () =
       var_fraction = Some 0.0123;
       var_notional = Some 1_107.0;
       es_notional = Some 1_530.5;
+      return_window = Some 250;
     }
   in
   let warming =
@@ -169,7 +170,9 @@ let test_an_unknown_forecast_stays_unknown () =
   Alcotest.(check (option (float 1e-12)))
     "a known fraction round-trips" (Some 0.0123) historical.Journal.Forecast.var_fraction;
   Alcotest.(check (option (float 1e-9)))
-    "and its notional" (Some 1_107.0) historical.Journal.Forecast.var_notional
+    "and its notional" (Some 1_107.0) historical.Journal.Forecast.var_notional;
+  Alcotest.(check (option int))
+    "and the window it was made over" (Some 250) historical.Journal.Forecast.return_window
 
 let test_marks_round_trip_in_symbol_order () =
   let j = open_exn ":memory:" in
@@ -1009,6 +1012,56 @@ let test_task_1_8's_tables_migrate_an_older_journal () =
         | Ok r -> r.Journal.Report.schema_version
         | Error e -> Alcotest.failf "verify: %s" e))
 
+(* Task 1.9, round 1: each forecast journals the return window it was made
+   over, so a backtest can split a 60-session series from a 250-session one.
+   On a journal written before the column -- cut back to that shape by hand,
+   one forecast in it -- opening adds the column once, the old row reads its
+   window as None (not recorded; never a guessed 60), a new row reads its
+   own, and opening again adds nothing; the file stays schema version 1. *)
+let test_a_forecast's_window_migrates_an_older_journal () =
+  with_temp_path ~f:(fun path ->
+      let forecast d window =
+        {
+          Journal.Forecast.date = date d;
+          estimator = "historical";
+          confidence = 0.95;
+          var_fraction = Some 0.01;
+          var_notional = Some 900.0;
+          es_notional = None;
+          return_window = window;
+        }
+      in
+      let j = open_exn path in
+      Journal.record_forecasts j [ forecast "2026-11-20" None ];
+      Journal.close j;
+      let db = Sqlite3.db_open path in
+      (match Sqlite3.exec db "ALTER TABLE forecasts DROP COLUMN return_window" with
+      | Sqlite3.Rc.OK -> ()
+      | rc -> Alcotest.failf "drop: %s" (Sqlite3.Rc.to_string rc));
+      ignore (Sqlite3.db_close db : bool);
+      let count j =
+        List.count
+          (Journal.For_testing.columns j ~table:"forecasts")
+          ~f:(String.equal "return_window")
+      in
+      let j = open_exn path in
+      Alcotest.(check int) "the column, once" 1 (count j);
+      Journal.record_forecasts j [ forecast "2026-11-24" (Some 250) ];
+      Alcotest.(check (list (pair string (option int))))
+        "the old row's window unrecorded, the new one's 250"
+        [ ("2026-11-20", None); ("2026-11-24", Some 250) ]
+        (List.map (Journal.forecasts j) ~f:(fun f ->
+             (Date.to_string f.Journal.Forecast.date, f.Journal.Forecast.return_window)));
+      Journal.close j;
+      let j = open_exn path in
+      Alcotest.(check int) "opened again: nothing added twice" 1 (count j);
+      Journal.close j;
+      Alcotest.(check (option string))
+        "schema version 1" (Some "1")
+        (match Journal.verify path with
+        | Ok r -> r.Journal.Report.schema_version
+        | Error e -> Alcotest.failf "verify: %s" e))
+
 let tlt = Symbol.of_string "TLT"
 
 let div_activity ?(id = "20261106000000000::a") () =
@@ -1100,6 +1153,8 @@ let suite =
     [
       Alcotest.test_case "Task 1.8's tables migrate an older journal" `Quick
         test_task_1_8's_tables_migrate_an_older_journal;
+      Alcotest.test_case "a forecast's window migrates an older journal" `Quick
+        test_a_forecast's_window_migrates_an_older_journal;
       Alcotest.test_case "cash events are recorded once" `Quick
         test_cash_events_are_recorded_once;
       Alcotest.test_case "a last-print mark is re-marked from the bar" `Quick

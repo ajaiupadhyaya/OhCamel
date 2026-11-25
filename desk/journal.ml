@@ -277,6 +277,16 @@ let added_columns =
        before this column -- is a pair of numbers whose age nothing records, and
        its cost is not measured (Stop.arrival_mid). *)
     ("orders", "arrival_at", "TEXT");
+    (* How many daily returns a forecast's window held (Task 1.9, round 1):
+       the engine's return window, 60 sessions until the book's var_window
+       (250 by default) became it. NULL on a row written before it was
+       recorded -- read as None, "not recorded", never as a guess. Every such
+       row was in fact written over 60 sessions (Config.Runtime's
+       return_window was a constant 60, with no override, from before the
+       forecasts table existed until Task 1.9), which docs/status.md says
+       for whoever scores them; the journal itself states only what it
+       recorded. *)
+    ("forecasts", "return_window", "INTEGER");
   ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
@@ -931,6 +941,9 @@ module Forecast = struct
     var_fraction : float option;
     var_notional : float option;
     es_notional : float option;
+    (* The return window the forecast was made over, in sessions; None on a
+       row journaled before the window was recorded (see added_columns). *)
+    return_window : int option;
   }
   [@@deriving sexp_of, compare, equal]
 end
@@ -940,7 +953,8 @@ let record_forecasts t (fs : Forecast.t list) =
       List.iter fs ~f:(fun (f : Forecast.t) ->
           run t ~what:"forecast"
             "INSERT OR REPLACE INTO forecasts (date, estimator, confidence, \
-             var_fraction, var_notional, es_notional) VALUES (?, ?, ?, ?, ?, ?)"
+             var_fraction, var_notional, es_notional, return_window) VALUES (?, ?, ?, ?, \
+             ?, ?, ?)"
             [
               date f.date;
               text f.estimator;
@@ -948,10 +962,13 @@ let record_forecasts t (fs : Forecast.t list) =
               opt_real f.var_fraction;
               opt_real f.var_notional;
               opt_real f.es_notional;
+              (match f.return_window with
+              | Some n -> Data.INT (Int64.of_int n)
+              | None -> Data.NULL);
             ]))
 
 let forecast_columns =
-  "date, estimator, confidence, var_fraction, var_notional, es_notional"
+  "date, estimator, confidence, var_fraction, var_notional, es_notional, return_window"
 
 let forecast_of_row r =
   {
@@ -961,6 +978,11 @@ let forecast_of_row r =
     var_fraction = col_opt_real r 3;
     var_notional = col_opt_real r 4;
     es_notional = col_opt_real r 5;
+    return_window =
+      (match r.(6) with
+      | Data.INT n -> Some (Int64.to_int_exn n)
+      | Data.FLOAT x -> Some (Float.iround_nearest_exn x)
+      | _ -> None);
   }
 
 let forecasts t =

@@ -166,6 +166,10 @@ module Forecast : sig
     var_fraction : float option;
     var_notional : float option;
     es_notional : float option;
+    return_window : int option;
+        (** The return window the forecast was made over, in sessions. None on a row
+            journaled before the window was recorded (Task 1.9, round 1); every such row
+            was written over 60 sessions, which the journal does not claim for itself. *)
   }
   [@@deriving sexp_of, compare, equal]
 end

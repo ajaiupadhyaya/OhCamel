@@ -1553,6 +1553,10 @@ let rebalance ?(floor = true) ?(sizing_mode = "open") ?(only_shrink = false) ?no
                   sprintf "%s %s %d (%.2f)" (Symbol.to_string l.symbol)
                     (Order.Side.to_string l.side) l.qty l.price)))
       in
+      (* The stop's flatten (note "stop") is let past the exposure limits by
+         the order manager when its stop has latched and every leg shrinks
+         its own position (Oms.check_rebalance, Task 1.9 round 1). *)
+      let stop_flatten = Option.equal String.equal note (Some "stop") in
       match waiting with
       | Some why ->
           return
@@ -1587,7 +1591,9 @@ let rebalance ?(floor = true) ?(sizing_mode = "open") ?(only_shrink = false) ?no
              no sizing row, so the next pass plans again -- the shrunk names
              are then at their targets and only the growing legs remain, held. *)
               let growing, shrinking = List.partition_tf legs ~f:(grows oms strategy) in
-              let%map outcome = Oms.propose_rebalance oms ~source ~legs:shrinking in
+              let%map outcome =
+                Oms.propose_rebalance ~stop_flatten oms ~source ~legs:shrinking
+              in
               {
                 Rebalanced.sentence =
                   sprintf
@@ -1606,7 +1612,7 @@ let rebalance ?(floor = true) ?(sizing_mode = "open") ?(only_shrink = false) ?no
                   | Refused _ | Not_now _ -> false);
               }
           | Ok (legs, dropped) ->
-              let%map outcome = Oms.propose_rebalance oms ~source ~legs in
+              let%map outcome = Oms.propose_rebalance ~stop_flatten oms ~source ~legs in
               if sized_whole outcome then sized ();
               {
                 Rebalanced.sentence =
