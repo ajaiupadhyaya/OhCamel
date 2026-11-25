@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 from pathlib import Path
 
@@ -227,7 +228,8 @@ def _fm_panel(seed: int = 11, n_t: int = 240, n_a: int = 150, premium: float = 0
 def test_fama_macbeth_recovers_a_half_percent_premium_and_shanken_widens_the_error():
     ret, exposures, factors = _fm_panel()
     for kw in ({}, {"factors": factors}):
-        res = fm.fama_macbeth(ret, exposures, **kw)
+        with (pytest.warns(UserWarning, match="proxy") if not kw else contextlib.nullcontext()):
+            res = fm.fama_macbeth(ret, exposures, **kw)
         lam, se = res.premia["beta"], res.se_nw["beta"]
         assert abs(lam - 0.005) < 2 * se, (lam, se)
         assert res.shanken_c > 1.0
@@ -238,7 +240,7 @@ def test_fama_macbeth_recovers_a_half_percent_premium_and_shanken_widens_the_err
 
 def test_fama_macbeth_is_the_time_series_mean_of_per_period_ols():
     ret, exposures, _ = _fm_panel(n_t=60, n_a=40)
-    res = fm.fama_macbeth(ret, exposures, nw_lags=3)
+    res = fm.fama_macbeth(ret, exposures, nw_lags=3, shanken=False)
     b = exposures["beta"].iloc[0].to_numpy()
     lam_t = [sm.OLS(ret.iloc[t].to_numpy(), sm.add_constant(b)).fit().params for t in range(60)]
     assert np.allclose(res.lambdas.to_numpy(), np.array(lam_t), atol=1e-12)
@@ -252,7 +254,7 @@ def test_fama_macbeth_uses_the_exposures_it_is_given_without_peeking():
     # a date whose exposures are missing is skipped; shifting returns against exposures changes the answer
     ret, exposures, _ = _fm_panel(n_t=80, n_a=30)
     exposures["beta"].iloc[5] = np.nan
-    assert fm.fama_macbeth(ret, exposures).n_periods == 79
+    assert fm.fama_macbeth(ret, exposures, shanken=False).n_periods == 79
     with pytest.raises(ValueError, match="too few"):
         fm.fama_macbeth(ret.iloc[:, :2], {"beta": exposures["beta"].iloc[:, :2]})
 
