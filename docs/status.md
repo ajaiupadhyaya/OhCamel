@@ -803,10 +803,13 @@ part (about twenty minutes cold) and is what the droplet's 4 GB was sized for.
 
 ### Deploying the desk (completion Task 1.12)
 
-*The owner's deploy, and only the owner's.* No agent deploys, resets the switch, or edits `book.sexp`. The kill
-switch has been tripped by `dd-cap` since 2026-11-05, and the desk has been halted by hand since 2026-11-16.
-Lifting either is the owner's decision alone. The steps below assume both still stand after the deploy, and they
-check exactly that.
+*The owner's deploy, and only the owner's.* No agent deploys, resets the switch, or edits `book.sexp`.
+
+**What protects the desk now is the hand's halt, not a trip.** The kill switch tripped on `dd-cap` on 2026-11-05.
+That trip was lost at the 2026-11-16 01:20Z restart (the `fff8933` deploy), because that build did not yet journal
+trips. The desk has been **halted by hand** since 2026-11-16 01:39Z, on the owner's instruction. A hand's halt is
+journaled and survives restarts, and only the owner lifts it. The steps below assume the halt still stands after
+the deploy, and they check exactly that.
 
 **Before** (each item points to its own text above):
 
@@ -824,7 +827,8 @@ check exactly that.
 5. **Outside 09:25-17:10 New York.** The guard refuses a `--live` deploy then; do not pass `--during-market`.
    The same window rules out any restart of `ohcamel-live`.
 6. **R2 (`reduce_through_trip`) stays `false` on the live book** until the owner approves ruling R2. What
-   approving it means for the trip this desk actually has:
+   approving it means for a `dd-cap` trip (the trip the live desk had from 2026-11-05 to 11-16). R2 never lets
+   anything through a hand's halt:
    - Before `88040b3`, R2 could not let a stop's flatten or a governor's cut out under a `dd-cap` trip. The
      pre-trade gate refused every such sale, because the sale's own spread pushed the breached drawdown a few
      basis points further over the line.
@@ -852,18 +856,22 @@ docker exec ohcamel-ohcamel-live-1 curl -s localhost:8081/api/desk \
   | jq '.positions[] | select((.venue_qty // 0) != .graph_qty)'
 ```
 
-On check 2: the journal's standing trip does not show in `/api/desk` while the hand's halt stands. A fresh kernel
-reads `armed` while the drawdown sits inside the hysteresis band, and it re-trips after its 3-observations/30-second
-debounce once `dd-cap` is over its line again. To see the trip itself, read the `meta` table on the laptop, from a
-copy pulled by `deploy/pull-backups.sh`. The pre-deploy backup is taken just before the new engine starts:
+On check 2: `/api/desk` must read `halted`, with the hand's reason. While the halt stands, it outranks and hides
+any limit's trip. The kernel's own switch (`/api/ops .alerts`) reads `armed` unless a limit it trips on has stood
+over its line for the 3-observations/30-second debounce since the start. To see what the journal holds, read its
+`meta` table on the laptop, from a copy pulled by `deploy/pull-backups.sh`. The pre-deploy backup is taken just
+before the new engine starts:
 
 ```
 sqlite3 -readonly ~/Backups/ohcamel/pre-deploy-<UTC>-<old sha>.db \
   "SELECT key, value FROM meta WHERE key IN ('trip_limit','trip_at','halt_why','halt_at')"
 ```
 
-`trip_limit` must read `dd-cap`. If anything here reads otherwise, stop and read *Watching it* and
-`docs/runbooks/desk.md`. Never reset the switch to make a check pass.
+`halt_why` and `halt_at` must be present: that row is the hand's halt. `trip_limit` is expected to be absent,
+since the 11-05 trip was lost on 11-16; if it is present, it must read `dd-cap`. **Lifting the hand's halt leaves
+no trip in force unless `trip_limit` is present.** The switch then reads `clear` and the desk trades at the next
+pass, with only the live book's limits and the gate between it and the market. If anything here reads otherwise,
+stop and read *Watching it* and `docs/runbooks/desk.md`. Never reset the switch to make a check pass.
 
 ### Roll back
 
