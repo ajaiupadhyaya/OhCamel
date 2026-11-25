@@ -18,22 +18,37 @@ lookup with the same flag when it checks what a burst run read.
 from __future__ import annotations
 
 import json
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+_READ_ONLY = False
+
+
+@contextmanager
+def read_only_db() -> Iterator[None]:
+    """Inside the block, artifact lookups open jobs.sqlite read-only (``jobs.db.open_ro``): no WAL pragma, no schema
+    DDL, no write of any kind. For a tool that reads the live host's artifacts and must change nothing."""
+    global _READ_ONLY
+    was, _READ_ONLY = _READ_ONLY, True
+    try:
+        yield
+    finally:
+        _READ_ONLY = was
+
 
 def _rows(db: Path, kind: str, params_hash: str | None) -> list[Any]:
-    from ..jobs.db import connect
+    from ..jobs.db import connect, open_ro
 
     sql, args = "SELECT path, finished_at FROM artifacts WHERE kind = ?", [kind]
     if params_hash is not None:
         sql += " AND params_hash = ?"
         args.append(params_hash)
-    with closing(connect(db)) as conn:
+    with closing(open_ro(db) if _READ_ONLY else connect(db)) as conn:
         return conn.execute(sql + " ORDER BY finished_at DESC, id DESC", args).fetchall()
 
 

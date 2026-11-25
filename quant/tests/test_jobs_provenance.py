@@ -269,6 +269,7 @@ DIRECT_READS = {
                                                   "the data volume is recorded by load_config (source data_dir)"),
     ("products/data_integrity.py", "read_parquet("): (1, "the committed fixtures, recorded with ctx.read"),
     ("products/io.py", "connect("): (1, "the artifact index: the lookup is recorded"),
+    ("products/io.py", "open_ro("): (1, "the artifact index, read-only (book_vols): the lookup is recorded"),
     ("products/io.py", "read_text("): (2, "an earlier artifact's manifest: the lookup is recorded"),
     ("products/io.py", "read_parquet("): (1, "an earlier artifact's table: recorded by read_table"),
     ("products/kronos_shadow.py", "read_csv("): (1, "Kronos's output, recorded with ctx.read (derived:kronos)"),

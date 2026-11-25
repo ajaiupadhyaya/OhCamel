@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2500<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2504<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -809,17 +809,27 @@ which calls the freeze's own computation (252-session annualised volatility of t
 parameters, gross 1, next-open fill) directly, so it needs no freeze row and works on a month frozen before Task 2.2
 (the monthly freeze never re-takes a month). Its parameters are the month's `signals.freeze` row when there is one,
 else the newest worker `farm.sweep` artifact's `selected_params`; every figure's `params_source` says which.
-It is read-only (no artifact, no deploy). It must run where `quant_data` and the warehouse are, and the quant image
-does not carry `tools/`, so the module is run from a checkout of the sha mounted over the running image's source
-(chosen over a new job kind: no schedule, no retention, nothing to deploy). **Untested against Docker: run it once
-and read `vols.json` (every farm row a number, no `why`) before relying on it.**
+It is read-only, in fact: jobs.sqlite is opened `mode=ro` (no WAL pragma, no schema DDL), prices come from the
+warehouse alone (a ticker it cannot serve refuses that cell, with the reason, and nothing is fetched or cached),
+the risk-free rate is not read (negligible for a 252-session volatility), and nothing is written, so the volume is
+mounted `:ro`. It must run where `quant_data` and the warehouse are, and the quant image does not carry `tools/`, so
+the module is run from a checkout of the sha mounted over the running image's source at the image's own path
+(`/app/quant/src`, which `config.REPO_ROOT = /app` depends on; chosen over a new job kind: no schedule, no
+retention, nothing to deploy), with the checkout's `roster.yaml` and `costs.yaml` mounted over the image's copies
+(they could be older than the sha) and no `PYTHONPATH`. **Untested against Docker: run it once and read `vols.json`
+(every farm row a number, no `why`) before relying on it. If SQLite cannot read the live WAL file through a `:ro`
+mount ("unable to open database file"), the run fails and writes nothing: say so rather than dropping `:ro`.**
 
 ```
 # on the droplet, in a checkout of the sha; the running worker's image supplies the dependencies
 TAG=$(docker inspect --format '{{.Config.Image}}' ohcamel-ohcamel-worker-1)
-docker run --rm --user 10002 -v ohcamel_quant_data:/data -v "$PWD/quant/src":/src:ro \
-  -e PYTHONPATH=/src -e OHCAMEL_QUANT_DATA_DIR=/data -e OHCAMEL_QUANT_WAREHOUSE_PATH=/data/warehouse.duckdb \
-  --entrypoint python "$TAG" -m ohcamel_quant.signals.book_vols > ~/vols.json
+docker run --rm --user 10002 --read-only --tmpfs /tmp \
+  -v ohcamel_quant_data:/data:ro \
+  -v "$PWD/quant/src":/app/quant/src:ro \
+  -v "$PWD/research/experiments/INC-02/roster.yaml":/app/research/experiments/INC-02/roster.yaml:ro \
+  -v "$PWD/research/config/costs.yaml":/app/research/config/costs.yaml:ro \
+  -e OHCAMEL_QUANT_DATA_DIR=/data -e OHCAMEL_QUANT_WAREHOUSE_PATH=/data/warehouse.duckdb \
+  --entrypoint /app/quant/.venv/bin/python "$TAG" -m ohcamel_quant.signals.book_vols > ~/vols.json
 # on the laptop: copy vols.json over, then rewrite the farm rows (drops each placeholder mark)
 python tools/book_ex_ante_vol.py book.sexp --vols vols.json --write
 ```

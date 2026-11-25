@@ -106,6 +106,16 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_ro(path: Path) -> sqlite3.Connection:
+    """Open an EXISTING jobs.sqlite read-only (``mode=ro``): no directory made, no pragma, no schema, nothing written.
+    Any write raises ``sqlite3.OperationalError``. For a reader that must leave the live file as it found it."""
+    conn = sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True, timeout=10.0, isolation_level=None,
+                           check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
 @contextmanager
 def tx(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """BEGIN IMMEDIATE ... COMMIT: takes the write lock up front, so a read-then-write is atomic."""

@@ -356,6 +356,111 @@ def test_a_failed_backtest_is_not_persisted_and_retries_within_the_month(tmp_pat
         ctx.close()
 
 
+def _tree(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+@pytest.fixture
+def warehouse_is_fresh(monkeypatch):
+    """The fixture warehouse was fetched on 2026-06-01; read it as that evening, so its bars are fresh."""
+    from ohcamel_quant.warehouse import freshness
+
+    monkeypatch.setattr(freshness, "_now", lambda: datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+
+
+def _full_history_settings(world: dict, tmp_path: Path):
+    """Settings on a fixture warehouse whose log says the full history was requested, so it serves a 1990 window."""
+    ctx = _ctx(world, signals_dir=None)
+    try:
+        wh = build_fixture_warehouse(tmp_path / "full.duckdb", requested_start="1990-01-01")
+        return ctx.market.settings.model_copy(update={"warehouse_path": wh})
+    finally:
+        ctx.close()
+
+
+def test_book_vols_changes_no_file_and_jobs_sqlite_opens_read_only(world, tmp_path, warehouse_is_fresh):
+    """Round 2: the compute mode is read-only for real -- jobs.sqlite opened mode=ro (a write raises), and the data
+    directory byte-identical after a run."""
+    import sqlite3
+    from types import SimpleNamespace
+
+    from ohcamel_quant.jobs.db import open_ro
+    from ohcamel_quant.signals import book_vols
+
+    conn = open_ro(world["db"])
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("CREATE TABLE nope (x)")
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("DELETE FROM artifacts")
+    finally:
+        conn.close()
+    cell = Cell("farm_sma_trend_fixture", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)
+    settings = _full_history_settings(world, tmp_path)
+    before = _tree(world["tmp"])
+    out = book_vols.compute(SimpleNamespace(market=book_vols.WarehouseOnly(settings)),
+                            month=date(2026, 6, 1), cells=[cell])
+    assert out["farm_sma_trend_fixture"]["ex_ante_vol"] is not None, out["farm_sma_trend_fixture"]["why"]
+    assert _tree(world["tmp"]) == before   # not a byte of jobs.sqlite, the artifacts or the warehouse moved
+
+
+def test_a_warehouse_miss_refuses_the_cell_and_fetches_nothing(world, tmp_path, monkeypatch, warehouse_is_fresh):
+    from types import SimpleNamespace
+
+    from ohcamel_quant.data.market import MarketData
+    from ohcamel_quant.signals import book_vols
+
+    def boom(*a, **k):
+        raise AssertionError("a vendor fetch was attempted")
+
+    for name in ("ohlcv", "prices", "returns", "risk_free_daily", "fred"):
+        monkeypatch.setattr(MarketData, name, boom)
+    cell = Cell("farm_sma_trend_outside", "signals.daily", "sma_trend", "eq3", ("SPY", "VTI"), 0.025)
+    settings = _full_history_settings(world, tmp_path)
+    out = book_vols.compute(SimpleNamespace(market=book_vols.WarehouseOnly(settings)),
+                            month=date(2026, 6, 1), cells=[cell])
+    row = out["farm_sma_trend_outside"]
+    assert row["ex_ante_vol"] is None and "warehouse miss, nothing fetched" in row["why"] and "VTI" in row["why"]
+
+
+def test_book_vols_labels_a_cell_the_freeze_did_not_emit(tmp_path, monkeypatch, world, warehouse_is_fresh):
+    from types import SimpleNamespace
+
+    from ohcamel_quant.signals import book_vols
+
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    monkeypatch.setattr(freeze, "DB_PATH", db)
+    publish_artifact(db, root, "farm.sweep", _farm_tables(FARM_ROWS), verdict="PASS",
+                     finished=datetime(2026, 5, 29, 23, 0, tzinfo=UTC))
+    publish_artifact(db, root, "signals.freeze", {"params": pd.DataFrame(
+        [{"slug": "farm_sma_trend_fixture", "selected_params": None, "reason": "x"}])},
+        finished=datetime(2026, 6, 1, 12, 0, tzinfo=UTC), params={"month": "2026-06"})
+    cell = Cell("farm_sma_trend_fixture", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)
+    settings = _full_history_settings(world, tmp_path)
+    out = book_vols.compute(SimpleNamespace(market=book_vols.WarehouseOnly(settings)),
+                            month=date(2026, 6, 1), cells=[cell])
+    assert out[cell.slug]["params_source"].endswith("not emitted in the freeze")
+
+
+def test_the_package_resolves_repo_root_when_laid_out_as_the_image_does(tmp_path):
+    """Round 2: the image runs the package at /app/quant/src/ohcamel_quant with REPO_ROOT=/app (parents[3]); a mount
+    anywhere else (the first documented command mounted /src) breaks that."""
+    import shutil
+    import subprocess
+    import sys
+
+    import ohcamel_quant
+
+    pkg = tmp_path / "app" / "quant" / "src" / "ohcamel_quant"
+    pkg.mkdir(parents=True)
+    shutil.copy(Path(ohcamel_quant.__file__).with_name("config.py"), pkg / "config.py")
+    (pkg / "__init__.py").write_text("")
+    out = subprocess.run([sys.executable, "-I", "-c",
+                          f"import sys; sys.path.insert(0, {str(pkg.parent)!r}); import ohcamel_quant.config as c; "
+                          "print(c.REPO_ROOT)"], capture_output=True, text=True, check=True).stdout.strip()
+    assert out == str((tmp_path / "app").resolve())
+
+
 def test_cell_without_params_is_refused_with_reason(world):
     reason = _refused(world["spec"])["farm_tsmom_fixture"]
     assert "not emitted" in reason and "no 2026-05 parameters" in reason
