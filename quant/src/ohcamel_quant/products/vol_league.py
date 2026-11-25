@@ -20,6 +20,9 @@ from ..models import vol_league as V
 from ..warehouse.freshness import NY
 
 SURVIVORSHIP = "current constituents; delisted names absent"
+#: What the league's target note calls the quantity it scores (the code computes it: ``_daily_rv``); scripts/check-done.sh
+#: and the Methodology test read this, so the label cannot drift from the note.
+TARGET_LABEL = "close-to-close daily variance of the session"
 
 
 def _names(ctx: Any, params: dict[str, Any], notes: list[str]) -> tuple[list[str], bool]:
@@ -157,7 +160,7 @@ def _target_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: i
 
 def _daily_rv(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: int = MIN_PRINTS,
               notes: list[str] | None = None) -> np.ndarray:
-    """The league's one scoring target: close-to-close daily variance of session ``t``,
+    """The league's one scoring target: close-to-close daily variance of the session ``t``,
     ``(open_t / close_{t-1} - 1)^2 + (first_bar / open_t - 1)^2 + RV_minute + (close_t / last_bar - 1)^2``.
     GARCH, GJR, EGARCH and EWMA forecast the close-to-close variance (it includes the overnight move and the
     first and last minutes the stored bars do not span), so the target must too; HAR is trained on it.
@@ -218,7 +221,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                 "dropped": pd.DataFrame(dropped, columns=["ticker", "model", "reason"])},
         data_asof=str(min(last).date()), provenance=prov,
         notes=[*notes, f"out of sample: last {eval_days} sessions, refit every {refit}, window {V.EST_WINDOW}; "
-                       "target: close-to-close daily variance of the session = (open_t / close_{t-1} - 1)^2 "
+                       f"target: {TARGET_LABEL} = (open_t / close_{{t-1}} - 1)^2 "
                        "+ (first bar close / open_t - 1)^2 + minute RV from the first to the last bar close "
                        "(09:30-16:00, IEX, sessions with fewer than "
                        f"{MIN_PRINTS} prints excluded) + (close_t / last bar close - 1)^2; open and close are the "

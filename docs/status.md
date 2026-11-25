@@ -1,5 +1,156 @@
 # OhCamel — state of the project
 
+*As of 2026-11-25, the end of the completion plan (Stages 0 to 5 on branch `completion`, 39 tasks). The head of
+this file below is the finished state. What was the head before it, as of 2026-10-27 to 2026-10-31, is kept
+unchanged under its own dated heading, and the sections after it are as they were except where marked.*
+
+## The finished state (2026-11-25)
+
+The project is **finished as code and checked by a script**: [`scripts/check-done.sh`](../scripts/check-done.sh)
+prints one line for each item of the spec's *What "finished" means*
+([`superpowers/specs/2026-11-15-the-completion.md`](superpowers/specs/2026-11-15-the-completion.md)), each `ok`,
+`FAIL: <why>` or `not checked: <why>`. It is read-only and never goes near the droplet. What is left is the
+owner's: approvals, deploys and a few commands that only the droplet can run. They are listed below, and until
+they are done the script says so rather than passing.
+
+**The desk is HALTED BY HAND.** The kill switch tripped on `dd-cap` on 2026-11-05. That trip was **lost at the
+2026-11-16 restart** (the `fff8933` deploy), because that build did not yet journal trips. The desk has been halted
+by hand since 2026-11-16 01:39Z on the owner's instruction; a hand's halt is journaled, survives restarts, and only
+the owner lifts it. Nothing the completion did lifts it, and nothing has been deployed to the droplet by the agent.
+It is paper only throughout.
+
+**What is done** (each task reviewed clean; the ledger is `.superpowers/sdd/2026-11-15-the-completion/progress.md`):
+
+- **The desk can be left alone.** A limit trip is journaled and survives a restart; it debounces (three breached
+  observations over 30 s) and lifts by a stated hysteresis rule; a limit that cannot be evaluated refuses risk;
+  stops are evaluated at the close (INC-02's draft rules: a drawdown line of a multiple of the strategy's ex-ante
+  volatility, floored and capped, and a sessions rule); the VaR forecast is scored against the hypothetical P&L of
+  the positions held (Kupiec, Christoffersen, the Basel light) and the page carries counts, never sizes; alerts
+  page. The simulated soak (`test/desk_async`, case `soak`) runs a week through a gap day: trip, reduce, flatten,
+  restart still tripped. Reducing through a trip (`reduce_through_trip`) stays off in every real book until R2 is
+  approved.
+- **The record is true.** Strategy P&L includes dividends and costs, is marked to official closes, and carries a
+  signed cost against the arrival mid; one sub-ledger check per night says which name breaks.
+- **Every verdict is about the thing that trades.** The farm is scored at gross 1, decided at a close and filled at the
+  next open, against its universe's equal-weight buy-and-hold, with the one costs file's tiered half-spreads, borrow
+  and financing, a capacity figure, and an append-only trial ledger that counts every trial ever run. The
+  gates are the charter's, as the spec's default R3 sets them, **awaiting the owner**.
+- **The live experiment can reject something.** INC-02 is a draft with one pooled test (500 sessions, PSR at least
+  0.95, power computed), whose verdict reads NOT STARTED until the owner approves it and a first fill follows.
+- **Every published number can be regenerated** from a code SHA, a data hash and a seed (`tools/regenerate.py`).
+  Data widened: delisted names, a calendar, French's library and a committed Fama–French slice.
+- **Every formula on the site fits its instrument.** Densities pass Task 4.1's amended condition on the committed
+  SPY chain; American options are inverted on a CRR tree; the volatility league scores forecasts of one quantity,
+  the close-to-close variance of the session; SVI, SSVI and Heston (COS) are one league; covariance and beta have
+  leagues; Fama–MacBeth and GRS are tested against a committed French slice; Almgren–Chriss and the measured cost
+  sit side by side.
+- **The site says what is true today.** `/api/ledger` is built from the running system, not typed.
+
+**Not as the plan wrote it.** The plan's check 6 named a density integral in [0.99, 1.01]; that quantity telescopes
+to a constant for any smile and could never fail (Task 4.1's review), so the script applies the amended condition:
+no `DensityError`, negative mass within tolerance, the finite-difference density integrated on the grid within
+1e-3 of the closed form, the mean within 0.5% of the forward, and g at least -1e-10 on a 600,001-point grid. The
+plan's check 6 also said the vol league's note says `close_to_close`; the code's label is
+`close-to-close daily variance of the session` (`vol_league.TARGET_LABEL`), so that is what the script asserts. Check 2's
+dollar test is the sub-ledger break's value (break x close): fees, dividends and interest name no owner and are not
+in it. Reading the journal needs no OCaml: the probe mirrors `Subledger.check` from the journal's fills and last
+session marks and reads the tolerance (0.5) out of `desk/subledger.ml`.
+
+### Running the definition of done
+
+```
+scripts/check-done.sh --strict \
+    --journal J --farm F --trial-ledger L --atlas A --surface S --warehouse W --ledger URL
+```
+
+With no arguments it checks what needs none (the soak, INC-02, the SPY chain) and says `not checked` for the rest.
+Exit status 1 is any `FAIL`; with `--strict`, 2 is any `not checked`. **Finished means all seven lines `ok`.**
+
+**The owner's command against the droplet's data** (the agent never touches the droplet; everything here is a read,
+and the script writes only its own scratch directory):
+
+```
+# on the laptop: last night's journal copy and the newest warehouse export, off-box and read-only
+deploy/pull-backups.sh                                   # -> ~/Backups/ohcamel/{desk-DATE.db,warehouse/DATE}
+D=~/done-check; mkdir -p "$D"
+# the newest artifacts and the trial ledger, copied out of the worker container (nothing is written to it)
+for k in risk.mc_atlas farm.sweep vol.surface_league; do
+  id=$(ssh ohcamel "docker exec ohcamel-ohcamel-worker-1 ls -t /data/artifacts/$k | head -n 1")
+  mkdir -p "$D/artifacts/$k"
+  ssh ohcamel "docker cp ohcamel-ohcamel-worker-1:/data/artifacts/$k/$id -" | tar -xf - -C "$D/artifacts/$k"
+done
+ssh ohcamel "docker cp ohcamel-ohcamel-worker-1:/data/artifacts/trial_ledger.jsonl -" | tar -xf - -C "$D/artifacts"
+cd <the checkout at the deployed sha>
+scripts/check-done.sh --strict \
+    --journal "$(ls -t ~/Backups/ohcamel/desk-*.db | head -n 1)" \
+    --farm "$D/artifacts/farm.sweep/$(ls -t "$D/artifacts/farm.sweep" | head -n 1)" \
+    --trial-ledger "$D/artifacts/trial_ledger.jsonl" \
+    --atlas "$D/artifacts/risk.mc_atlas/$(ls -t "$D/artifacts/risk.mc_atlas" | head -n 1)" \
+    --surface "$D/artifacts/vol.surface_league/$(ls -t "$D/artifacts/vol.surface_league" | head -n 1)" \
+    --warehouse "$(ls -dt ~/Backups/ohcamel/warehouse/*/ | head -n 1)" \
+    --ledger https://ohcamel.ajaiupadhyaya.com/api/ledger
+```
+
+The checkout must be at the sha the artifacts were made by, or `tools/regenerate.py` refuses (exit 3). Run it from the
+laptop's `quant` environment (`quant/.venv`), and build the soak first (`make test`) so check 1 runs the suite.
+The same steps are in [`runbooks/desk.md`](runbooks/desk.md).
+
+**The first local run** (2026-11-25, on the checkout at the end of Task 5.3; nothing from the droplet):
+
+```
+1. the desk can be left alone (soak: trip, reduce, restart tripped): ok
+2. the record is true (sub-ledger, strategy P&L = account): not checked: no journal copy given
+3. the farm is scored as traded (fill open, gross 1, capacity, trials): not checked: no farm artifact given
+4. the live experiment can reject something (INC-02 approved, pooled_test): FAIL: INC-02 is not approved: its Approved-by line is empty (the approval is the owner's to give)
+5. every published number regenerates (atlas, farm, surface): not checked: no artifacts given (missing --atlas --farm --surface --warehouse)
+6. every formula fits its instrument (SPY densities, put/call IV, vol target): ok
+7. the site says what is true today (ledger as_of): not checked: no ledger given (--ledger FILE or URL: the /api/ledger answer)
+```
+
+### OWNER-PENDING
+
+None of these is the agent's to do. The order is the order of dependence.
+
+1. **Read and approve INC-02**, line by line (`research/experiments/INC-02/preregistration.md`, ending in an
+   `Approved-by:` line). Check 4 fails until it names a date; the pooled test's series starts at that date.
+2. **R3, the farm's gates** (spec ruling R3): the default stands until the owner answers; two questions ride with it
+   (whether it applies to EXP-I01–I03 and Q01's unspent holdout, and the cells whose out-of-sample record cannot reach
+   three regimes). R2 (reduce through a trip) and R4 and R6 are defaults too. No file may call a ruling the owner's
+   before the spec records it (`research/tests/test_rulings_attributed.py` fails if one does).
+3. **The deploy hold.** Deploy no sha at or after `594df16`, with `--live` or `--public-only`, until INC-02 is approved
+   and `book.sexp` is regenerated (*Deploy, by sha*; *Deploying the desk (completion Task 1.12)*). `main` is at
+   `d788e86`: pushing the completion's branch is the owner's, and the ledger records which earlier deploys were done.
+4. **Regenerate `book.sexp`** with each strategy's ex-ante volatility: run `book_vols` on the droplet, write the vols
+   with `tools/book_ex_ante_vol.py --vols`, regenerate the book (*Getting the book's ex-ante volatilities*). A book
+   with no `(ex_ante_vol F)` on a strategy fails to load, which is why the hold covers it. Then deploy `--live` and
+   lift the hand's halt only when ready. Do not edit the droplet's book by hand.
+5. **`OHCAMEL_ALERT_URL`** in `/etc/ohcamel/ops.env` on the droplet; until then pages are logged only.
+6. **The VaR window**: the book's `(risk ((var_window ...)))` defaults to 250; to keep the old 60, write
+   `(risk ((var_window 60)))`. Decide, and record the decision here.
+7. **After the Day 4 deploy:** `python -m ohcamel_quant.warehouse migrate` off-hours (003 option move, 005 calendar, 006
+   side tables; a short writer lock), then `python -m ohcamel_quant.jobs wall-times` while the worker is up and before
+   the first nightly (S 600 s and M 2,700 s are the limits), and the two backfill commands in `runbooks/compute.md`
+   outside 18:20–18:50 ET. Expect the integrity lamp red until the shut-market ex-dates are added to `DRIFT_EXCEPTIONS`.
+8. **The backup cron line** on the live host (`*/15 * * * * .../deploy/backup.sh --catch-up`, or install the units), and
+   optionally `warehouse calendar`.
+9. **Spread measurement:** every tier in `research/config/costs.yaml` is provisional until
+   `tools/measure_spreads.py --warehouse <warehouse.duckdb> --sessions 20 --out research/config/costs_measured.csv` runs with
+   Alpaca keys; then re-derive the EXP-A01 manifests in the same commit.
+10. **The droplet kernel bench** (`runbooks/compute.md`): commit the droplet row, rebuild and redeploy. Until then the
+    laptop row stands and says so.
+11. **The surface league's first droplet runtime** (`vol.surface_league`, class M's 45 minutes; the worst case is
+    40–60 minutes if every name were SPY-sized, and a wall-clock kill loses the night). Record it.
+12. **The EODHD decision** (about $20 a month): the delisted-name build is switched off; if bought, run
+    `tools/accept_delisted.py`. The delisted-fixture test skips until then.
+13. **The Day 6 reset** (after 1 and 4): regenerate, deploy `--live`, lift the halt. The agent then verifies read-only.
+
+Known and deferred, from the reviews (the whole-branch review reads this list): `cov_league` catches a `ValueError` per
+universe, so one DCC failure can skip the ETF universe and the overlay falls back (entrants must be isolated per
+estimator); `report.py`'s pooled-test note says the record is null until Stage 3 (false on the live host); the INC-02
+approval parser reads an ISO date only; `web/execution.js` does not render the new per-fill cost fields.
+
+## Earlier state, as of 2026-10-27 to 2026-10-31 (superseded by the section above)
+
 *As of 2026-10-27 (the desk's first week of paper trading, read off the droplet and off Alpaca's own order history that day, and the four fixes it called for); the deployed state and the front page as of 2026-10-31; the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
 after time away, and the one to update when the facts in it change.*
 
@@ -42,6 +193,8 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 ---
 
 ## Where it runs
+
+*(As of 2026-11-02. Since then the last deploy the completion ledger confirms is `fff8933` on 2026-11-16; every later deploy is OWNER-PENDING, so read the droplet's `/api/health` sha before trusting this table.)*
 
 | | |
 |---|---|
@@ -116,7 +269,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2651<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2675<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.

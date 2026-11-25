@@ -763,6 +763,46 @@ account holding less than the strategy's own position in the same direction
 
 ---
 
+## 12. The completion's models and gates
+
+Each is asserted by the Methodology page's test (`quant/tests/test_products_methodology.py`), which reads the constants
+from the code, so a number here moves with its constant.
+
+**Costs.** One file, `research/config/costs.yaml`: a half-spread by tier on traded notional, one way (a round trip pays it
+twice), `borrow_bps` a year on short notional, `financing_spread_bps` a year on gross above 1, and a sweep that
+re-prices the out-of-sample record at 0, 1, 3 and 6 times every half-spread. Capacity is the capital at which the largest
+rebalance trade is `participation` of the name's median dollar volume over `adv_window` sessions. A tier is `measured`
+(IEX quotes) or `provisional` (a stated rule); every tier is provisional until the owner runs the measurement.
+
+**The farm.** Each cell is scored at gross 1, decided at a close and filled at the next open, against its universe's
+equal-weight buy-and-hold. The deflated Sharpe's $N$ is every distinct trial ever run, $(\text{cell}, \text{grid version},
+\text{params hash})$, in an append-only ledger. The gates are the charter's, from `models/verdict.py` (the spec's default
+R3, awaiting the owner): holdout positive, DSR, PSR, Hansen's SPA against buy-and-hold, the bootstrap's lower 5%, and
+positive in at least $m$ of the regimes in `research/config/regimes.yaml`, fewer with out-of-sample data being
+INSUFFICIENT DATA.
+
+**INC-02's pooled test.** Null: Sharpe $\le 0$ over 500 sessions from the approval date; rejected at a one-sided 5% when
+$\mathrm{PSR}_0 \ge 0.95$. $\mathrm{PSR}$ and the standard error $\sqrt{252d/(n-1)}$ fix $\widehat{SR}$ exactly, so the
+statistic is public and no return, equity or size is. Power is the closed form of `research/tests/test_inc02_power.py`.
+The stops are decided at the close: a drawdown line $\min(\text{cap}, \max(\text{floor}, m\,\hat\sigma^{ex\text{-}ante}))$ and
+a sessions rule; the VaR forecast is scored against the hypothetical P&L of the positions held at the forecast's close.
+
+**Volatility surfaces.** SVI per expiry, SSVI across expiries and Heston (1993) priced by the Fourier-cosine method
+(Fang and Oosterlee 2008), calibrated to the same identified-IV quotes through European Black-76 prices on each expiry's
+forward, scored in implied-vol points, with butterfly and calendar violations counted numerically on common grids.
+
+**Leagues.** Covariance: nine estimators scored by the realised volatility of the global-minimum-variance book, including
+Ledoit–Wolf (2020) nonlinear shrinkage and DCC(1,1). Beta: rolling OLS over 60, 120 and 250 sessions against a Kalman
+random-walk beta, scored against the realised beta of the next 21 sessions with a Newey–West lag of 40. The new entrants
+never drive the paper book.
+
+**Factor tests.** Fama–MacBeth with exposures known before each period and Newey–West errors; the GRS test
+$F=\frac{T-N-L}{N}\frac{\hat\alpha^\top\hat\Sigma^{-1}\hat\alpha}{1+\hat\mu^\top\hat\Omega^{-1}\hat\mu}$ with maximum-likelihood
+covariances, on the committed 25 size-by-book-to-market portfolios.
+
+**Execution.** Almgren–Chriss: $\cosh(\kappa\tau)=1+\lambda\sigma^2\tau^2/(2\tilde\eta)$ with $\tilde\eta=\eta-\gamma\tau/2$,
+holdings $\propto\sinh(\kappa(T-t))$, and $\lambda=0$ the TWAP. $\eta$ and $\gamma$ are stated assumptions, not estimates.
+
 ## 11. Where each of these is asserted
 
 | Result | Test |

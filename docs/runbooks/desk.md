@@ -113,6 +113,17 @@ public `desk.report` `var_score` table says the same without sizes.
 (`es-cap`, `var-cap`) are still safe, and whether to switch the estimator or the window. Any change is a book edit
 and a restart, outside 09:25-17:10 ET. Record the decision in `docs/status.md`.
 
+## Checking that the project is finished
+
+`scripts/check-done.sh` prints seven lines, one for each item of the completion spec's *What "finished" means*. It is
+read-only and takes the droplet's data as arguments, so the droplet's own files are never opened by it. **Owner command:**
+pull the backups (`deploy/pull-backups.sh`), copy the newest `risk.mc_atlas`, `farm.sweep` and `vol.surface_league`
+artifact directories and `trial_ledger.jsonl` out of the worker container with `docker cp` over `ssh ohcamel`, check out
+the deployed sha, and run `scripts/check-done.sh --strict` with `--journal`, `--farm`, `--trial-ledger`, `--atlas`,
+`--surface`, `--warehouse` and `--ledger https://ohcamel.ajaiupadhyaya.com/api/ledger`. The exact lines are in
+[`docs/status.md`](../status.md) under *Running the definition of done*. A `FAIL` names what is wrong; `not checked`
+names what the script was not given. Check 4 fails until INC-02 is approved, and that is the owner's to give.
+
 ## If the pages stop
 
 A silent watch is a worse failure than a page. `healthchecks.io` (`HEALTHCHECKS_URL` in `/etc/ohcamel/ops.env`)

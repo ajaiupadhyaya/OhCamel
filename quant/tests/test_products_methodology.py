@@ -10,7 +10,9 @@ WEB = REPO_ROOT / "quant" / "web" / "src" / "pages" / "methodology"
 # entry id -> section. Each Lane M task appends its entry here.
 ENTRIES = {"p1-mc-atlas": "risk", "p2-vol-league": "options", "p3-cov-league": "portfolio", "p4-strategy-farm": "backtest",
            "p7-surface-history": "options", "p5-exp-q01": "backtest",
-           "p6-exp-q02": "macro", "k01-kronos-shadow": "options", "factor-workbench": "factors"}
+           "p6-exp-q02": "macro", "k01-kronos-shadow": "options", "factor-workbench": "factors",
+           "beta-league": "portfolio", "fama-macbeth-grs": "factors", "almgren-chriss": "risk",
+           "inc02-pooled-test": "backtest", "ssvi-surface-league": "options"}
 
 
 def test_each_product_has_an_entry_with_known_references():
@@ -104,3 +106,87 @@ def test_the_farm_entry_claims_nothing_about_how_many_rows_fail():
     summary = re.search(r'summary: "([^"]+)"', models[start:]).group(1)
     assert "Most rows fail" not in summary
     assert "PASS, FAIL, or INSUFFICIENT DATA" in summary and "whole grid and full sweep window" in summary
+
+
+# --- completion Task 5.3: every product's card names its fill, cost model and gates as the code has them -----------
+def _entry(eid: str) -> str:
+    models = (WEB / "models.ts").read_text()
+    start = models.index(f'id: "{eid}"')
+    return models[start:models.index("\n  },", start)]
+
+
+def test_the_farm_card_names_its_fill_gross_cost_model_and_ledger_as_the_code_has_them():
+    from ohcamel_quant.backtest import costs as cost_file
+    from ohcamel_quant.models import trial_ledger
+    from ohcamel_quant.products import farm
+
+    card = _entry("p4-strategy-farm")
+    m = cost_file.load()
+    a, b, c = (m.tiers_bps[k] for k in sorted(m.tiers_bps))
+    assert farm.FILL == "open" and farm.EXECUTION_LAG == 1
+    assert f"at gross {farm.MAX_GROSS:g}" in card or f"scored at gross {farm.MAX_GROSS:g}" in card
+    assert "decided at a close and filled at the next session's open" in card
+    assert f"({a:g}, {b:g} or {c:g} bp one way" in card, "the half-spread tiers moved without the card"
+    assert f"{m.borrow_bps:g} bp a year borrow on shorts" in card
+    assert f"{m.financing_spread_bps:g} bp a year over the T-bill rate on gross above 1" in card
+    assert "0, 1, 3 and 6 times every half-spread" in card and m.sweep == (0.0, 1.0, 3.0, 6.0)
+    assert f"{m.participation:.0%} of {m.adv_window}-session median dollar volume" in card
+    assert "provisional" in card and "measured" in card
+    assert "append-only trial ledger" in card and trial_ledger.LEDGER_NAME.endswith(".jsonl")
+    assert "capacity" in card and "turnover" in card
+    assert "spec ruling R3, awaiting the owner" in card, "the gates are the spec's default until the owner answers"
+
+
+def test_the_costs_file_is_the_one_the_cards_say_it_is():
+    from ohcamel_quant.backtest import costs as cost_file
+
+    assert cost_file.COSTS_REL == "research/config/costs.yaml" and "research/config/costs.yaml" in _entry("p4-strategy-farm")
+
+
+def test_the_regimes_the_farm_card_counts_are_the_regime_file():
+    from ohcamel_quant.models import verdict as V
+
+    assert f"positive in {V.REGIMES_MIN} of {len(V.REGIMES)} regimes (research/config/regimes.yaml" in _entry("p4-strategy-farm")
+
+
+def test_the_surface_league_card_names_all_three_models_and_how_heston_is_priced():
+    from ohcamel_quant.options import heston
+
+    card = _entry("ssvi-surface-league")
+    assert "Heston" in card and "SSVI" in card and "SVI" in card and "COS" in card
+    assert f"{heston.LEAGUE_N:,} terms" in card and "Black-76" in card
+    assert "never assumed zero" in card and "DESCRIPTIVE ONLY" in card
+
+
+def test_the_covariance_card_counts_the_estimators_the_code_runs():
+    from ohcamel_quant.models import cov_league
+
+    words = {7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven"}
+    card = _entry("p3-cov-league")
+    assert words[len(cov_league.ESTIMATORS)] + " covariance estimators" in card
+    assert f"{cov_league.HOLD} sessions" in card and "no costs" in card
+
+
+def test_the_beta_card_names_the_leagues_windows_horizon_and_lag():
+    from ohcamel_quant.models import beta_league as B
+
+    card = _entry("beta-league")
+    assert "over " + ", ".join(str(w) for w in B.WINDOWS[:-1]) + f" and {B.WINDOWS[-1]} sessions" in card
+    assert f"next {B.HORIZON} sessions" in card and f"lag is {B.HAC_LAG}" in card
+    assert f"{B.KALMAN_WINDOW:,} sessions" in card and f"every {B.REFIT_EVERY}" in card and "Holm" in card
+
+
+def test_the_pooled_test_card_names_the_horizon_the_level_and_that_nothing_is_approved():
+    from ohcamel_quant.signals import pooled
+
+    card = _entry("inc02-pooled-test")
+    assert f"over {pooled.SESSIONS} sessions" in card
+    assert f"one-sided {pooled.ALPHA:.0%}" in card and f"at least {pooled.PSR_MIN:.2f}" in card
+    assert "NOT STARTED" in card and "draft awaiting the owner" in card
+    assert "never a return, an equity, a position or a size" in card
+
+
+def test_a_methodology_card_never_says_an_unanswered_ruling_is_answered():
+    for eid in ENTRIES:
+        card = _entry(eid)
+        assert "approved by the owner" not in card.lower() or eid in {"p5-exp-q01", "p6-exp-q02", "k01-kronos-shadow"}, eid

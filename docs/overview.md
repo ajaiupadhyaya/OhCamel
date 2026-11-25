@@ -256,6 +256,12 @@ may send one); on the public demo each answers 405.
 - **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting
   check, every credential-free mode run end to end, and the README's quoted
   tables reproduced on both platforms.
+- **`scripts/check-done.sh`** is the spec's definition of "finished" as seven lines, each `ok`, `FAIL: <why>` or
+  `not checked: <why>`: the desk's soak (trip, reduce, restart still tripped), the sub-ledger on a journal copy, the
+  farm's traded configuration and trial count, INC-02's approval and pooled test, regeneration of the atlas, farm and
+  surface, the SPY chain's densities and put/call IVs, and the ledger's date. It is read-only; the checks that need the
+  droplet's data take it as arguments (the owner's command is in [`status.md`](status.md)) and say `not checked`
+  without it. INC-02 is not approved yet, so check 4 reads `FAIL` and says why.
 - **`make research-test`** runs the research layer's own suite separately:
   <!-- count:research-tests -->457<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Not folded
   into [`lib/verified.ml`](../lib/verified.ml)'s counts, which cover the

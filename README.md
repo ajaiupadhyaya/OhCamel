@@ -24,7 +24,7 @@ XBRL.
 
 | | What it is | Where |
 |---|---|---|
-| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->2651<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, thirteen Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
+| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->2675<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, thirteen Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
 | **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental: a tick recomputes only what depends on it. It runs a paper desk behind a password on the live host | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
 
 ---
@@ -140,6 +140,12 @@ Optional environment variables: `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` (Alpac
 `OHCAMEL_QUANT_USER_AGENT` (the contact string SEC asks for). `OHCAMEL_QUANT_OFFLINE=1` serves only the committed
 fixtures. `OHCAMEL_QUANT_KERNELS=python` forces the NumPy references. Pages that need other sources say so.
 `quant/README.md` is the code map. `quant/web/src/README.md` is the page-author guide.
+
+## What finished means
+
+[`scripts/check-done.sh`](scripts/check-done.sh) checks the completion spec's seven items and prints one line each;
+[`docs/status.md`](docs/status.md) says what is done, what is waiting on the owner, and the command that runs it on
+the droplet's data. It prints `FAIL` for what is not true yet and `not checked` for what it was not given.
 
 ## How it deploys
 
