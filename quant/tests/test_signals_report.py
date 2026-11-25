@@ -53,6 +53,7 @@ TCA = {"note": "paper fills against one venue's quote",
        "benchmarks": {
            "source": "the venue's raw daily bar: Alpaca, iex feed -- one venue, not the consolidated tape",
            "window": "the newest 500 fills, all sessions; every fill counts equally, whatever its size",
+           "as_of": "2026-10-09T14:31:05Z",
            "overall": {"count": 2, "open_n": 2, "close_n": 2, "vwap_n": 1, "mean_vs_open_bps": 4.5,
                        "mean_vs_close_bps": -1.25, "mean_vs_vwap_bps": 2.0},
            "by_strategy": {"signal-x": {"count": 1, "open_n": 1, "close_n": 1, "vwap_n": 0,
@@ -234,7 +235,7 @@ def test_a_full_report(tmp_path):
 
     pnl = spec.tables["pnl_by_strategy"]
     assert pnl["strategy"].tolist() == ["exp_a01_spy", "farm_tsmom_bonds", "farm_mix_eq2", "farm_never"]
-    assert pnl["pnl"].isna().all()  # not on the wire until Stage 3; never invented
+    assert pnl["pnl"].isna().all()  # not copied from the gated record; never invented
     assert pnl.set_index("strategy").loc["farm_never", "state"] == "stopped"
     assert pnl.set_index("strategy").loc["farm_tsmom_bonds", "verdict"] == "rejected"
     assert (pnl["capital_fraction"] == 0.025).all()
@@ -255,7 +256,7 @@ def test_a_full_report(tmp_path):
     assert json.loads(o["inputs"])["vol_forecast"] == 0.1176
 
     notes = " | ".join(spec.notes)
-    assert "per-strategy P&L is not on the wire" in notes
+    assert "served on the gated live host only; this public table does not copy it" in notes
     assert "not evidence of edge" in notes
     assert "equity_close 100000" in notes          # the session's close, from /api/desk/sessions
     assert "paper fills against one venue's quote" in notes   # /api/desk/tca's own note
@@ -562,6 +563,7 @@ def test_the_tca_table_carries_the_paper_venues_limits_and_basis_points_only(tmp
         2, 1, 4.5, -1.25)
     assert pd.isna(t.iloc[2]["mean_vs_vwap_bps"]) and t.iloc[2]["vwap_n"] == 0   # unknown stays null
     assert t["source"].str.contains("one venue").all() and t["window"].str.contains("newest 500 fills").all()
+    assert (t["as_of"] == "2026-10-09T14:31:05Z").all()  # every public statistic carries its as-of
     assert (t["note"] == SENTENCE).all()                  # the sentence rides on every public row
     assert SENTENCE in spec.notes
     assert not any(c in t.columns for c in ("qty", "notional", "price", "usd"))

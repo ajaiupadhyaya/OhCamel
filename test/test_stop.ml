@@ -468,10 +468,10 @@ let test_the_record_is_served_on_the_live_host_and_never_on_the_demo () =
   (match served ~record_zone:zone () with
   | [ `Assoc [ ("sessions", `List rows) ]; `Null ] ->
       Alcotest.(check (list string))
-        "its sessions, from the first fill"
+        "its sessions, from the first fill; turnover marks the fill's session"
         [
-          {|{"date":"2026-11-02","allocated":10000.0,"pnl":0.0}|};
-          {|{"date":"2026-11-03","allocated":10000.0,"pnl":0.0}|};
+          {|{"date":"2026-11-02","allocated":10000.0,"pnl":0.0,"turnover":9000.0}|};
+          {|{"date":"2026-11-03","allocated":10000.0,"pnl":0.0,"turnover":0.0}|};
         ]
         (List.map rows ~f:Yojson.Safe.to_string)
   | other ->

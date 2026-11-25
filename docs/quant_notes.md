@@ -781,8 +781,12 @@ R3, awaiting the owner): holdout positive, DSR, PSR, Hansen's SPA against buy-an
 positive in at least $m$ of the regimes in `research/config/regimes.yaml`, fewer with out-of-sample data being
 INSUFFICIENT DATA.
 
-**INC-02's pooled test.** Null: Sharpe $\le 0$ over 500 sessions from the approval date; rejected at a one-sided 5% when
-$\mathrm{PSR}_0 \ge 0.95$. $\mathrm{PSR}$ and the standard error $\sqrt{252d/(n-1)}$ fix $\widehat{SR}$ exactly, so the
+**INC-02's pooled test.** Null: Sharpe $\le 0$ over 500 NYSE sessions from INC-02's first fill (T2: the first fill dated
+on or after the approval date, and never on or before INC-01's close, 2026-11-05), over INC-02's roster strategies only;
+rejected at a one-sided 5% when $\mathrm{PSR}_0 \ge 0.95$. The series is cut to those 500 sessions before any lookup;
+$r_f$ is the last published rate on or before each session, carried at most five sessions, and a session without a
+rate or a prior-close equity is unscorable and counted, never voiding the series, so a verdict decided at session 500
+stands. $\mathrm{PSR}$ and the standard error $\sqrt{252d/(n-1)}$ fix $\widehat{SR}$ exactly, so the
 statistic is public and no return, equity or size is. Power is the closed form of `research/tests/test_inc02_power.py`.
 The stops are decided at the close: a drawdown line $\min(\text{cap}, \max(\text{floor}, m\,\hat\sigma^{ex\text{-}ante}))$ and
 a sessions rule; the VaR forecast is scored against the hypothetical P&L of the positions held at the forecast's close.

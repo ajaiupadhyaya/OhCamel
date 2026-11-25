@@ -5828,6 +5828,9 @@ let test_tca_json_benchmarks_against_the_sessions_bar () =
   Alcotest.(check bool)
     "the window is said" true
     (String.is_substring (to_string (member "window" b)) ~substring:"newest 500 fills");
+  Alcotest.(check bool)
+    "the as-of is the newest fill's time" true
+    (String.is_prefix (to_string (member "as_of" b)) ~prefix:"2026-09-10T");
   Alcotest.(check (list int))
     "one fill, and every benchmark known" [ 1; 1; 1; 1 ]
     (List.map [ "count"; "open_n"; "close_n"; "vwap_n" ] ~f:(fun k ->

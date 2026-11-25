@@ -2459,8 +2459,10 @@ let research_json ?(scale = absent_reading_fields) ?record_zone ~journal
     | Open -> "open"
   in
   (* A strategy's record as the gated live host serves it: its sessions from the
-     first fill, [{date, allocated, pnl}] (desk/record.ml, via Stop.sessions:
-     net of fees, dividends credited), in dollars. Those are sizes, so a host
+     first fill, [{date, allocated, pnl, turnover}] (desk/record.ml, via
+     Stop.sessions: net of fees, dividends credited), in dollars; a positive
+     [turnover] marks a session with a fill, which is how desk.report dates
+     INC-02's first fill. Those are sizes, so a host
      that is not given [record_zone] -- the public demo -- serves null, as does
      a strategy with no fill. *)
   let record_json name =
@@ -2480,6 +2482,7 @@ let research_json ?(scale = absent_reading_fields) ?record_zone ~journal
                              ("date", `String (Date.to_string x.date));
                              ("allocated", jnum x.allocated);
                              ("pnl", jnum x.pnl);
+                             ("turnover", jnum x.turnover);
                            ])) );
               ])
   in

@@ -28,21 +28,37 @@ def _days(n: int, start: date = date(2027, 1, 4)) -> list[str]:
     return out
 
 
-def _bodies(n: int, *, mean: float = 0.0006, sd: float = 0.005, seed: int = 1):
+def _bodies(n: int, *, mean: float = 0.0006, sd: float = 0.005, seed: int = 1, start: date = date(2027, 1, 4)):
     """A strategy with a record of ``n`` sessions, an account of 100,000 with 25,000 allocated, and a prior-close
     equity for each (one extra close before the first fill)."""
-    days = _days(n + 1)
+    days = _days(n + 1, start)
     pnl = np.random.default_rng(seed).normal(mean, sd, n) * 25_000
-    rec = [{"date": d, "allocated": 25_000.0, "pnl": float(p)} for d, p in zip(days[1:], pnl, strict=True)]
-    research = {"strategies": [{"name": "a", "record": {"sessions": rec}}, {"name": "b", "record": None}]}
+    rec = [{"date": d, "allocated": 25_000.0, "pnl": float(p), "turnover": 1_000.0}
+           for d, p in zip(days[1:], pnl, strict=True)]
+    research = {"strategies": [{"name": "strat_a", "record": {"sessions": rec}}, {"name": "strat_b", "record": None}]}
     closes = [{"date": d, "equity_close": 100_000.0} for d in days]
     return research, closes, (lambda: {d: 0.0 for d in days}), days[-1]
 
 
+ROSTER = """version: 2
+incubation_cap: 0.55
+canary_cap: 0.10
+vol_target: 0.10
+strategies:
+  - {slug: strat_a, producer: research-service, capital_fraction: 0.025}
+  - {slug: strat_b, producer: research-service, capital_fraction: 0.025}
+"""
+
+
+def _experiment(tmp_path, approval: str) -> Path:
+    (tmp_path / "preregistration.md").write_text(approval)
+    (tmp_path / "roster.yaml").write_text(ROSTER)
+    return tmp_path / "roster.yaml"
+
+
 @pytest.fixture
 def approved(tmp_path) -> Path:
-    (tmp_path / "preregistration.md").write_text("Approved-by: the owner, 2027-01-02\n")
-    return tmp_path / "roster.yaml"
+    return _experiment(tmp_path, "Approved-by: the owner, 2027-01-02\n")
 
 
 def _row(body, *, path):
@@ -76,7 +92,7 @@ def test_an_unapproved_preregistration_is_not_started_whatever_the_record(tmp_pa
 
 
 def test_approved_but_before_the_first_fill_is_not_started(approved):
-    row = _row(({"strategies": [{"name": "a", "record": None}]}, [], lambda: {}, "2027-01-05"), path=approved)
+    row = _row(({"strategies": [{"name": "strat_a", "record": None}]}, [], lambda: {}, "2027-01-05"), path=approved)
     assert row["verdict"] == "NOT STARTED" and row["reason"] == "no INC-02 fill yet" and row["sessions_done"] == 0
     assert "proposed" not in row["statistic"]
 
@@ -120,22 +136,89 @@ def test_a_flat_session_counts_with_a_zero_return(approved):
 
 def test_the_statistic_is_the_excess_return_on_the_accounts_prior_close_equity():
     research = {"strategies": [{"name": "a", "record": {"sessions": [
-        {"date": "2027-01-05", "allocated": 50_000.0, "pnl": 600.0}]}}]}
+        {"date": "2027-01-05", "allocated": 50_000.0, "pnl": 600.0, "turnover": 50_000.0}]}}]}
     closes = [{"date": "2027-01-04", "equity_close": 100_000.0}, {"date": "2027-01-05", "equity_close": 100_600.0}]
     got, recorded, cause = report._pooled_daily(research, closes, lambda: {"2027-01-05": 0.0002}, [])
     assert (recorded, cause) == (1, None)
     assert got == [pytest.approx((600.0 - 50_000.0 * 0.0002) / 100_000.0)]
 
 
-def test_a_missing_rate_or_prior_equity_is_a_note_not_a_number():
+def test_a_missing_rate_or_prior_equity_marks_that_session_unscorable_and_is_counted():
     research = {"strategies": [{"name": "a", "record": {"sessions": [
-        {"date": "2027-01-05", "allocated": 1.0, "pnl": 1.0}]}}]}
+        {"date": "2027-01-05", "allocated": 1.0, "pnl": 1.0, "turnover": 1.0}]}}]}
     notes: list[str] = []
     closes = [{"date": "2027-01-04", "equity_close": 1.0}, {"date": "2027-01-05", "equity_close": 1.0}]
     got, recorded, cause = report._pooled_daily(research, closes, lambda: {}, notes)
-    assert got is None and recorded == 1 and "risk-free" in cause and "risk-free" in notes[0]
+    assert got == [None] and recorded == 1 and cause is None
+    assert any("1 of 1 sessions unscorable" in n and "risk-free" in n for n in notes)
     got, recorded, cause = report._pooled_daily(research, closes[1:], lambda: {"2027-01-05": 0.0}, notes)
-    assert got is None and recorded == 1 and "prior-close equity" in cause
+    assert got == [None] and recorded == 1 and any("prior-close equity" in n for n in notes)
+
+
+def test_the_newest_days_missing_rate_is_carried_from_the_last_published_one(approved):
+    """C1: the rate is published a day late; the newest session uses the last rate on or before it."""
+    research, closes, _, last = _bodies(120)
+    days = [c["date"] for c in closes]
+    rf = {d: 0.0001 for d in days[:-1]}               # nothing published for the newest session yet
+    row = _row((research, closes, lambda: rf, last), path=approved)
+    assert row["sessions_done"] == 120 and row["verdict"] == "IN PROGRESS"
+    assert row["psr"] is not None and row["reason"] == "running, not the test's result"
+    assert "last published risk-free rate on or before each session" in row["statistic"]
+
+
+def test_a_gap_inside_the_window_is_counted_and_not_fatal(approved):
+    research, closes, _, last = _bodies(120)
+    days = [c["date"] for c in closes]
+    rf = {d: 0.0 for d in days}
+    closes[60] = {**closes[60], "equity_close": None}  # the prior equity of session 61 is missing
+    row = _row((research, closes, lambda: rf, last), path=approved)
+    assert row["sessions_done"] == 120 and row["psr"] is not None
+    assert row["reason"] == "running, not the test's result; 1 of 120 sessions unscorable (no prior-close equity or rate)"
+
+
+def test_a_rate_older_than_the_carry_bound_is_a_gap():
+    research = {"strategies": [{"name": "a", "record": {"sessions": [
+        {"date": d, "allocated": 1.0, "pnl": 0.0, "turnover": 1.0} for d in _days(9)[1:]]}}]}
+    closes = [{"date": d, "equity_close": 1.0} for d in _days(9)]
+    got, _, _ = report._pooled_daily(research, closes, lambda: {_days(9)[1]: 0.0}, [])
+    # the rate dated on session 1 carries five sessions (2..6); sessions 7 and 8 are unscorable
+    assert [x is None for x in got] == [False] * 6 + [True] * 2
+
+
+def test_past_500_a_later_gap_never_reverts_the_decided_verdict(approved, monkeypatch):
+    monkeypatch.setattr(report, "psr_and_se", lambda x: (0.96, 0.9))
+    research, closes, _, last = _bodies(520)
+    days = [c["date"] for c in closes]
+    rf = {d: 0.0 for d in days[:505]}                  # nothing published after session 504
+    closes[515] = {**closes[515], "equity_close": None}
+    row = _row((research, closes, lambda: rf, last), path=approved)
+    assert (row["sessions_done"], row["verdict"], row["reason"]) == (500, "REJECTED NULL", None)
+
+
+def test_only_inc02_roster_strategies_feed_the_series(approved):
+    research, closes, rf, last = _bodies(120)
+    other = {"name": "inc01_only", "record": {"sessions": [
+        {**r, "pnl": 1e9} for r in research["strategies"][0]["record"]["sessions"]]}}
+    with_other = {"strategies": [*research["strategies"], other]}
+    assert _row((with_other, closes, rf, last), path=approved) == _row((research, closes, rf, last), path=approved)
+
+
+def test_the_series_starts_at_the_first_fill_not_the_first_carried_row(approved):
+    """INC-01's carried inventory marks a row every session; INC-02 starts at its first FILL on/after approval."""
+    research, closes, rf, last = _bodies(120)
+    rec = research["strategies"][0]["record"]["sessions"]
+    for r in rec[:30]:
+        r["turnover"] = 0.0                            # held, not traded
+    row = _row((research, closes, rf, last), path=approved)
+    assert row["sessions_done"] == 90
+
+
+def test_the_start_is_clamped_after_inc01s_close(tmp_path):
+    path = _experiment(tmp_path, "Approved-by: the owner, 2026-11-01\n")
+    research, closes, rf, last = _bodies(30, start=date(2026, 10, 26))
+    row = _row((research, closes, rf, last), path=path)
+    after = [r for r in research["strategies"][0]["record"]["sessions"] if r["date"] > "2026-11-05"]
+    assert row["sessions_done"] == len(after) < 30
 
 
 def test_the_public_columns_and_no_return_equity_position_or_size(approved):
@@ -150,7 +233,8 @@ def test_a_missing_rate_keeps_the_count_and_gives_its_own_reason(approved):
     row = _row((research, closes, lambda: {}, last), path=approved)
     assert row["sessions_done"] == 120 and row["verdict"] == "IN PROGRESS"
     assert row["psr"] is None and row["sharpe_se"] is None
-    assert row["reason"].startswith("statistic not computable this session: no risk-free rate for ")
+    assert row["reason"] == ("statistic not computable this session: 120 of 120 sessions unscorable "
+                             "(no prior-close equity or rate)")
     assert "no INC-02 fill" not in row["reason"]
 
 
@@ -161,7 +245,8 @@ def test_a_running_figure_says_it_is_not_the_result_and_the_result_does_not(appr
 
 def test_record_dates_with_no_close_are_noted_not_silently_dropped():
     research = {"strategies": [{"name": "a", "record": {"sessions": [
-        {"date": "2027-01-05", "allocated": 1.0, "pnl": 1.0}, {"date": "2027-01-06", "allocated": 1.0, "pnl": 1.0}]}}]}
+        {"date": "2027-01-05", "allocated": 1.0, "pnl": 1.0, "turnover": 1.0},
+        {"date": "2027-01-06", "allocated": 1.0, "pnl": 1.0, "turnover": 1.0}]}}]}
     closes = [{"date": "2027-01-04", "equity_close": 1.0}, {"date": "2027-01-05", "equity_close": 1.0}]
     notes: list[str] = []
     report._pooled_daily(research, closes, lambda: {"2027-01-05": 0.0}, notes)
@@ -169,7 +254,7 @@ def test_record_dates_with_no_close_are_noted_not_silently_dropped():
 
 
 def test_the_served_record_shape_is_read_end_to_end(tmp_path, monkeypatch):
-    """desk/intake.ml serves ``record: {"sessions": [{date, allocated, pnl}]}`` on the live host."""
+    """desk/intake.ml serves ``record: {"sessions": [{date, allocated, pnl, turnover}]}`` on the live host."""
     from tests.test_signals_report import (  # noqa: PLC0415
         RESEARCH,
         SESSIONS,
@@ -179,10 +264,12 @@ def test_the_served_record_shape_is_read_end_to_end(tmp_path, monkeypatch):
         _ok,
     )
 
-    served = {**RESEARCH, "strategies": [{**RESEARCH["strategies"][0], "record": {"sessions": [
-        {"date": "2026-10-09", "allocated": 25_000.0, "pnl": 100.0}]}}, *RESEARCH["strategies"][1:]]}
-    routes = {**_full(), "/api/research": _ok(served), "/api/desk/sessions": _ok(SESSIONS)}
-    monkeypatch.setattr(report, "recorded_approval", lambda text: "2026-10-01")
+    closes = [{**SESSIONS[0], "date": "2026-11-09"}, {**SESSIONS[1], "date": "2026-11-10"}]
+    served = {**RESEARCH, "strategies": [{**RESEARCH["strategies"][0], "name": "exp_a01_spy", "record": {"sessions": [
+        {"date": "2026-11-10", "allocated": 25_000.0, "pnl": 100.0, "turnover": 5_000.0}]}},
+        *RESEARCH["strategies"][1:]]}
+    routes = {**_full(), "/api/research": _ok(served), "/api/desk/sessions": _ok(closes)}
+    monkeypatch.setattr(report, "recorded_approval", lambda text: "2026-11-09")
     with _Engine(routes) as eng:
         spec = report.run({}, _ctx(tmp_path, eng.url))
     r = spec.tables["pooled_test"].iloc[0]
@@ -193,18 +280,17 @@ def test_the_served_record_shape_is_read_end_to_end(tmp_path, monkeypatch):
 
 def test_only_sessions_on_or_after_the_approval_date_count_not_inc01s(tmp_path):
     """The journal still holds INC-01's fills (2026-10-21 to 2026-11-05): they are not INC-02's sessions."""
-    (tmp_path / "preregistration.md").write_text("Approved-by: the owner, 2027-01-20\n")
+    path = _experiment(tmp_path, "Approved-by: the owner, 2027-01-20\n")
     research, closes, rf, last = _bodies(100)         # sessions from 2027-01-05
     early = [r["date"] for r in research["strategies"][0]["record"]["sessions"] if r["date"] < "2027-01-20"]
     assert early                                       # INC-01-era rows sit before the approval
-    row = _row((research, closes, rf, last), path=tmp_path / "roster.yaml")
+    row = _row((research, closes, rf, last), path=path)
     after = [r for r in research["strategies"][0]["record"]["sessions"] if r["date"] >= "2027-01-20"]
     assert row["sessions_done"] == len(after) < 100 and row["verdict"] == "IN PROGRESS"
 
 
 def test_only_inc01_sessions_before_approval_is_not_started(tmp_path):
-    (tmp_path / "preregistration.md").write_text("Approved-by: the owner, 2030-01-01\n")
-    row = _row(_bodies(40), path=tmp_path / "roster.yaml")
+    row = _row(_bodies(40), path=_experiment(tmp_path, "Approved-by: the owner, 2030-01-01\n"))
     assert row["verdict"] == "NOT STARTED" and row["sessions_done"] == 0 and row["reason"] == "no INC-02 fill yet"
 
 

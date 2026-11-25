@@ -2400,8 +2400,11 @@ let propose_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
    quantities, never on time (start_read's comment says why). A fill that
    names no position is applied as before. Should a later fill's update ever
    arrive before an earlier one's, the earlier one is skipped and its cash
-   waits for the read [after_fill] starts, which is the correction either
-   way: an understatement for one round trip, never a double count. *)
+   waits for the read [after_fill] starts, which corrects it, never a double
+   count -- but until that read the sign depends on the side: a skipped
+   earlier BUY leaves its cash debit out, so equity is OVERSTATED (it masks
+   a drawdown, failing open) for one round trip, and a skipped SELL leaves
+   its cash credit out, so equity is understated. *)
 let already_held ~held ~side ~position =
   match side with
   | Order.Side.Buy -> Float.( >= ) held (position -. Order.epsilon)
@@ -3246,6 +3249,16 @@ let tca_json t : Yojson.Safe.t =
               `String
                 "the newest 500 fills, all sessions; every fill counts equally, whatever \
                  its size" );
+            (* The newest fill's time: what the means are as of; null with no fill. *)
+            ( "as_of",
+              match
+                List.max_elt fills ~compare:(fun (a : Journal.Fill_row.t) b ->
+                    Time_ns.compare a.Journal.Fill_row.fill.Order.Fill.at
+                      b.Journal.Fill_row.fill.Order.Fill.at)
+              with
+              | Some r ->
+                  `String (Desk_time.rfc3339 r.Journal.Fill_row.fill.Order.Fill.at)
+              | None -> `Null );
             ( "overall",
               bench_summary (Tca.summarize_benchmarks (List.map bench_rows ~f:snd)) );
             ( "by_strategy",

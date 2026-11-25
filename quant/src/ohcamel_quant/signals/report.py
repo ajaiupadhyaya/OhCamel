@@ -27,9 +27,10 @@ is at or before the run's instant -- never the wall-clock date, so a late run
 reports the session it was scheduled for -- and, when ``/api/desk/sessions``
 answers with a different newest close, that close's date, with a note.
 * ``pnl_by_strategy`` -- one row a registered strategy: tier, state, capital
-  fraction and its latest judgement. ``pnl`` is null: per-strategy P&L is not
-  on the wire until Stage 3 (``/api/research``'s ``record`` is null), and
-  nothing here estimates it.
+  fraction and its latest judgement. ``pnl`` is null: per-strategy P&L is
+  served as ``/api/research``'s ``record`` (sessions of date, allocated, pnl, in
+  dollars) on the gated live host only, so this public table does not copy it,
+  and nothing here estimates it; the pooled test reads it.
 * ``refusals`` -- each strategy's latest judgement whose verdict is
   ``rejected`` or ``advisory`` (rule and detail), and each latest rebalance
   sentence that begins "refused". The route serves only the latest judgement
@@ -59,6 +60,7 @@ whatever the other routes gave -- empty tables when the engine is down.
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import re
@@ -71,7 +73,7 @@ import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
 from .pooled import SESSIONS, analytic_power, psr_and_se, verdict_at
-from .roster import ROSTER_PATH, preregistration_text, recorded_approval
+from .roster import ROSTER_PATH, load_roster, preregistration_text, recorded_approval
 
 __all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "PAPER_SENTENCE", "ROUTES", "TCA_COLUMNS", "TIMEOUT_S",
            "VAR_SCORE_COLUMNS", "POOLED_COLUMNS", "run"]
@@ -102,7 +104,7 @@ BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "
 VAR_SCORE_COLUMNS = ["as_of", "source", "estimator", "window", "level", "n", "exceptions", "kupiec_p",
                      "christoffersen_p", "light", "message", "min_sessions", "other_window_sessions"]
 TCA_COLUMNS = ["scope", "strategy", "fills", "open_n", "close_n", "vwap_n", "mean_vs_open_bps", "mean_vs_close_bps",
-               "mean_vs_vwap_bps", "source", "window", "note"]
+               "mean_vs_vwap_bps", "source", "window", "as_of", "note"]
 #: INC-02's one test (signals/pooled.py): the brief's eight columns, then what a reader needs to place them -- the
 #: reason a test has not started, the statistic's name (proposed until the owner approves it), the as-of, the source.
 POOLED_COLUMNS = ["experiment", "sessions_done", "sessions_required", "psr", "sharpe_se", "power_at_1",
@@ -115,7 +117,7 @@ RUNNING_NOTE = "running, not the test's result"
 PAPER_SENTENCE = ("Paper fills have no market impact and no queue; realised shortfall here is a floor on what a "
                   "real venue would charge.")
 LIGHTS = ("green", "yellow", "red")
-PNL_NOTE = "not on the wire until Stage 3"
+PNL_NOTE = "not copied: per-strategy P&L (dollars) is served on the gated live host only"
 # /api/ops `alerts.kill_switch` (json_of_alerts: off | armed | tripped) in the front page's words. "off" is the
 # Disarmed state; an `enabled: false` book has no switch at all, whatever it says, and reads "disabled" too.
 KILL_SWITCH_WORDS = {"off": "disabled", "armed": "armed", "tripped": "halted"}
@@ -228,8 +230,9 @@ def _strategies(research: dict[str, Any], notes: list[str]) -> tuple[list[dict],
         if isinstance(rebalance, str) and rebalance.startswith("refused"):
             refusals.append({**common, "source": "rebalance", "verdict": latest.get("verdict"), "rule": None,
                              "detail": rebalance})
-    notes.append("pnl_by_strategy: per-strategy P&L is not on the wire until Stage 3 (/api/research's record is "
-                 "null); the pnl column is null, never estimated")
+    notes.append("pnl_by_strategy: per-strategy P&L is /api/research's record (sessions of date, allocated, pnl, "
+                 "in dollars), served on the gated live host only; this public table does not copy it, so the "
+                 "pnl column is null, never estimated")
     notes.append("refusals: /api/research serves each strategy's latest judgement only, whatever session "
                  "received it; received_at dates each")
     return pnl, refusals
@@ -278,13 +281,17 @@ def _tca_rows(tca: dict[str, Any] | None, notes: list[str]) -> list[dict[str, An
     window = block.get("window") if isinstance(block.get("window"), str) else None
     if source is None or window is None:
         notes.append("tca benchmarks: the engine served no source or window string, so the rows carry none")
+    # the newest fill's time the engine states the means as of; null (with a note) from an engine that predates it
+    as_of = block.get("as_of") if isinstance(block.get("as_of"), str) else None
+    if as_of is None:
+        notes.append("tca benchmarks: the engine served no as_of (no fill, or an engine that predates it)")
     keys = ("fills", "open_n", "close_n", "vwap_n", "mean_vs_open_bps", "mean_vs_close_bps", "mean_vs_vwap_bps")
 
     def row(scope: str, strategy: str | None, x: Any) -> dict[str, Any]:
         x = x if isinstance(x, dict) else {}
         vals = {"fills": _count(x.get("count"))} | {k: (_count(x.get(k)) if k.endswith("_n") else _num(x.get(k)))
                                                     for k in keys[1:]}
-        return {"scope": scope, "strategy": strategy, **vals, "source": source, "window": window,
+        return {"scope": scope, "strategy": strategy, **vals, "source": source, "window": window, "as_of": as_of,
                 "note": PAPER_SENTENCE}
 
     by = block.get("by_strategy") if isinstance(block.get("by_strategy"), dict) else {}
@@ -441,63 +448,107 @@ def _var_score(desk: dict[str, Any] | None, notes: list[str]) -> list[dict[str, 
     return rows
 
 
+#: INC-01 closed at this session (its charter): INC-02's series never starts on or before it, whatever the approval
+#: line says.
+INC01_CLOSE = "2026-11-05"
+#: The last published risk-free rate is carried across at most this many sessions (the backtest router's rule,
+#: api/routers/performance.py ``RF_FFILL_SESSIONS``); past it the session is unscorable.
+RF_CARRY_SESSIONS = 5
+RF_NOTE = (f"r_f is the last published risk-free rate on or before each session, carried at most "
+           f"{RF_CARRY_SESSIONS} sessions")
+
+
+def _rate_on_or_before(rf: dict[str, float], keys: list[str], d: str, close_dates: list[str]) -> float | None:
+    """The last published rate dated on or before ``d``, when no more than :data:`RF_CARRY_SESSIONS` session
+    closes lie after its date up to ``d``; else None."""
+    i = bisect.bisect_right(keys, d)
+    if i == 0:
+        return None
+    k = keys[i - 1]
+    carried = bisect.bisect_right(close_dates, d) - bisect.bisect_right(close_dates, k)
+    return rf[k] if carried <= RF_CARRY_SESSIONS else None
+
+
 def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any,
-                  notes: list[str], since: str | None = None) -> tuple[list[float] | None, int, str | None]:
+                  notes: list[str], since: str | None = None,
+                  slugs: frozenset[str] | None = None) -> tuple[list[float | None] | None, int, str | None]:
     """INC-02's T1, the proposed statistic: per session ``sum_i (pnl_i - allocated_i * r_f) / prior-close equity``,
     i.e. ``sum_i w_i (r_i - r_f)`` with ``w_i`` the share of the account allocated. Each strategy's ``record`` is
-    ``{"sessions": [{date, allocated, pnl}]}`` (desk/record.ml's session, from the strategy's first fill); a
-    session in which no strategy has a row counts as zero (T2: a flat or halted session still counts). The series
-    runs from the first date any strategy has a row to the newest session close. Returns ``(series, recorded,
-    cause)``: ``recorded`` counts the sessions recorded from the first fill; ``series`` is None, with the
-    ``cause``, when a close lacks a prior equity or a rate (the statistic is then not computable, but the
-    sessions still happened), and ``(None, 0, None)`` when there is no record at all. ``rf_for()`` reads the
-    rate, and is called only once there is a record to need it. ``since`` (an ISO date, INC-02's approval date)
-    is the ONE place the series is cut to INC-02: record rows dated before it (INC-01's sessions, which the
-    journal still holds) are dropped before anything is counted, so the first session is the first fill on or
-    after it. The served record stays full history."""
+    ``{"sessions": [{date, allocated, pnl, turnover}]}`` (desk/record.ml's session, from the strategy's first
+    fill); only strategies whose name is in ``slugs`` (INC-02's roster) are read, when given.
+
+    T2: "500 NYSE sessions from INC-02's first fill". ``since`` (an ISO date, INC-02's approval date) is clamped
+    to after :data:`INC01_CLOSE`; the first session is the first record row on or after it whose ``turnover`` is
+    positive -- a FILL, not a row INC-01's carried inventory marks -- and the series runs from there over the
+    session closes, cut to the first :data:`SESSIONS` BEFORE any equity or rate is looked up, so a gap after
+    session 500 never touches the test. A session in which no strategy has a row counts as zero (a flat or
+    halted session still counts). Within the window a session with no prior-close equity, or no risk-free rate
+    published on or before it within :data:`RF_CARRY_SESSIONS` sessions, is None (unscorable) and counted in a
+    note; it never voids the series. Returns ``(series, recorded, cause)``: ``recorded`` counts every session
+    close from the first fill; ``(None, 0, None)`` when there is no fill at all and ``(None, 0, cause)`` when
+    there is one but no close to place it. ``rf_for()`` is called only once there is a window to score. The
+    served record stays full history."""
+    floor = max(since or INC01_CLOSE, INC01_CLOSE)
+    after = (lambda d: d > floor) if floor == INC01_CLOSE else (lambda d: d >= floor)
     rows: dict[str, list[tuple[float, float]]] = {}
+    traded: set[str] = set()
     strategies = (research or {}).get("strategies")
     for s in strategies if isinstance(strategies, list) else []:
-        rec = s.get("record") if isinstance(s, dict) else None
+        if not isinstance(s, dict) or (slugs is not None and s.get("name") not in slugs):
+            continue
+        rec = s.get("record")
         listed = rec.get("sessions") if isinstance(rec, dict) else None
         for r in listed if isinstance(listed, list) else []:
-            if not isinstance(r, dict) or not isinstance(r.get("date"), str):
+            if not isinstance(r, dict) or not isinstance(r.get("date"), str) or not after(r["date"]):
                 continue
             alloc, pnl = _num(r.get("allocated")), _num(r.get("pnl"))
             if alloc is not None and pnl is not None:
                 rows.setdefault(r["date"], []).append((alloc, pnl))
-    if since is not None:
-        rows = {d: v for d, v in rows.items() if d >= since}
-    if not rows:
+            turnover = _num(r.get("turnover"))
+            if turnover is not None and turnover > 0:
+                traded.add(r["date"])
+    if not traded:
+        if rows:
+            notes.append(f"pooled_test: {len(rows)} record dates after {floor} carry no fill (no positive "
+                         "turnover): INC-02's first fill is not yet recorded")
         return None, 0, None
+    first = min(traded)
+    rows = {d: v for d, v in rows.items() if d >= first}
     closes = sorted((c["date"], _num(c.get("equity_close"))) for c in sessions or []
                     if isinstance(c, dict) and isinstance(c.get("date"), str))
-    first = min(rows)
-    recorded = sum(1 for d, _ in closes if d >= first)
-    unmatched = sorted(d for d in rows if d not in {c for c, _ in closes})
+    close_dates = [d for d, _ in closes]
+    recorded = sum(1 for d in close_dates if d >= first)
+    unmatched = sorted(d for d in rows if d not in set(close_dates))
     if unmatched:
         notes.append(f"pooled_test: {len(unmatched)} record dates have no session close in /api/desk/sessions "
                      f"and are not counted (first: {unmatched[0]})")
     if recorded == 0:
-        cause = "no session close at or after the first record"
+        cause = "no session close at or after INC-02's first fill"
         notes.append(f"pooled_test: {cause}")
         return None, 0, cause
-    rf = rf_for()
-    out: list[float] = []
-    for i, (d, _) in enumerate(closes):
-        if d < first:
-            continue
+    start = bisect.bisect_left(close_dates, first)
+    window = range(start, min(start + SESSIONS, len(closes)))     # the test's 500, cut before any lookup
+    rf = rf_for() or {}
+    keys = sorted(rf)
+    out: list[float | None] = []
+    gaps: list[str] = []
+    for i in window:
+        d = close_dates[i]
         prior = closes[i - 1][1] if i > 0 else None
         if prior is None or prior <= 0:
-            cause = f"no prior-close equity for {d}"
-            notes.append(f"pooled_test: {cause}: the statistic is not computed")
-            return None, recorded, cause
-        drag = rf.get(d) if rf else None
+            out.append(None)
+            gaps.append(f"no prior-close equity for {d}")
+            continue
+        drag = _rate_on_or_before(rf, keys, d, close_dates)
         if drag is None:
-            cause = f"no risk-free rate for {d}"
-            notes.append(f"pooled_test: {cause}: the statistic is not computed")
-            return None, recorded, cause
+            out.append(None)
+            gaps.append(f"no risk-free rate for {d} (none published on or before it within "
+                        f"{RF_CARRY_SESSIONS} sessions)")
+            continue
         out.append(sum(pnl - alloc * drag for alloc, pnl in rows.get(d, [])) / prior)
+    if gaps:
+        notes.append(f"pooled_test: {len(gaps)} of {len(out)} sessions unscorable and left out of the statistic "
+                     f"(first: {gaps[0]})")
     return out, recorded, None
 
 
@@ -518,17 +569,28 @@ def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf
         dateless = any(re.match(r"^`?Approved-by:`?\s*\S", line.strip()) for line in text.splitlines())
         return [{**head, **idle, "reason": "INC-02's approval line carries no date" if dateless
                  else "INC-02 awaits the owner's approval"}]
-    daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes, since=approved_on)
-    if recorded == 0 and cause is None:
-        return [{**head, **idle, "reason": "no INC-02 fill yet"}]
+    try:
+        slugs = frozenset(c.slug for c in load_roster(roster_path).cells)
+    except (OSError, ValueError) as e:
+        notes.append(f"pooled_test: INC-02's roster could not be read ({type(e).__name__}): nothing is counted")
+        return [{**head, **idle, "reason": "INC-02's roster could not be read"}]
+    daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes, since=approved_on, slugs=slugs)
+    if recorded == 0:
+        return [{**head, **idle, "reason": "no INC-02 fill yet" if cause is None else cause}]
     done = min(recorded, SESSIONS)
-    if daily is None:     # sessions happened; the statistic cannot be computed this session
-        return [{**head, "sessions_done": done, "psr": None, "sharpe_se": None, "verdict": "IN PROGRESS",
-                 "reason": f"statistic not computable this session: {cause}", "statistic": label}]
-    psr, se = psr_and_se(daily[:SESSIONS])
-    verdict = verdict_at(done, psr)
-    return [{**head, "sessions_done": done, "psr": psr, "sharpe_se": se, "verdict": verdict,
-             "reason": RUNNING_NOTE if verdict == "IN PROGRESS" else None, "statistic": label}]
+    scored = [x for x in daily or [] if x is not None]
+    unscorable = len(daily or []) - len(scored)
+    psr, se = psr_and_se(scored)
+    verdict = verdict_at(done, psr)     # decided at 500 on the first 500 sessions; a later gap is never read
+    gap = f"{unscorable} of {len(daily or [])} sessions unscorable (no prior-close equity or rate)" if unscorable else None
+    if psr is None and verdict == "IN PROGRESS":
+        reason = "statistic not computable this session" + (f": {gap}" if gap else ": too few scored sessions")
+    elif verdict == "IN PROGRESS":
+        reason = RUNNING_NOTE + (f"; {gap}" if gap else "")
+    else:
+        reason = gap
+    return [{**head, "sessions_done": done, "psr": psr, "sharpe_se": se, "verdict": verdict, "reason": reason,
+             "statistic": f"{label}; {RF_NOTE}"}]
 
 
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],
