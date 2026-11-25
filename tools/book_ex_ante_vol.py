@@ -15,7 +15,8 @@ the farm rows from the freeze on the host that holds the warehouse (the owner's 
 *Deploying the desk*, gives the exact command); it computes each figure directly, so it needs no freeze and works on a
 month frozen before task 2.2.
 
-Read-only unless ``--write``. A farm strategy the month's freeze carries no ``ex_ante_vol`` for is REFUSED (exit 1):
+Read-only unless ``--write``. With ``--vols``, the file's ``month`` must be ``--month``'s (default: this month), or
+the run is refused before anything is read from it. A farm strategy the month's freeze carries no ``ex_ante_vol`` for is REFUSED (exit 1):
 nothing is written, and the book keeps whatever it held. EXP-A01's rows (``exp_a01_*``) are never touched. The book's own
 ``(trading ...)`` word is not read here: a book still carrying a placeholder mark is refused by the loader once
 trading is enabled (``check-book``).
@@ -58,6 +59,18 @@ def rewrite(text: str, vols: dict[str, float]) -> tuple[str, list[str], list[str
     return "".join(out), done, refused
 
 
+def month_mismatch(doc: dict, month: date) -> str | None:
+    """The refusal when ``vols.json``'s ``month`` (``YYYY-MM``, book_vols' own) is not ``--month``'s; None when they
+    agree. A file with no month is refused too: its figures could be any month's."""
+    want = f"{month.year:04d}-{month.month:02d}"
+    got = doc.get("month") if isinstance(doc, dict) else None
+    if got is None:
+        return f"REFUSED: {want} asked, but the vols file names no month"
+    if got != want:
+        return f"REFUSED: the vols file is for {got}, not {want} (pass --month {got}-01 if that is the month meant)"
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("book", type=Path)
@@ -67,6 +80,11 @@ def main() -> int:
     args = ap.parse_args()
     if args.vols is not None:
         doc = json.loads(args.vols.read_text())
+        problem = month_mismatch(doc, args.month)
+        if problem:
+            print(problem, file=sys.stderr)
+            return 1
+        print(f"vols for {doc['month']}")
         vols = {k: float(v["ex_ante_vol"]) for k, v in doc["vols"].items() if v.get("ex_ante_vol") is not None}
         for k, v in doc["vols"].items():
             print(f"{k}  {v.get('params_source')}" + (f"  NOT COMPUTED: {v.get('why')}" if v.get("why") else ""))

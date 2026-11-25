@@ -143,3 +143,17 @@ def test_book_ex_ante_vol_rewrites_farm_rows_from_the_freeze_and_refuses_a_missi
     assert "(ex_ante_vol 0.042100)" in new and "(ex_ante_vol 0.0957)" in new   # EXP-A01 untouched
     assert new.count("(ex_ante_vol 0.075)") == 1   # the refused row keeps what it held ...
     assert new.count("(ex_ante_vol_source placeholder)") == 1   # ... and its placeholder mark; farm_a's is gone
+
+
+def test_book_ex_ante_vol_refuses_a_vols_file_for_another_month():
+    import importlib.util
+    from datetime import date
+
+    from ohcamel_quant.config import REPO_ROOT
+
+    spec = importlib.util.spec_from_file_location("book_ex_ante_vol", REPO_ROOT / "tools" / "book_ex_ante_vol.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    assert tool.month_mismatch({"month": "2026-12", "vols": {}}, date(2026, 12, 1)) is None
+    assert "is for 2026-11, not 2026-12" in tool.month_mismatch({"month": "2026-11", "vols": {}}, date(2026, 12, 1))
+    assert "names no month" in tool.month_mismatch({"vols": {}}, date(2026, 12, 1))

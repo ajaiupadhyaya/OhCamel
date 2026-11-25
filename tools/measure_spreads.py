@@ -14,10 +14,18 @@ Run on the droplet, read-only, with the project's own environment from the repos
       quant/.venv/bin/python tools/measure_spreads.py --warehouse /data/warehouse/warehouse.duckdb \\
         --sessions 20 --out research/config/costs_measured.csv
 
-(inside the worker image the keys are already in the environment and the warehouse path is the service's own.)
-It writes the CSV (``ticker, tier, median_half_spread_bps, sessions, quotes, first_session, last_session``) and prints
-the costs.yaml rows to paste, each ``source: measured``; commit the CSV beside costs.yaml. Nothing is written to the
-warehouse. A name with no quotes in any sampled window is reported and keeps its provisional row.
+(inside the worker image the keys are already in the environment and the warehouse path is the service's own; the
+image's file system is read-only, so ``--out`` defaults to /tmp there and the file is copied out with ``docker cp``.)
+It writes the CSV (``ticker, tier, median_half_spread_bps, sessions, quotes, first_session, last_session``), a
+provenance sidecar beside it (``<out>.meta.json``: the feed, the sampled windows, the session list, the code's sha and
+the run's time, as the repository's other fetched files carry), and prints the costs.yaml rows to paste, each
+``source: measured``; commit the CSV and its sidecar beside costs.yaml. Nothing is written to the warehouse. A name
+with no quotes in any sampled window is reported and keeps its provisional row.
+
+The output path is opened and checked BEFORE any request, so a read-only or missing directory fails at once rather
+than after 42 names x 20 sessions x 5 windows of requests. Requests are paced (``--pace`` seconds apart, default
+0.35: under Alpaca's 200 a minute) and a 429 or a 5xx is retried with exponential backoff (``Retry-After`` when the
+server sends one), up to :data:`RETRIES` times, before the run fails.
 """
 
 from __future__ import annotations
@@ -27,7 +35,10 @@ import csv
 import json
 import os
 import statistics
+import subprocess
 import sys
+import time as clock
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, time, timedelta
@@ -45,6 +56,59 @@ UTC = ZoneInfo("UTC")
 QUOTES = "https://data.alpaca.markets/v2/stocks/{symbol}/quotes"
 #: Minute windows sampled in each session, New York time: away from the open and close auctions.
 WINDOWS = (time(10, 0), time(11, 30), time(13, 0), time(14, 30), time(15, 30))
+RETRIES = 6          # attempts after the first, on a 429 or a 5xx
+BACKOFF_S = 1.0      # the first wait; doubled each retry, capped at 60 s
+FEED = "iex"
+REPO = Path(__file__).resolve().parents[1]
+
+
+def default_out() -> str:
+    """research/config/costs_measured.csv in a writable checkout; /tmp/costs_measured.csv where the repository is
+    read-only (the worker image)."""
+    target = REPO / "research" / "config"
+    return str(target / "costs_measured.csv") if os.access(target, os.W_OK) else "/tmp/costs_measured.csv"
+
+
+def check_out(path: str) -> None:
+    """Fail now, before any request, when ``path`` (or its sidecar) cannot be written."""
+    out = Path(path)
+    if not out.parent.is_dir():
+        raise SystemExit(f"--out {path}: the directory {out.parent} does not exist")
+    for p in (out, Path(f"{path}.meta.json")):
+        if not os.access(p if p.exists() else p.parent, os.W_OK):
+            raise SystemExit(f"--out {path}: {p} cannot be written; pass --out under /tmp")
+
+
+class Paced:
+    """At most one request per ``pace`` seconds, and a 429 or a 5xx retried with backoff."""
+
+    def __init__(self, pace: float, sleep=clock.sleep, now=clock.monotonic) -> None:
+        self.pace, self.sleep, self.now, self.last = pace, sleep, now, None
+
+    def get(self, req: urllib.request.Request, opener=urllib.request.urlopen) -> dict:
+        wait = BACKOFF_S
+        for attempt in range(RETRIES + 1):
+            if self.last is not None and (gap := self.pace - (self.now() - self.last)) > 0:
+                self.sleep(gap)
+            self.last = self.now()
+            try:
+                with opener(req, timeout=30) as r:
+                    return json.load(r)
+            except urllib.error.HTTPError as e:
+                if attempt == RETRIES or not (e.code == 429 or 500 <= e.code < 600):
+                    raise
+                after = e.headers.get("Retry-After") if e.headers else None
+                self.sleep(float(after) if after and after.replace(".", "", 1).isdigit() else min(wait, 60.0))
+                wait *= 2
+        raise AssertionError("unreachable")
+
+
+def code_sha() -> str | None:
+    try:
+        return subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return os.environ.get("OHCAMEL_GIT_SHA") or None
 
 
 def sessions(warehouse: str, n: int) -> list[date]:
@@ -61,18 +125,19 @@ def sessions(warehouse: str, n: int) -> list[date]:
     return sorted(d for (d,) in rows)
 
 
-def quotes(symbol: str, start: datetime, end: datetime, key: str, secret: str) -> list[tuple[float, float]]:
+def quotes(symbol: str, start: datetime, end: datetime, key: str, secret: str,
+           client: Paced | None = None) -> list[tuple[float, float]]:
+    client = client or Paced(0.0)
     out: list[tuple[float, float]] = []
     token = None
     while True:
-        q = {"feed": "iex", "start": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        q = {"feed": FEED, "start": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
              "end": end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": "10000"}
         if token:
             q["page_token"] = token
         req = urllib.request.Request(QUOTES.format(symbol=urllib.parse.quote(symbol)) + "?" + urllib.parse.urlencode(q),
                                      headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            body = json.load(r)
+        body = client.get(req)
         for x in body.get("quotes") or []:
             out.append((float(x.get("bp") or 0.0), float(x.get("ap") or 0.0)))
         token = body.get("next_page_token")
@@ -89,8 +154,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--warehouse", required=True, help="the warehouse DuckDB file (opened read-only)")
     ap.add_argument("--sessions", type=int, default=20, help="the last N bars_minute sessions")
-    ap.add_argument("--out", default="research/config/costs_measured.csv")
+    ap.add_argument("--out", default=None, help="the CSV (default: research/config/costs_measured.csv, or /tmp "
+                    "where the repository is read-only); its provenance goes to <out>.meta.json")
+    ap.add_argument("--pace", type=float, default=0.35, help="seconds between requests (default 0.35)")
     args = ap.parse_args()
+    args.out = args.out or default_out()
+    check_out(args.out)
     key, secret = os.environ.get("APCA_API_KEY_ID"), os.environ.get("APCA_API_SECRET_KEY")
     if not key or not secret:
         print("APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set", file=sys.stderr)
@@ -100,6 +169,8 @@ def main() -> int:
         print("the warehouse's bars_minute holds no sessions", file=sys.stderr)
         return 1
     model = costs.load()
+    client = Paced(args.pace)
+    started = datetime.now(UTC)
     rows, yaml_rows = [], []
     for symbol in sorted(model.tickers):
         per_session, n_quotes = [], 0
@@ -107,7 +178,7 @@ def main() -> int:
             hs: list[float] = []
             for w in WINDOWS:
                 t0 = datetime.combine(d, w, NY)
-                hs.extend(half_spreads_bps(quotes(symbol, t0, t0 + timedelta(minutes=1), key, secret)))
+                hs.extend(half_spreads_bps(quotes(symbol, t0, t0 + timedelta(minutes=1), key, secret, client)))
             n_quotes += len(hs)
             if hs:
                 per_session.append(statistics.median(hs))
@@ -130,7 +201,17 @@ def main() -> int:
         wr = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["ticker"])
         wr.writeheader()
         wr.writerows(rows)
-    print(f"wrote {args.out}: {len(rows)} names over {len(days)} sessions {days[0]} .. {days[-1]}")
+    meta = {"source": "alpaca-market-data", "synthetic": False, "feed": FEED, "endpoint": QUOTES,
+            "windows_new_york": [w.strftime("%H:%M") + "-" + (datetime.combine(date.min, w) + timedelta(minutes=1))
+                                 .strftime("%H:%M") for w in WINDOWS],
+            "sessions": [d.isoformat() for d in days], "names": len(rows), "cost_file_version": model.version,
+            "code_sha": code_sha(), "run_started_utc": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "run_finished_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "method": "median over sessions of the median within a session of (ask - bid) / 2 / mid in bp, two-sided "
+                      "quotes only (0 < bid < ask); tier rounded up (costs.tier_for)",
+            "produced_by": "tools/measure_spreads.py"}
+    Path(f"{args.out}.meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    print(f"wrote {args.out} and its .meta.json: {len(rows)} names over {len(days)} sessions {days[0]} .. {days[-1]}")
     print("costs.yaml rows:")
     print("\n".join(yaml_rows))
     return 0

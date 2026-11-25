@@ -9,8 +9,8 @@
 re-renders docs/perf/kernels.md. `measured_on` is required and is written as given: say what the
 machine is, and whether it is the droplet's CPU class. `host` is NOT given: it is the CPU model the run
 reads from the machine it runs on (`bench.cpu_model()`), so a row cannot claim a CPU it was not measured on.
-`garch_fit` dispatches on the row whose `host` matches the running CPU (else the file's latest row), so a
-run on the droplet replaces the laptop's verdict there. `--sha` is for a run where git is absent (the
+`garch_fit` dispatches on the row whose `host` matches the running CPU; with no such row it stays on the
+wheel's engine (there is no "latest row" fallback), so a run on the droplet gives the droplet its own verdict. `--sha` is for a run where git is absent (the
 image): pass the checkout's commit. The droplet command is in docs/runbooks/compute.md.
 """
 
