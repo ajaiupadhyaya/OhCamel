@@ -2,7 +2,9 @@
 
 Universe: universes.json ``sectors`` (the eleven Select Sector SPDR ETFs) against the market ``SPY``
 (universes.json ``us_equity_indices``), daily returns from ``ctx.market.returns`` -- real data only. A sector
-without enough common history with SPY is skipped with its reason (XLC and XLRE are younger than the rest).
+without enough common history with SPY is skipped with its reason. XLC and XLRE are younger than the rest, so they
+are scored on their shorter spans, and the pooled Diebold-Mariano test (the dates every scored sector shares) is
+cut to their span.
 ``params``: ``tickers`` (replaces the sectors), ``market``, ``eval_sessions``, ``kalman_window``, ``refit_every``
 (tests shorten the run; the schedule passes none).
 

@@ -30,6 +30,9 @@ from ..portfolio.covariance import TRADING_DAYS, estimate_covariance
 
 ESTIMATORS = ("sample", "ewma", "lw_constant_corr", "lw_identity", "oas", "mp_denoise", "pca_factor",
               "nonlinear_shrinkage", "dcc")
+#: Task 4.7's entrants: one that raises is dropped from its universe's league with its reason (``failures``),
+#: and the original seven still rank; an original estimator that raises still fails the universe.
+ENTRANTS = ("nonlinear_shrinkage", "dcc")
 EST_WINDOW = 252
 HOLD = 21
 EVAL_SESSIONS = 2520
@@ -67,7 +70,11 @@ def estimator_cov(name: str, window: pd.DataFrame, hold: int = HOLD) -> np.ndarr
 
 
 def league_returns(returns: pd.DataFrame, *, estimators: tuple[str, ...] = ESTIMATORS, est_window: int = EST_WINDOW,
-                   hold: int = HOLD, eval_sessions: int = EVAL_SESSIONS) -> tuple[pd.DataFrame, pd.DataFrame]:
+                   hold: int = HOLD, eval_sessions: int = EVAL_SESSIONS,
+                   failures: dict[str, str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """GMV daily returns and gross per estimator. An :data:`ENTRANTS` estimator that raises at any rebalance is
+    dropped from the result and its reason written to ``failures`` (when given); any other estimator's error
+    propagates."""
     r = returns.dropna()
     first = max(est_window, len(r) - eval_sessions)
     if len(r) - first < hold:
@@ -77,14 +84,22 @@ def league_returns(returns: pd.DataFrame, *, estimators: tuple[str, ...] = ESTIM
     for s in range(first, len(r), hold):
         win, nxt = r.iloc[s - est_window:s], r.iloc[s:s + hold].to_numpy(dtype=float)
         row = {"date": r.index[s]}
-        for e in estimators:
-            w = gmv_weights(estimator_cov(e, win, hold))
+        for e in [e for e in estimators if e in out]:
+            try:
+                w = gmv_weights(estimator_cov(e, win, hold))
+            except Exception as err:   # noqa: BLE001 -- an entrant's failure is its own, never the league's
+                if e not in ENTRANTS:
+                    raise
+                del out[e]
+                if failures is not None:
+                    failures[e] = f"{type(err).__name__} at {r.index[s].date()}: {str(err)[:160]}"
+                continue
             out[e].append(nxt @ w)
             row[e] = float(np.abs(w).sum())
         gross.append(row)
     idx = r.index[first:]
     daily = pd.DataFrame({e: np.concatenate(v) for e, v in out.items()}, index=idx)
-    return daily, pd.DataFrame(gross).set_index("date")
+    return daily, pd.DataFrame(gross).set_index("date")[list(out)]
 
 
 def variance_test(a: np.ndarray, b: np.ndarray) -> dict[str, float]:

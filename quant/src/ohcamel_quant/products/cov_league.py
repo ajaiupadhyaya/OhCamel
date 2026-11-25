@@ -3,8 +3,11 @@
 Universes: universes.json ``sectors``; every universes.json ETF with full
 history over the span; ``ndx100`` members from the warehouse (survivorship
 noted). Tickers without full history over the evaluation span are dropped
-and listed. ``params["universes"]`` (name -> tickers, or None for the
-warehouse's ndx100) replaces the default set in tests.
+and listed. A task-4.7 entrant (``nonlinear_shrinkage``, ``dcc``) that raises is
+skipped for its universe with its reason (the ``skipped`` table's ``estimator``
+column) and the original seven still rank; the overlay chooses among those seven
+only (signals/overlay.py ``OVERLAY_ESTIMATORS``), so its choice is unchanged.
+``params["universes"]`` (name -> tickers, or None for the warehouse's ndx100) replaces the default set in tests.
 """
 
 from __future__ import annotations
@@ -57,14 +60,18 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             dropped = sorted(set(span.columns) - set(full))
             if dropped:
                 notes.append(f"{name}: no full history over the span for {', '.join(dropped)}")
+            failures: dict[str, str] = {}
             daily, gross = C.league_returns(span[full], est_window=C.EST_WINDOW, hold=C.HOLD,
-                                            eval_sessions=eval_sessions)
+                                            eval_sessions=eval_sessions, failures=failures)
         except (DataUnavailable, ValueError) as e:
-            skipped.append({"universe": name, "reason": str(e)})
+            skipped.append({"universe": name, "estimator": None, "reason": str(e)})
             continue
+        for e, why in failures.items():
+            skipped.append({"universe": name, "estimator": e, "reason": f"entrant {e} skipped: {why}"})
+            notes.append(f"{name}: entrant {e} raised and is not ranked ({why}); the other estimators rank")
         vols = daily.std(ddof=1) * np.sqrt(252)
         ranks = vols.rank(method="first").astype(int)
-        for e in ESTIMATORS:
+        for e in [e for e in ESTIMATORS if e in daily.columns]:
             vt = None if e == "sample" else C.variance_test(daily[e].to_numpy(), daily["sample"].to_numpy())
             league.append({"universe": name, "estimator": e, "realized_vol": float(vols[e]), "rank": int(ranks[e]),
                            "lw_p": None if vt is None else vt["pvalue"], "n_days": int(len(daily)),
@@ -76,12 +83,13 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         prov.append({"source": "ohcamel-cov-league", "universe": name, "tickers": list(full)})
         ctx.progress((k + 1) / len(universes), name)
     if not league:
-        return ArtifactSpec(tables={"skipped": pd.DataFrame(skipped)}, data_asof=None, provenance=prov, notes=notes,
+        return ArtifactSpec(tables={"skipped": pd.DataFrame(skipped, columns=["universe", "estimator", "reason"])},
+                            data_asof=None, provenance=prov, notes=notes,
                             verdict="INSUFFICIENT DATA", verdict_detail="NO UNIVERSE WITH COMMON HISTORY")
     lg = pd.DataFrame(league)
     win = lg[lg["rank"] == 1].groupby("estimator").size().sort_values(ascending=False)
     return ArtifactSpec(
-        tables={"league": lg, "tests": pd.DataFrame(tests), "skipped": pd.DataFrame(skipped, columns=["universe", "reason"])},
+        tables={"league": lg, "tests": pd.DataFrame(tests), "skipped": pd.DataFrame(skipped, columns=["universe", "estimator", "reason"])},
         data_asof=str(min(last).date()), provenance=prov,
         notes=[*notes, f"GMV portfolios refitted every {C.HOLD} sessions on {C.EST_WINDOW}; realized volatility "
                        "annualized; equal-variance test vs sample covariance (HAC delta method)"],

@@ -244,3 +244,6 @@ def test_heston_is_fitted_to_the_same_quotes_and_its_violations_are_counted_on_t
     assert set(p) == {"kappa", "theta", "sigma", "rho", "v0", "feller_ratio", "n_iv_failed", "max_abs_err_vol_pts",
                       "status", "nfev", "cost", "start", "n_terms", "L", "violation_points_excluded"}
     assert p["n_terms"] == heston.LEAGUE_N and p["violation_points_excluded"] > 0
+    # the league row carries the excluded and scored points beside the Heston row, and the fit_note its COS settings
+    assert s["violation_points_excluded"] == p["violation_points_excluded"] and s["violation_points_scored"] > 0
+    assert f"COS {heston.LEAGUE_N} terms, L {heston.LEAGUE_L:g}" in s["fit_note"] and "price floor 1e-08" in s["fit_note"]

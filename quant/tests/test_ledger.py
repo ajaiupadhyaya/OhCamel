@@ -38,7 +38,7 @@ LIMITS = [{"name": "book-cap", "kind": "gross_notional", "scope": "portfolio"},
 # Distinctive book numbers: none may reach the payload (a size, a weight, a threshold, a position count).
 CAPITAL = 0.0437
 THRESHOLD = 731500
-POSITIONS = 4733
+POSITIONS = 4799   # no time or date holds 4799 (no hour 47, no minute 79 or 99)
 
 
 def settings(tmp_path: Path, **kw) -> Settings:
@@ -554,8 +554,12 @@ def test_no_book_number_reaches_the_payload(tmp_path, experiments):
     for led in every_state(tmp_path, experiments):
         text = json.dumps(led.to_dict())
         assert "$" not in text and '"threshold"' not in text
-        for n in (str(CAPITAL), "4.37", str(THRESHOLD), "731,500", str(POSITIONS), "4,733"):
-            assert n not in text, n
+        # timestamps and ids are not book numbers: a run's clock ("...T14:47:33Z", "20261125T144733") or an
+        # artifact's hex id can hold any digits, so they are removed before the book's numbers are looked for
+        scrubbed = re.sub(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?|\b\d{8}T\d{6}Z?\b|\b[0-9a-f]{8,}\b",
+                          "", text)
+        for n in (str(CAPITAL), "4.37", str(THRESHOLD), "731,500", str(POSITIONS), "4,799"):
+            assert n not in scrubbed, n
         for r in led.rows:
             if r.state != "static":   # a computed row's numbers are counts, ages and dates only
                 for n in re.findall(r"\d+(?:[.,]\d+)?", r.detail):
@@ -593,8 +597,8 @@ def test_the_prose_file_counts_the_kernels_and_lists_every_cut(tmp_path):
     static = {r.item: r for r in build(tmp_path).rows if r.state == "static"}
     kernels = (WEB / "pages" / "methodology" / "compute.ts").read_text()
     api = kernels[kernels.index("export const KERNEL_API"):]
-    assert len(re.findall(r'^\s+"[a-z_]+",$', api[:api.index("] as const")], re.M)) == 12
-    assert static["KERNELS"].detail.startswith("Twelve Rust kernels")
+    assert len(re.findall(r'^\s+"[a-z_]+",$', api[:api.index("] as const")], re.M)) == 13
+    assert static["KERNELS"].detail.startswith("Thirteen Rust kernels")
     for cut in ("ENGINE DEPTH", "P8 SCENARIO GRID", "C STUBS", "KIOSK MODE", "SAVED LAYOUTS", "DENSITY MODES"):
         assert static[cut].section == "CUT"
 

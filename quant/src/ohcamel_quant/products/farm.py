@@ -208,7 +208,9 @@ def run_cell(strategy: str, universe: str, ctx: Any,
 
 
 def _costs_provenance(m: cost_file.CostModel) -> dict[str, Any]:
-    """The cost file as the page reads it: path, version, and how many tiers are provisional (fix round 1, M2)."""
+    """The cost file as the page reads it: path, version, and how many NAMES sit on a provisional tier (fix round 1,
+    M2). The keys keep their first spelling for older artifacts, but both count tickers, not tiers: ``tiers`` is the
+    names the file prices and ``provisional_tiers`` those whose tier is provisional."""
     return {"source": "costs", "path": cost_file.COSTS_REL, "version": m.version, "tiers": len(m.tickers),
             "provisional_tiers": sum(1 for t in m.tickers if m.source(t) == "provisional")}
 
@@ -217,7 +219,7 @@ def _costs_note(m: cost_file.CostModel) -> str:
     tiers = ", ".join(f"tier {k} {v:g} bp" for k, v in sorted(m.tiers_bps.items()))
     prov = sum(1 for t in m.tickers if m.source(t) == "provisional")
     return (f"costs from {cost_file.COSTS_REL} v{m.version}: half-spread by tier ({tiers}; {prov} of {len(m.tickers)} "
-            f"tiers provisional, not yet measured), borrow {m.borrow_bps:g} bp a year on shorts, financing "
+            f"names on provisional tiers, not yet measured), borrow {m.borrow_bps:g} bp a year on shorts, financing "
             f"{m.financing_spread_bps:g} bp a year over the T-bill rate on gross above 1; sweep at "
             + "/".join(f"{x:g}" for x in m.sweep) + "x the half-spread on the out-of-sample series; capacity at "
             f"{m.participation:.0%} of {m.adv_window}-session median dollar volume")

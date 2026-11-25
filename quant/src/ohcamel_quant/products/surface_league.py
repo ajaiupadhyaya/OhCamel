@@ -52,8 +52,9 @@ from ..jobs.artifacts import ArtifactSpec
 from ..jobs.context import JobCancelled
 from ..options import heston, ssvi, svi
 from ..options.chain import ChainAnalytics, analyze_chain
-from ..options.surface import ARB_K_GRID as K_GRID  # noqa: F401  (the grid the calendar count uses)
 from ..options.surface import (
+    ARB_K_GRID,
+    HESTON_W_FLOOR,
     VolSurface,
     build_surface,
     count_violations,
@@ -61,6 +62,7 @@ from ..options.surface import (
     fit_ssvi_surface,
     heston_violations,
 )
+from ..options.surface import ARB_K_GRID as K_GRID  # noqa: F401  (the grid the calendar count uses)
 
 KIND = "vol.surface_league"
 MIN_DTE = 1.0              # build_surface's default: expiries under a day are not fitted, nor scored
@@ -68,7 +70,9 @@ MAX_GAP_SESSIONS = 1       # the earlier snapshot must be the previous NYSE sess
 COLS = ["underlying", "model", "asof", "n_slices", "n_quotes", "rmse_vol_pts", "butterfly_violations",
         "calendar_violations_quoted", "calendar_pairs_quoted", "calendar_violations", "calendar_pairs",
         "next_day_rmse_vol_pts", "next_day_n", "next_day_unscored",
-        "next_day_fit_asof", "next_day_note", "params", "fit_note"]
+        "next_day_fit_asof", "next_day_note", "params", "fit_note",
+        # Heston only (null for SVI/SSVI): the violation-test points that counted, and those below the price floor
+        "violation_points_scored", "violation_points_excluded"]
 ERR_COLS = ["underlying", "asof", "model", "error"]
 
 
@@ -149,12 +153,17 @@ def _heston_fit(ca: ChainAnalytics, vs: VolSurface) -> _HestonFitted:
 def _heston_score(m: _HestonFitted) -> dict[str, Any]:
     v = heston_violations(m.fit.params, [(T, *r) for T, r in m.k_range.items()])
     m.excluded = v.pop("violation_points_excluded")
+    # every point heston_violations tests: the butterfly scan per slice, the [-3, 3] grid and the quoted range per pair
+    tested = (v["n_slices"] * len(svi._K_GRID) + v["calendar_pairs"] * len(ARB_K_GRID)
+              + v["calendar_pairs_quoted"] * svi.QUOTED_N)
     scored = m.fit.n - m.fit.n_iv_failed
     f = m.fit
     note = (f"{scored} of {f.n} quotes scored" + (f" ({f.n_iv_failed} model prices below the inversion floor)"
                                                   if f.n_iv_failed else "")
-            + f" · COS {f.n_terms} terms, L {f.L:g} · fit status {f.status}, {f.nfev} evaluations, start {f.start}")
-    return {"n_quotes": m.fit.n, "rmse_vol_pts": m.fit.rmse_vol_pts, "fit_note": note, **v}
+            + f" · COS {f.n_terms} terms, L {f.L:g} · price floor {HESTON_W_FLOOR:g} of df F"
+            + f" · fit status {f.status}, {f.nfev} evaluations, start {f.start}")
+    return {"n_quotes": m.fit.n, "rmse_vol_pts": m.fit.rmse_vol_pts, "fit_note": note,
+            "violation_points_scored": int(tested - m.excluded), "violation_points_excluded": int(m.excluded), **v}
 
 
 def _heston_predict(m: _HestonFitted, sid: str, k: np.ndarray) -> np.ndarray | None:
@@ -337,16 +346,18 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                f"violations: butterfly = slices with Durrleman g < 0 on k in [-{svi.K_MAX:g}, {svi.K_MAX:g}] "
                "(refined scan); calendar, two counts of adjacent fitted expiries whose total variance decreases: "
                "within the pair's common quoted k range (201 points), and on a 1201-point grid of the same [-3, 3] "
-               "range including the wings each smile extrapolates beyond its quotes; one code for both models",
+               "range including the wings each smile extrapolates beyond its quotes; the same definitions for all three "
+               "models (SVI and SSVI through one code, Heston through heston_violations on its COS-priced surface)",
                "next-day IV RMSE (vol pts): the previous session's fit (same expiry, sticky log-forward-moneyness) on "
                "the latest day's identified quotes; blank with its reason when there is no earlier snapshot day or "
                "it is not the previous NYSE session",
                "SSVI: power-law phi under eta (1 + |rho|) <= 2, gamma in (0, 1/2], theta non-decreasing "
                "(Gatheral & Jacquier 2014, Thm 4.1, Thm 4.2, Cor. 4.1)",
-               "Heston: COS (Fang & Oosterlee 2008) at 1024 terms on c1 -/+ 24 sqrt(c2) (a strike near or past the "
+               f"Heston: COS (Fang & Oosterlee 2008) at {heston.LEAGUE_N} terms on c1 -/+ {heston.LEAGUE_L:g} sqrt(c2) "
+               "(a strike near or past the "
                "edge gets its own extended range), little-trap CF (Albrecher et al. 2007), calibrated by least squares on European Black-76 prices of the same identified-IV "
                "quotes (the chains are American), vega-weighted; Feller 2 kappa theta >= sigma^2 reported in params, "
                "not enforced; violations from its implied total variance on the same grids, at points whose price is at "
-               "least 1e-8 of df F (the rest excluded, counted in params)"],
+               f"least {HESTON_W_FLOOR:g} of df F (the rest excluded, counted in violation_points_excluded)"],
         verdict="DESCRIPTIVE ONLY",
         verdict_detail=f"{n_und} UNDERLYING{'S' if n_und != 1 else ''} · {len(MODELS)} MODELS · MEASUREMENT")
