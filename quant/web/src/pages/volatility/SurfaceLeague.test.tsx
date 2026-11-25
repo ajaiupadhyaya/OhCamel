@@ -25,7 +25,7 @@ describe("SurfaceLeagueReport (vol.surface_league)", () => {
     row("SVI (per slice)"),
     row("SSVI (power law)", { rmse_vol_pts: 3.45, calendar_violations: 0, next_day_rmse_vol_pts: 3.6, params: '{"rho": -0.61, "eta": 1.24, "gamma": 0.499}' }),
     row("SVI (per slice)", { underlying: "QQQ", rmse_vol_pts: 9.99 }),
-    row("Heston (COS)", { rmse_vol_pts: 3.57, butterfly_violations: 0, params: '{"kappa": 7.5, "feller_ratio": 0.081}', fit_note: "5230 of 5230 quotes scored · COS 1024 terms, L 24 · fit status 3, 33 evaluations, start 1" }),
+    row("Heston (COS)", { rmse_vol_pts: 3.57, butterfly_violations: 0, params: '{"kappa": 7.5, "feller_ratio": 0.081}', fit_note: "5230 of 5230 quotes scored · COS 1024 terms, L 24 · price floor 1e-08 of df F · fit status 3, 33 evaluations, start 1", violation_points_scored: 61000, violation_points_excluded: 12040 }),
   ];
   const html = render(<SurfaceLeagueReport rows={rows} ticker="spy" />);
 
@@ -49,7 +49,15 @@ describe("SurfaceLeagueReport (vol.surface_league)", () => {
     expect(html).toContain("3.57");
     expect(html).toContain("5230 of 5230 quotes scored");
     expect(html).toContain("EUROPEAN BLACK-76");
-    expect(html).toContain("COS AT 1024 TERMS");
+    expect(html).toContain("COS AT 1024 TERMS ON C1 ± 24√C2");
+    expect(html).toContain("AT OR ABOVE 1E-08 OF THE FORWARD (12,040 POINTS BELOW IT EXCLUDED)");
+  });
+  it("prints the Heston row's scored and excluded points beside it, and reads the COS settings from its fit_note", () => {
+    expect(html).toContain("Points · scored / excluded");
+    expect(html).toContain("61,000 / 12,040");
+    const bare = render(<SurfaceLeagueReport rows={[row("Heston (COS)", { fit_note: "fit failed" })]} ticker="SPY" />);
+    expect(bare).not.toContain("1024");
+    expect(bare).not.toContain("1E-08");
     expect(html).toContain("vol.surface_league");
     expect(html).toContain("AS OF 2026-11-24");
   });

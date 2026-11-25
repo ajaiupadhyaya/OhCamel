@@ -196,7 +196,7 @@ export function pooledLine(m: Record<string, unknown>): string | null {
   const done = fin(m.pooled_done), need = fin(m.pooled_required), power = fin(m.pooled_power), verdict = str(m.pooled_verdict);
   if (done === null || need === null || power === null || !verdict) return null;
   const tenths = Math.min(10, Math.max(0, Math.round(power * 10)));
-  const detects = `this test detects a Sharpe of 1.0 ${TENTHS[tenths]} in ten`;
+  const detects = `this test detects an annualised Sharpe of 1.0 ${TENTHS[tenths]} in ten`;
   // where the figure is from: the desk report's INC-02 row, as of its own date (the book summary's convention)
   const asof = str(m.pooled_asof);
   const from = `${asof ? `as of ${asof}, ` : ""}from the desk report`;

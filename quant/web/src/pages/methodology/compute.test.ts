@@ -10,7 +10,7 @@ const resolves = (to: string) => ROUTES.some((r) => matchPath({ path: r.path, en
 describe("Methodology: engine and kernel entries (Ship plan P2-7)", () => {
   it("has one entry per kernel of contract II.4, id kernel-<name> (the Compute table links there)", () => {
     for (const k of KERNEL_API) expect(KERNELS.some((e) => e.id === `kernel-${k}`), k).toBe(true);
-    expect(KERNEL_API).toHaveLength(12);
+    expect(KERNEL_API).toHaveLength(13);
   });
   it("has the engine entry the Engine page's Note points to", () => {
     expect(ENGINE.map((e) => e.id)).toContain("engine-incremental");

@@ -43,10 +43,20 @@ function League({ m, ticker }: { m: Manifest; ticker: string }) {
   return <SurfaceLeagueReport rows={league.rows ?? []} ticker={ticker} />;
 }
 
+/** The COS settings the Heston row's fit_note states (surface_league.py ``_heston_score``), never a hard-coded copy. */
+export function cosSettings(note: string | null): { terms: string; L: string; floor: string | null } | null {
+  const m = note?.match(/COS (\d+) terms, L ([0-9.eE+-]+)/);
+  if (!m) return null;
+  const f = note?.match(/price floor ([0-9.eE+-]+)/);
+  return { terms: m[1], L: m[2], floor: f ? f[1] : null };
+}
+
 export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]; ticker: string }) {
   const t = ticker.toUpperCase();
   const mine = rows.filter((r) => r.underlying?.toUpperCase() === t);
   if (!mine.length) return <Absent reason={`${t} NOT IN THE LEAGUE`} source={`${KINDS.surfaceLeague} · league`} />;
+  const heston = mine.find((r) => r.model.startsWith("Heston"));
+  const cos = cosSettings(heston?.fit_note ?? null);
   const cols: Column<SurfaceLeagueRow>[] = [
     {
       key: "model",
@@ -63,6 +73,20 @@ export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]
     { key: "butterfly_violations", label: "Butterfly", numeric: true, render: (r) => <span className="num">{ratio(r.butterfly_violations, r.n_slices)}</span>, title: "slices with g < 0 on k in [-3, 3]" },
     { key: "calendar_violations_quoted", label: "Calendar · quoted", numeric: true, render: (r) => <span className="num">{ratio(r.calendar_violations_quoted, r.calendar_pairs_quoted)}</span>, title: "adjacent expiries whose total variance decreases within their common quoted k range" },
     { key: "calendar_violations", label: "Calendar · [−3, 3] incl. wings", numeric: true, render: (r) => <span className="num">{ratio(r.calendar_violations, r.calendar_pairs)}</span>, title: "adjacent expiries whose total variance decreases somewhere on k in [-3, 3], including the wings each smile extrapolates beyond its quotes" },
+    {
+      key: "violation_points_excluded",
+      label: "Points · scored / excluded",
+      numeric: true,
+      render: (r) =>
+        r.violation_points_excluded == null ? (
+          <span className="num" title="SVI and SSVI score every grid point">—</span>
+        ) : (
+          <span className="num">
+            {fmtNum(r.violation_points_scored ?? null, 0)} / {fmtNum(r.violation_points_excluded, 0)}
+          </span>
+        ),
+      title: "Heston: violation-test points priced at or above the floor (scored) and below it (excluded)",
+    },
     {
       key: "next_day_rmse_vol_pts",
       label: "Next-day IV RMSE · pts",
@@ -84,9 +108,12 @@ export function SurfaceLeagueReport({ rows, ticker }: { rows: SurfaceLeagueRow[]
     <div className="vx-art-body">
       <Readline items={[{ k: "UNDERLYING", v: t }, { k: "SNAPSHOT", v: fmtDate(mine[0].asof, "iso") }, { k: "QUOTES", v: fmtNum(mine[0].n_quotes, 0) }]} />
       <DataTable<SurfaceLeagueRow> columns={cols} rows={mine} rowKey={(r) => r.model} />
-      {mine.some((r) => r.model.startsWith("Heston")) && (
+      {heston && (
         <p className="vx-note">
-          HESTON IS FITTED TO THE SAME IDENTIFIED-IV QUOTES, EACH PRICED AS A EUROPEAN BLACK-76 OPTION ON ITS EXPIRY&apos;S FORWARD (THE CHAINS ARE AMERICAN), AND SCORED AS PRICED BY COS AT 1024 TERMS ON C1 ± 24√C2 (STRIKES PAST THE RANGE GET THEIR OWN); ITS VIOLATIONS ARE MEASURED ON THAT COS-PRICED SURFACE AT POINTS PRICED ABOVE 1E-8 OF THE FORWARD, SO ANY COUNT THERE IS THE EXPANSION&apos;S, NOT THE MODEL&apos;S · {KINDS.surfaceLeague} · AS OF {fmtDate(mine[0].asof, "iso")}
+          HESTON IS FITTED TO THE SAME IDENTIFIED-IV QUOTES, EACH PRICED AS A EUROPEAN BLACK-76 OPTION ON ITS EXPIRY&apos;S FORWARD (THE CHAINS ARE AMERICAN), AND SCORED AS PRICED BY COS
+          {cos ? ` AT ${cos.terms} TERMS ON C1 ± ${cos.L}√C2` : ""} (STRIKES PAST THE RANGE GET THEIR OWN); ITS VIOLATIONS ARE MEASURED ON THAT COS-PRICED SURFACE
+          {cos?.floor ? ` AT POINTS PRICED AT OR ABOVE ${cos.floor.toUpperCase()} OF THE FORWARD` : ""}
+          {heston.violation_points_excluded != null ? ` (${fmtNum(heston.violation_points_excluded, 0)} POINTS BELOW IT EXCLUDED)` : ""}, SO ANY COUNT THERE IS THE EXPANSION&apos;S, NOT THE MODEL&apos;S · {KINDS.surfaceLeague} · AS OF {fmtDate(mine[0].asof, "iso")}
         </p>
       )}
     </div>

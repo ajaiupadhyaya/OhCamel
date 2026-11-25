@@ -90,8 +90,8 @@ describe("FarmBoard (P4 leaderboard)", () => {
 
   it("says the tiers are provisional only while the artifact's provenance counts provisional tiers", () => {
     const prov = (n: number) => ({ provenance: [{ source: "costs", fetched_at: "", path: "research/config/costs.yaml", version: "1.0.0", tiers: 42, provisional_tiers: n }] });
-    expect(costsSource(prov(42))).toContain("42 of 42 tiers provisional");
-    expect(costsSource(prov(0))).toContain("every tier measured");
+    expect(costsSource(prov(42))).toContain("42 of 42 names on provisional tiers");
+    expect(costsSource(prov(0))).toContain("every name on a measured tier");
     expect(costsSource(prov(0))).not.toContain("provisional");
     expect(costsSource(null)).toBe("research/config/costs.yaml");
   });

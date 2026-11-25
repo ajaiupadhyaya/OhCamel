@@ -17,7 +17,7 @@ export interface ExtraSection {
   entries: Entry[];
 }
 
-/** The twelve functions of contract II.4, in its order (kernels/__init__.py API). */
+/** The thirteen functions of contract II.4, in its order, with task 4.6's heston_price (kernels/__init__.py API). */
 export const KERNEL_API = [
   "fhs_paths",
   "copula_t_paths",
@@ -31,6 +31,7 @@ export const KERNEL_API = [
   "realized_vol_minute",
   "american_price",
   "american_iv",
+  "heston_price",
 ] as const;
 
 const COMPUTE = { label: "Compute · Kernels", to: "/compute" };
@@ -77,7 +78,7 @@ export const KERNELS: Entry[] = [
     id: "kernel-dispatch",
     name: "Kernel dispatch: Rust with a NumPy reference",
     summary:
-      "Every heavy loop has two implementations with one signature: Rust in the ohcamel_kernels extension (PyO3, rayon; native/kernels) and a NumPy reference (kernels/reference.py). The dispatcher uses Rust when the wheel imports, the reference when OHCAMEL_QUANT_KERNELS=python, and refuses to start when it is set to rust and the wheel is missing or stale. Each result records the engine that actually ran in its provenance.",
+      "Every heavy loop has two implementations with one signature: Rust in the ohcamel_kernels extension (PyO3, rayon; native/kernels) and a NumPy reference (kernels/reference.py). The dispatcher uses Rust when the wheel imports, the reference when OHCAMEL_QUANT_KERNELS=python, and refuses to start when it is set to rust and the wheel is missing or stale. One kernel, garch_fit, is dispatched by the benchmark table instead (docs/perf/kernels.json): it runs on whichever engine its row says is faster, reading only rows measured on this host's own CPU model, and stays on the wheel's engine when no row matches the host. Each result records the engine that actually ran in its provenance.",
     formulas: [],
     assumptions: [
       "Inputs are float64 C-contiguous arrays; the GIL is released around the Rust core; a Rust error becomes a ValueError.",
@@ -232,6 +233,16 @@ export const KERNELS: Entry[] = [
     appears: [VOL_CHAIN, VOL_SURF, COMPUTE],
     refs: ["cox_ross_rubinstein_1979", "broadie_detemple_1996"],
     keywords: "american implied volatility brent early exercise",
+  },
+  {
+    id: "kernel-heston_price",
+    name: "heston_price — European options under Heston by the COS method",
+    summary: "European prices under Heston (1993) by the Fourier-cosine expansion of Fang and Oosterlee (2008): the little-trap characteristic function of ln(S_T/F) (Albrecher et al. 2007), the cumulant range c1 ± L√c2, the out-of-the-money option as the cosine series and the other by put–call parity, one series per maturity. The surface league prices Heston with it.",
+    formulas: [{ tex: T`V \approx e^{-rT}\sum_{k=0}^{N-1}{}' \operatorname{Re}\!\left[\varphi\!\left(\tfrac{k\pi}{b-a}\right) e^{-ik\pi\frac{a}{b-a}}\right] V_k,\quad [a,b] = c_1 \pm L\sqrt{c_2}` }],
+    assumptions: ["One parameter set (κ, θ, σ, ρ, v0) for all contracts; κ, θ, σ, v0 > 0 and |ρ| < 1, else a ValueError. NaN for an invalid contract.", "A strike near or past the cumulant range is priced on its own extended range and series length.", "Deterministic: Rust matches the NumPy reference to 1e-9 absolute on every price of the parity grids (parity test)."],
+    appears: [VOL_SURF, COMPUTE],
+    refs: ["heston_1993", "fang_oosterlee_2008"],
+    keywords: "heston cos fourier cosine characteristic function european option",
   },
 ];
 

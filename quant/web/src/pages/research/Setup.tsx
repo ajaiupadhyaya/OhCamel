@@ -10,7 +10,7 @@ import { Note } from "../../design";
 import { fmtPct } from "../../lib/format";
 import type { Portfolio } from "../../lib/portfolio";
 import { humanize, type LabConfig } from "./config";
-import { INFO } from "./info";
+import { INFO, costBpsInfo } from "./info";
 import type { Availability } from "./shared";
 import type { Catalog, StrategySpec } from "./types";
 
@@ -69,7 +69,7 @@ export function SetupRail({ spec, catalog, cfg, set, avail, portfolio, onReset }
         }
       >
         <div className="sl-pair">
-          <NumberField label="Cost" ariaLabel="Trading cost, basis points one way" value={cfg.cost_bps} unit="bp" min={0} max={500} step={1} info={INFO.cost_bps} hint={<FileHint on={cfg.cost_bps !== null} file={tierHint(catalog, cfg.tickers)} reset={() => set({ cost_bps: null })} />} onChange={(v) => set({ cost_bps: v })} />
+          <NumberField label="Cost" ariaLabel="Trading cost, basis points one way" value={cfg.cost_bps} unit="bp" min={0} max={500} step={1} info={costBpsInfo(catalog.engine_defaults.tiers_bps)} hint={<FileHint on={cfg.cost_bps !== null} file={tierHint(catalog, cfg.tickers)} reset={() => set({ cost_bps: null })} />} onChange={(v) => set({ cost_bps: v })} />
           <NumberField label="Borrow" ariaLabel="Borrow fee, basis points a year" value={cfg.borrow_bps} unit="bp/y" min={0} max={5000} step={5} info={INFO.borrow_bps} hint={<FileHint on={cfg.borrow_bps !== null} file={`FILE · ${catalog.engine_defaults.borrow_bps} BP/Y`} reset={() => set({ borrow_bps: null })} />} onChange={(v) => set({ borrow_bps: v })} />
         </div>
         <NumberField label="Financing" ariaLabel="Financing spread over the T-bill rate on gross above 1, basis points a year" value={cfg.financing_bps} unit="bp/y" min={0} max={5000} step={5} info={INFO.financing_bps} hint={<FileHint on={cfg.financing_bps !== null} file={`FILE · ${catalog.engine_defaults.financing_bps} BP/Y OVER T-BILL`} reset={() => set({ financing_bps: null })} />} onChange={(v) => set({ financing_bps: v })} />

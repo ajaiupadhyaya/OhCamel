@@ -10,10 +10,16 @@ export function grsLine(d: CrossSectionOut): string {
   return `GRS F(${g.n_assets}, ${g.n_obs - g.n_assets - g.n_factors}) = ${g.statistic.toFixed(2)} · p ${p3(g.p_value)} · all ${g.n_assets} alphas zero ${verdict} · ${g.n_obs} months to ${d.stats.grs_end.slice(0, 7)}`;
 }
 
-/** Source line shared by the premia table and the GRS line. */
+/** The payload's own provenance sources, distinct and in order; "an unstated source" when it carries none. */
+export function provenanceSources(d: CrossSectionOut): string {
+  const names = [...new Set((d.provenance ?? []).map((p) => p.source).filter((s) => typeof s === "string" && s.length > 0))];
+  return names.length ? names.join(", ") : "an unstated source";
+}
+
+/** Source line shared by the premia table and the GRS line, its source read from the payload's provenance. */
 export function sourceLine(d: CrossSectionOut): string {
   const legs = d.model.factors.map((f) => `${f.name} = ${f.long} − ${f.short ?? "T-BILL"}`).join(", ");
-  return `Source: ETF total returns from the committed dataset, compounded monthly · test assets ${d.model.tickers.join(" ")} · factors ${legs} · betas from the ${d.stats.beta_window} months before each month · as of ${d.stats.end.slice(0, 7)}`;
+  return `Source: ETF total returns from ${provenanceSources(d)}, compounded monthly · test assets ${d.model.tickers.join(" ")} · factors ${legs} · betas from the ${d.stats.beta_window} months before each month · as of ${d.stats.end.slice(0, 7)}`;
 }
 
 /** Whether the Shanken correction changed a verdict at |t| = 2. */

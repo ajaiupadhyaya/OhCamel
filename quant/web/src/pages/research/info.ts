@@ -101,7 +101,7 @@ export const INFO = {
     text: "The one-way proportional cost (bps per unit of traded notional) at which the strategy's Sharpe falls to zero — or its CAGR to the benchmark's. Compare it with what you actually pay: ~1–5 bps for liquid ETFs at a discount broker.",
     formula: "1 + r^{net}_t = (1 + r^{gross}_t - b_t - f_t)(1 - c\\,\\text{TO}_t)",
   },
-  cost_bps: { title: "Trading cost", text: "One-way cost per unit of traded notional, in basis points (1 bp = 0.01%). Left blank, each ticker pays its tier's half-spread from the site's cost file (1, 3 or 8 bp); a number you enter is charged on every name instead.", reference: "research/config/costs.yaml" },
+  cost_bps: { title: "Trading cost", text: "One-way cost per unit of traded notional, in basis points (1 bp = 0.01%). Left blank, each ticker pays its tier's half-spread from the site's cost file; a number you enter is charged on every name instead.", reference: "research/config/costs.yaml" },
   borrow_bps: { title: "Borrow fee", text: "Annual fee charged on short positions, in basis points of short notional. Left blank: the cost file's.", reference: "research/config/costs.yaml" },
   financing_bps: { title: "Financing spread", text: "Annual spread over the T-bill rate paid on gross exposure above 1 (the borrowed part of a levered book). Left blank: the cost file's.", reference: "research/config/costs.yaml" },
   lag: { title: "Execution lag", text: "Signals are decided at the close of day t and traded at the close of day t + lag. A lag of 1 is the honest minimum: you cannot trade at the close that produced the signal." },
@@ -111,6 +111,18 @@ export const INFO = {
 } satisfies Record<string, Info>;
 
 /** Short "Author (year)" from a full citation string. */
+/** ``INFO.cost_bps`` with the cost file's tier half-spreads as the catalog serves them (``engine_defaults.tiers_bps``),
+ *  never a hard-coded copy; the plain entry when the catalog carries none. */
+export function costBpsInfo(tiers: Record<string, number> | null | undefined): Info {
+  const bps = Object.entries(tiers ?? {})
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, v]) => v)
+    .filter((v) => Number.isFinite(v));
+  if (!bps.length) return INFO.cost_bps;
+  const list = bps.length === 1 ? `${bps[0]}` : `${bps.slice(0, -1).join(", ")} or ${bps[bps.length - 1]}`;
+  return { ...INFO.cost_bps, text: INFO.cost_bps.text.replace("from the site's cost file;", `from the site's cost file (${list} bp);`) };
+}
+
 export function shortCite(c: string | null | undefined): string {
   if (!c) return "";
   const m = /^(.*?)\((\d{4})\)/.exec(c);

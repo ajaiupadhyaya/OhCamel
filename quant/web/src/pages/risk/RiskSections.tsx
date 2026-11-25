@@ -15,7 +15,7 @@ import { INFO, backtestLabel, isConditional, modelInfo, modelLabel } from "../po
 import { KV, PValue, PctUsd, Readline, RunButton, ShareRows, ZoneChip, asDates, esVerdict, useCommitted, usd } from "../portfolio/shared";
 import type { BacktestOut, DecompPosition, DecompositionOut, Estimate, ExecutionOut, GarchOut, LiquidityLine, LiquidityOut, RiskSummaryOut, Scorecard } from "../portfolio/types";
 import { splitBreaches } from "./breaches";
-import { EXECUTION_CAVEAT, frontierXY } from "./execution";
+import { equalSlices, executionCaveat, frontierXY } from "./execution";
 
 type Alpha = "0.95" | "0.99";
 const ALPHAS: { value: Alpha; label: string }[] = [
@@ -264,14 +264,14 @@ function ExecutionSection({ req }: { req: PortfolioIn }) {
         </>
       }
     >
-      <Panel<ExecutionOut> title="Cost against risk" info={INFO.execution} query={q} skeletonHeight={300}>
+      <Panel<ExecutionOut> title="Cost against risk" info={INFO.execution} query={q} skeletonHeight={300} asOf={q.data?.sigma.as_of ? String(q.data.sigma.as_of).slice(0, 10) : undefined}>
         {(d) => {
           const f = frontierXY(d.frontier);
           return (
             <>
               <StatGrid min={150}>
                 <StatTile size="sm" label="SQUARE-ROOT IMPACT" value={d.sqrt_impact_usd} format={(v) => usd(v)} caption={`${d.ticker} · TOTH ET AL.`} />
-                <StatTile size="sm" label="AC · EQUAL SLICES" value={d.frontier[0]?.expected_cost ?? null} format={(v) => usd(v)} caption="λ = 0, IMPACT ONLY" />
+                <StatTile size="sm" label="AC · EQUAL SLICES" value={equalSlices(d.frontier)?.expected_cost ?? null} format={(v) => usd(v)} caption="λ = 0, IMPACT ONLY" />
                 <StatTile size="sm" label="SIGMA" value={d.sigma.value} format={(v) => `$${fmtNum(v, 2)}`} caption={`${d.sigma.window}D REALISED · ${String(d.sigma.as_of).slice(0, 10)}`} />
               </StatGrid>
               <XYChart x={f.x} series={[{ name: "COST", y: f.y, mode: "line", tone: "ink" }]} xFormat="num" yFormat="num" digits={0} height={240} xTitle="STD OF COST, $" ariaLabel={`Expected execution cost against its standard deviation across risk aversions for ${d.ticker}`} />
@@ -283,7 +283,7 @@ function ExecutionSection({ req }: { req: PortfolioIn }) {
                   { label: "Horizon", value: `${fmtNum(d.horizon_days, 1)} D IN ${d.intervals}` },
                 ]}
               />
-              <Readline items={[{ k: "NOTE", v: EXECUTION_CAVEAT }]} />
+              <Readline items={[{ k: "NOTE", v: executionCaveat(d.sigma.window) }]} />
             </>
           );
         }}
@@ -400,7 +400,7 @@ function BacktestSection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alph
         {(d) => <Scorecards d={d} active={shown} onPick={setModel} />}
       </Panel>
       <Panel<BacktestOut>
-        title={`P&L · −VaR · ${MODEL(shown)}`}
+        title={`P&L · −VaR · ${BT_MODEL(shown)}`}
         query={q}
         skeletonHeight={360}
         notes={[]}

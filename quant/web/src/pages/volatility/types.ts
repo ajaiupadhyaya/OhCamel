@@ -302,6 +302,9 @@ export interface SurfaceLeagueRow {
   next_day_note: string | null;
   params: string | null;
   fit_note: string | null;
+  /** Heston only (null for SVI/SSVI): the violation-test points that counted, and those below the price floor. */
+  violation_points_scored?: number | null;
+  violation_points_excluded?: number | null;
 }
 
 export interface Surface extends ChainHeader {

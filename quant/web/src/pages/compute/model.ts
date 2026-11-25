@@ -163,6 +163,11 @@ export function kernelRows(body: unknown): KernelRow[] {
   });
 }
 
+/** A row's identity: the same kernel benchmarked on two hosts (the droplet and a laptop) is two rows, never one. */
+export function kernelKey(r: KernelRow): string {
+  return `${r.name}@${r.measured_on ?? "unknown host"}`;
+}
+
 export function measuredOn(rows: KernelRow[]): string[] {
   return [...new Set(rows.map((r) => r.measured_on).filter((m): m is string => !!m))];
 }

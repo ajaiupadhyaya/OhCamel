@@ -593,10 +593,10 @@ describe("reading: the book, its limits and kill switch", () => {
     const fx = clone();
     const m = nodeOf(fx, "book").m;
     Object.assign(m, { pooled_done: 120, pooled_required: 500, pooled_verdict: "IN PROGRESS", pooled_power: 0.41 });
-    expect(text(fx, "book")).toContain("session 120 of 500 · this test detects a Sharpe of 1.0 four times in ten");
+    expect(text(fx, "book")).toContain("session 120 of 500 · this test detects an annualised Sharpe of 1.0 four times in ten");
     expect(text(fx, "book")).not.toMatch(/result:/);
     Object.assign(m, { pooled_done: 0, pooled_verdict: "NOT STARTED", pooled_why: "INC-02 awaits the owner's approval" });
-    expect(text(fx, "book")).toContain("INC-02 not started · awaits the owner · this test detects a Sharpe of 1.0 four times in ten");
+    expect(text(fx, "book")).toContain("INC-02 not started · awaits the owner · this test detects an annualised Sharpe of 1.0 four times in ten");
     Object.assign(m, { pooled_done: 500, pooled_verdict: "REJECTED NULL" });
     const done = text(fx, "book");
     expect(done.indexOf("four times in ten")).toBeLessThan(done.indexOf("is rejected"));
@@ -608,13 +608,13 @@ describe("reading: the book, its limits and kill switch", () => {
     const m = nodeOf(fx, "book").m;
     Object.assign(m, { pooled_done: 500, pooled_required: 500, pooled_verdict: "NOT REJECTED", pooled_power: 0.41, pooled_asof: "2027-12-01" });
     const t = text(fx, "book");
-    expect(t).toContain("session 500 of 500 · this test detects a Sharpe of 1.0 four times in ten · result: the null of no edge is not rejected · as of 2027-12-01, from the desk report");
+    expect(t).toContain("session 500 of 500 · this test detects an annualised Sharpe of 1.0 four times in ten · result: the null of no edge is not rejected · as of 2027-12-01, from the desk report");
     Object.assign(m, { pooled_done: 0, pooled_verdict: "NOT STARTED", pooled_why: "no INC-02 fill yet" });
     expect(text(fx, "book")).toContain("INC-02 not started · no fill yet · this test detects");
     Object.assign(m, { pooled_done: 5, pooled_verdict: "IN PROGRESS", pooled_power: 1.7 });
-    expect(text(fx, "book")).toContain("detects a Sharpe of 1.0 ten times in ten · no result before session 500");
+    expect(text(fx, "book")).toContain("detects an annualised Sharpe of 1.0 ten times in ten · no result before session 500");
     Object.assign(m, { pooled_power: -0.4 });
-    expect(text(fx, "book")).toContain("detects a Sharpe of 1.0 no times in ten");
+    expect(text(fx, "book")).toContain("detects an annualised Sharpe of 1.0 no times in ten");
   });
 
   it("labels a draft roster on the book and on each strategy, and only while the payload says it is one", () => {

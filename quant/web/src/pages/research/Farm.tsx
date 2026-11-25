@@ -49,7 +49,8 @@ function FarmTables({ m, names }: { m: Manifest; names: Record<string, string> }
 }
 
 /** Where the cost figures come from: the one cost file (completion task 2.3), as the artifact's provenance names
- *  it -- its version, and how many of its tiers are provisional, so the word goes when the owner measures them. */
+ *  it -- its version, and how many of its names sit on a provisional tier (the provenance's ``tiers`` and
+ *  ``provisional_tiers`` count names, not tiers), so the word goes when the owner measures them. */
 export function costsSource(m: Pick<Manifest, "provenance"> | null | undefined): string {
   const p = (m?.provenance ?? []).find((r) => r.source === "costs") as Record<string, unknown> | undefined;
   if (!p) return "research/config/costs.yaml";
@@ -57,7 +58,7 @@ export function costsSource(m: Pick<Manifest, "provenance"> | null | undefined):
   const total = typeof p.tiers === "number" ? p.tiers : null;
   const head = `${String(p.path ?? "research/config/costs.yaml")} v${String(p.version ?? "?")} — half-spread by tier, borrow, financing`;
   if (prov === null || total === null) return head;
-  return prov > 0 ? `${head}; ${prov} of ${total} tiers provisional (a stated rule, not yet measured on quotes)` : `${head}; every tier measured`;
+  return prov > 0 ? `${head}; ${prov} of ${total} names on provisional tiers (a stated rule, not yet measured on quotes)` : `${head}; every name on a measured tier`;
 }
 
 interface SweepRow {

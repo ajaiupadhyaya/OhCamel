@@ -24,3 +24,12 @@ describe("Strategy Lab costs (completion task 2.3, fix round 1)", () => {
     expect(tierHint(measured, ["SPY"])).toBe("FILE · BP BY TIER · SPY 1");
   });
 });
+
+describe("costBpsInfo (the cost field's tip)", () => {
+  it("reads the tier half-spreads from the catalog, never a hard-coded list", async () => {
+    const { costBpsInfo, INFO } = await import("./info");
+    expect(costBpsInfo({ "3": 9, "1": 2, "2": 4 }).text).toContain("from the site's cost file (2, 4 or 9 bp);");
+    expect(costBpsInfo(undefined)).toBe(INFO.cost_bps);
+    expect(INFO.cost_bps.text).not.toMatch(/\d bp\)/);
+  });
+});

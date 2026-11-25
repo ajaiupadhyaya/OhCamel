@@ -20,7 +20,7 @@ import { fmtMultiple, fmtNum, fmtPct } from "../lib/format";
 import { queryClient, useApiQuery } from "../lib/query";
 import type { Envelope } from "../lib/types";
 import { useOps, type OpsOut } from "../shell/ops";
-import { HOUR_TICKS, applyEvent, hostSeries, kernelRows, last24h, measuredOn, pageOf, sliceLabel, type HostIn, type JobEvent, type JobRow, type KernelRow } from "./compute/model";
+import { HOUR_TICKS, applyEvent, hostSeries, kernelKey, kernelRows, last24h, measuredOn, pageOf, sliceLabel, type HostIn, type JobEvent, type JobRow, type KernelRow } from "./compute/model";
 import { useJobEvents, type Link as StreamLink } from "./compute/useJobEvents";
 import "./compute/compute.css";
 
@@ -112,6 +112,7 @@ const KERNEL_COLS: Column<KernelRow>[] = [
       </a>
     ),
   },
+  { key: "measured_on", label: "HOST", hideBelow: 600, render: (r) => <span className="num">{r.measured_on ? r.measured_on.toUpperCase() : "—"}</span> },
   { key: "engine", label: "HERE", hideBelow: 600, render: (r) => <span className="num">{r.engine ? r.engine.toUpperCase() : "—"}</span> },
   { key: "python_ms", label: "PY MS", numeric: true, format: (v) => fmtNum(v, 2) },
   { key: "rust_1t_ms", label: "RS 1T MS", numeric: true, format: (v) => fmtNum(v, 2) },
@@ -360,7 +361,7 @@ export default function Compute() {
           return (
             <>
               {where.length > 0 && <div className="cp-measured num">MEASURED ON {where.join(" · ").toUpperCase()}</div>}
-              <DataTable<KernelRow> compact columns={KERNEL_COLS} rows={list} rowKey={(r) => r.name} empty="NO BENCHMARK RUN" scrollLabel="Kernel benchmarks" />
+              <DataTable<KernelRow> compact columns={KERNEL_COLS} rows={list} rowKey={kernelKey} empty="NO BENCHMARK RUN" scrollLabel="Kernel benchmarks" />
             </>
           );
         }}

@@ -23,6 +23,12 @@ describe("cross-section wording", () => {
     expect(sourceLine(d)).toContain("MKT = SPY − T-BILL");
     expect(sourceLine(d)).toContain("36 months before each month · as of 2026-10");
   });
+  it("reads its source from the payload's provenance, never a hard-coded one", () => {
+    const withProv = { ...d, provenance: [{ source: "warehouse", fetched_at: "x" }, { source: "fred", fetched_at: "x" }, { source: "warehouse", fetched_at: "y" }] };
+    expect(sourceLine(withProv)).toContain("ETF total returns from warehouse, fred,");
+    expect(sourceLine(d)).toContain("from an unstated source");
+    expect(sourceLine(d)).not.toContain("committed dataset");
+  });
   it("lists the premia whose significance Shanken's correction removes", () => {
     expect(shankenFlips(d)).toEqual(["MKT"]);
   });

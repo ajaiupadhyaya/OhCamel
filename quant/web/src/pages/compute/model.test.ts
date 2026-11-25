@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, hostSeries, kernelRows, last24h, measuredOn, pageOf, sliceLabel, type JobRow } from "./model";
+import { applyEvent, hostSeries, kernelKey, kernelRows, last24h, measuredOn, pageOf, sliceLabel, type JobRow } from "./model";
 
 const job = (over: Partial<JobRow>): JobRow => ({ id: "J1", kind: "risk.mc_atlas", state: "done", submitted_at: "2026-10-07T01:00:00Z", ...over });
 
@@ -112,6 +112,13 @@ describe("kernelRows", () => {
   });
   it("lists the distinct machines the table was measured on", () => {
     expect(measuredOn(kernelRows(body))).toEqual(["laptop", "droplet"]);
+  });
+  it("keys a row by kernel and host, so one kernel benched on two hosts is two distinct rows", () => {
+    const two = kernelRows({ kernels: [...body.kernels, { name: "garch_fit", python_ms: 2, rust_1t_ms: 9, measured_on: "laptop" }] });
+    const keys = two.map(kernelKey);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).toContain("garch_fit@droplet");
+    expect(keys).toContain("garch_fit@laptop");
   });
 });
 
