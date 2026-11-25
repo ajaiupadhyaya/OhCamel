@@ -5,12 +5,14 @@ router and tools/perf/bench_kernels.py do the file I/O."""
 from __future__ import annotations
 
 import math
+import platform
 import re
+import subprocess
 from typing import Any
 
 from . import API
 
-FIELDS = ("name", "python_ms", "rust_1t_ms", "rust_2t_ms", "measured_on", "sha")
+FIELDS = ("name", "python_ms", "rust_1t_ms", "rust_2t_ms", "host", "measured_on", "sha")
 
 #: The problem each kernel is timed on (tools/perf/bench_kernels.py builds exactly these).
 SIZES: dict[str, str] = {
@@ -52,12 +54,43 @@ def validate_table(doc: Any) -> list[dict[str, Any]]:
         _ms(row, "python_ms", False)
         _ms(row, "rust_1t_ms", False)
         _ms(row, "rust_2t_ms", True)
-        mo = row["measured_on"]
-        if not isinstance(mo, str) or not mo.strip() or "|" in mo or "\n" in mo:
-            raise ValueError(f"{row['name']}: measured_on must be one line of text without '|'")
+        for key in ("host", "measured_on"):
+            v = row[key]
+            if not isinstance(v, str) or not v.strip() or "|" in v or "\n" in v:
+                raise ValueError(f"{row['name']}: {key} must be one line of text without '|'")
         if not isinstance(row["sha"], str) or not _SHA.match(row["sha"]):
             raise ValueError(f"{row['name']}: sha must be 7-40 lowercase hex characters")
     return rows
+
+
+def cpu_model() -> str:
+    """The CPU model this process runs on, one line (``host`` in the table). Read, never assumed: macOS
+    ``sysctl``, Linux ``/proc/cpuinfo``, else ``platform.processor()``; ``unknown CPU`` if all are silent."""
+    name = ""
+    try:
+        if platform.system() == "Darwin":
+            name = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True,
+                                  timeout=5, check=False).stdout
+        else:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                name = next((ln.split(":", 1)[1] for ln in f if ln.lower().startswith("model name")), "")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    name = " ".join((name or platform.processor()).replace("|", " ").split())
+    return name or "unknown CPU"
+
+
+def faster_engine(doc: Any, name: str, host: str | None = None) -> str | None:
+    """Which engine the table says is faster for kernel ``name`` (``"python"`` or ``"rust"``; a tie keeps the
+    kernel), or ``None`` when the table has no row for it. A row whose ``host`` is ``host`` outranks any other
+    host's; among equals the last row in the file wins, so a newer measurement replaces an older one. The row
+    is one problem size (``SIZES``): the verdict is for that size, and nothing is extrapolated."""
+    rows = [r for r in validate_table(doc) if r["name"] == name]
+    if not rows:
+        return None
+    mine = [r for r in rows if host is not None and r["host"] == host]
+    r = (mine or rows)[-1]
+    return "python" if r["python_ms"] < r["rust_1t_ms"] else "rust"
 
 
 def _fmt(v: float | None) -> str:
@@ -75,22 +108,23 @@ def render_markdown(doc: Any) -> str:
         "",
         "Python is the NumPy reference (`quant/src/ohcamel_quant/kernels/reference.py`); Rust is",
         "`ohcamel_kernels` at one thread and at two (`n/a`: the kernel is single-threaded). Times",
-        "are medians of repeated runs in milliseconds. Only rows measured on the droplet's CPU",
-        "class speak for production.",
+        "are medians of repeated runs in milliseconds. `host` is the CPU model the run read from the",
+        "machine; only rows measured on the droplet's CPU class speak for production. `garch_fit`",
+        "runs on whichever engine its row says is faster (`ohcamel_quant.kernels`).",
         "",
     ]
     if not rows:
         lines.append("No benchmark run is recorded yet.")
     else:
         lines += [
-            "| kernel | size | Python ms | Rust 1T ms | Rust 2T ms | 1T speed-up | 2T / 1T | measured on | sha |",
-            "|---|---|---:|---:|---:|---:|---:|---|---|",
+            "| kernel | size | Python ms | Rust 1T ms | Rust 2T ms | 1T speed-up | 2T / 1T | host | measured on | sha |",
+            "|---|---|---:|---:|---:|---:|---:|---|---|---|",
         ]
         for r in sorted(rows, key=lambda r: (API.index(r["name"]), r["measured_on"])):
             up = f"{r['python_ms'] / r['rust_1t_ms']:.1f}x"
             par = "n/a" if r["rust_2t_ms"] is None else f"{r['rust_1t_ms'] / r['rust_2t_ms']:.2f}x"
             lines.append(
                 f"| {r['name']} | {SIZES[r['name']]} | {_fmt(r['python_ms'])} | {_fmt(r['rust_1t_ms'])} | "
-                f"{_fmt(r['rust_2t_ms'])} | {up} | {par} | {r['measured_on']} | {r['sha']} |"
+                f"{_fmt(r['rust_2t_ms'])} | {up} | {par} | {r['host']} | {r['measured_on']} | {r['sha']} |"
             )
     return "\n".join(lines) + "\n"

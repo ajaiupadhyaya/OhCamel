@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Kernel benchmarks: the NumPy reference vs Rust at one and two threads (compute plan gate GA).
 
-    quant/.venv/bin/python tools/perf/bench_kernels.py run --measured-on "<machine>" [--repeat 5]
+    quant/.venv/bin/python tools/perf/bench_kernels.py run --measured-on "<machine>" [--repeat 5] [--sha <12 hex>]
     quant/.venv/bin/python tools/perf/bench_kernels.py render
 
 `run` needs the ohcamel_kernels wheel (make kernels-dev) and reads only the committed fixtures
-(offline). It replaces the rows with the same (name, measured_on) in docs/perf/kernels.json and
+(offline). It replaces the rows with the same (name, host, measured_on) in docs/perf/kernels.json and
 re-renders docs/perf/kernels.md. `measured_on` is required and is written as given: say what the
-machine is, and whether it is the droplet's CPU class.
+machine is, and whether it is the droplet's CPU class. `host` is NOT given: it is the CPU model the run
+reads from the machine it runs on (`bench.cpu_model()`), so a row cannot claim a CPU it was not measured on.
+`garch_fit` dispatches on the row whose `host` matches the running CPU (else the file's latest row), so a
+run on the droplet replaces the laptop's verdict there. `--sha` is for a run where git is absent (the
+image): pass the checkout's commit. The droplet command is in docs/runbooks/compute.md.
 """
 
 from __future__ import annotations
@@ -106,10 +110,12 @@ def _time(fn: Callable[[], object], repeat: int) -> float:
 def run(args: argparse.Namespace) -> None:
     if kernels._RUST is None:
         sys.exit("ohcamel_kernels is not importable: run `make kernels-dev` first")
-    sha = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, capture_output=True,
-                         text=True, check=True).stdout.strip()
+    sha = args.sha or subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, capture_output=True,
+                                     text=True, check=True).stdout.strip()
+    host = bench.cpu_model()
+    print(f"host: {host}")
     doc = json.loads(args.json.read_text(encoding="utf-8"))
-    rows = [r for r in bench.validate_table(doc) if r["measured_on"] != args.measured_on]
+    rows = [r for r in bench.validate_table(doc) if (r["host"], r["measured_on"]) != (host, args.measured_on)]
     for name, (call, threaded) in cases().items():
         with kernels.forced("python"):
             py = _time(lambda c=call: c(1), args.repeat)
@@ -117,7 +123,7 @@ def run(args: argparse.Namespace) -> None:
             r1 = _time(lambda c=call: c(1), args.repeat)
             r2 = _time(lambda c=call: c(2), args.repeat) if threaded else None
         rows.append({"name": name, "python_ms": py, "rust_1t_ms": r1, "rust_2t_ms": r2,
-                     "measured_on": args.measured_on, "sha": sha})
+                     "host": host, "measured_on": args.measured_on, "sha": sha})
         print(f"{name:28s} python {py:12.3f} ms   rust 1T {r1:10.3f} ms   rust 2T {r2 if r2 is not None else 'n/a'}")
     out = {"kernels": rows}
     bench.validate_table(out)
@@ -135,6 +141,7 @@ def main() -> None:
     r = sub.add_parser("run")
     r.add_argument("--measured-on", required=True)
     r.add_argument("--repeat", type=int, default=5)
+    r.add_argument("--sha", default=None, help="the commit measured (default: git HEAD of this checkout)")
     for p in (r, sub.add_parser("render")):
         p.add_argument("--json", type=Path, default=JSON)
         p.add_argument("--md", type=Path, default=MD)

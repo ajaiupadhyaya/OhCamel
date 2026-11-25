@@ -81,14 +81,43 @@ def _load() -> tuple[ModuleType | None, Engine]:
     return rust, "rust"
 
 
+#: Kernels whose engine follows the benchmark table (Task 4.4): Rust's fit loses to the NumPy reference at the
+#: sizes the desk fits, so the choice is the table's, not the wheel's. Every other kernel runs on the wheel.
+TABLE_DISPATCHED: tuple[str, ...] = ("garch_fit",)
+TABLE_ENV = "OHCAMEL_QUANT_KERNEL_TABLE"
+
+
+def _load_table_engines() -> dict[str, Engine]:
+    """``{kernel: "python"}`` (or ``"rust"``) from docs/perf/kernels.json (or $OHCAMEL_QUANT_KERNEL_TABLE) for the
+    dispatched kernels; ``{}`` when there is no wheel, no readable table or no row (those stay on the wheel)."""
+    if _RUST is None:
+        return {}
+    import json
+    from pathlib import Path
+
+    from ..config import REPO_ROOT
+    from . import bench
+
+    path = Path(os.environ.get(TABLE_ENV) or REPO_ROOT / "docs" / "perf" / "kernels.json")
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        host = bench.cpu_model()
+        picks = {n: bench.faster_engine(doc, n, host) for n in TABLE_DISPATCHED}
+    except (OSError, ValueError) as e:
+        log.warning("kernel benchmark table unreadable (%s); dispatched kernels run on Rust", e)
+        return {}
+    return {n: e for n, e in picks.items() if e in ("rust", "python")}
+
+
 _RUST, ENGINE = _load()
+TABLE_ENGINE: dict[str, Engine] = _load_table_engines()
 _forced: Engine | None = None
 _warned: set[str] = set()
 
 
 def engine_of(name: str) -> Engine:
     """The engine kernel ``name`` runs on in this process: what callers record as ``engine``."""
-    eng = _forced or ENGINE
+    eng = _forced or TABLE_ENGINE.get(name) or ENGINE
     if eng == "rust" and not hasattr(_RUST, name):
         if name not in _warned:
             log.warning("ohcamel_kernels has no %s; that kernel runs on the NumPy reference", name)

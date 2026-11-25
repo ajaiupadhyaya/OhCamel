@@ -58,10 +58,64 @@ def euler_es(asset_loss: np.ndarray, alpha: float) -> np.ndarray:
     return asset_loss[tail].mean(axis=0)
 
 
-def copula_nu(x: np.ndarray) -> float:
+def _copula_inputs(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Rank pseudo-observations ``u = rank/(n+1)`` and the Kendall-tau correlation ``sin(pi tau/2)`` (made
+    positive definite by clipping eigenvalues), the same R the ``copula_t_paths`` kernel draws with."""
+    from scipy.stats import kendalltau, rankdata
+
+    n, k = x.shape
+    u = np.column_stack([rankdata(x[:, j]) for j in range(k)]) / (n + 1.0)
+    r = np.eye(k)
+    for i in range(k):
+        for j in range(i + 1, k):
+            r[i, j] = r[j, i] = np.sin(np.pi / 2.0 * float(kendalltau(x[:, i], x[:, j]).statistic))
+    w, v = np.linalg.eigh(r)
+    if w.min() < 1e-8:
+        r = (v * np.clip(w, 1e-8, None)) @ v.T
+        d = np.sqrt(np.diag(r))
+        r = r / np.outer(d, d)
+    return u, r
+
+
+def _copula_loglik(u: np.ndarray, r: np.ndarray, nu: float) -> float:
+    """``sum_t log c_nu(u_t; R)`` = joint multivariate-t log-density at ``t_nu^{-1}(u)`` minus the univariate ones."""
+    from scipy import stats
+
+    t = stats.t.ppf(u, nu)
+    joint = stats.multivariate_t(loc=np.zeros(u.shape[1]), shape=r, df=nu, allow_singular=False).logpdf(t)
+    return float(np.sum(joint) - np.sum(stats.t.logpdf(t, nu)))
+
+
+def copula_nu_profile(x: np.ndarray, n_grid: int = 25) -> tuple[np.ndarray, np.ndarray]:
+    """``(nu grid, copula log-likelihood)`` on a geometric grid over :data:`NU_BOUNDS`, R held at its Kendall estimate."""
     x = np.asarray(x, dtype=float)
-    z = (x - x.mean(axis=0)) / x.std(axis=0, ddof=1)
-    return float(np.clip(np.median([fit_t_dof(z[:, j]) for j in range(z.shape[1])]), *NU_BOUNDS))
+    if x.ndim != 2 or x.shape[1] < 2:
+        raise ValueError("the copula likelihood needs at least two assets")
+    u, r = _copula_inputs(x)
+    grid = np.geomspace(NU_BOUNDS[0], NU_BOUNDS[1], n_grid)
+    return grid, np.array([_copula_loglik(u, r, float(nu)) for nu in grid])
+
+
+def copula_nu(x: np.ndarray) -> float:
+    """Degrees of freedom of the t-copula: the maximiser of its profile likelihood over nu in :data:`NU_BOUNDS`
+    (geometric grid to locate the peak, bounded Brent search between its neighbours to refine it).
+
+    One asset has no copula, so the single marginal's t MLE (clipped to the same bounds) stands in for it.
+    """
+    from scipy.optimize import minimize_scalar
+
+    x = np.asarray(x, dtype=float)
+    if x.ndim == 2 and x.shape[1] == 1:
+        z = (x[:, 0] - x[:, 0].mean()) / x[:, 0].std(ddof=1)
+        return float(np.clip(fit_t_dof(z), *NU_BOUNDS))
+    grid, ll = copula_nu_profile(x)
+    i = int(np.argmax(ll))
+    if i in (0, grid.size - 1):                      # the likelihood is still rising at the bound: the bound is the answer
+        return float(grid[i])
+    u, r = _copula_inputs(x)
+    res = minimize_scalar(lambda nu: -_copula_loglik(u, r, nu), bounds=(grid[i - 1], grid[i + 1]),
+                          method="bounded", options={"xatol": 1e-3})
+    return float(np.clip(res.x, *NU_BOUNDS))
 
 
 @dataclass

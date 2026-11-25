@@ -196,7 +196,8 @@ def rolling_forecasts(
             v[j0:j1], ev[j0:j1] = a, b
         var["evt_pot"], es["evt_pot"] = v, ev
         info["evt_pot"] = {"refits": len(refits), "xi_median": float(np.median(xis)),
-                           "threshold_quantile": evt_threshold}
+                           "threshold_quantile": evt_threshold,
+                           "conditional": False}  # the backtest's EVT is the unconditional tail (evt_pot's live default is GARCH-conditional)
 
     order = [mm for mm in ALL_MODELS if mm in var]
     return Forecasts(window, {mm: var[mm] for mm in order}, {mm: es[mm] for mm in order}, info)

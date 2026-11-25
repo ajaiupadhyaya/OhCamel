@@ -45,8 +45,8 @@ def test_euler_contributions_sum_to_es(rets):
 def test_copula_nu_is_clipped_to_its_bounds(rets):
     nu = copula_nu(rets.to_numpy())
     assert NU_BOUNDS[0] <= nu <= NU_BOUNDS[1]
-    rng = np.random.default_rng(1)  # Gaussian draws: the t MLE runs to its upper end; the clip holds it at 30
-    assert copula_nu(rng.standard_normal((2000, 2))) == NU_BOUNDS[1]
+    rng = np.random.default_rng(1)  # a Gaussian copula: the likelihood is flat toward the ceiling, so nu lands high
+    assert copula_nu(rng.standard_normal((2000, 2))) >= 20.0
 
 
 def test_book_risk_is_deterministic_and_complete(rets):
@@ -75,3 +75,50 @@ def test_fhs_only_skips_the_copula_and_matches_the_full_run(rets, monkeypatch):
     assert {r["method"] for r in only.rows} == {"fhs"}
     with pytest.raises(ValueError):
         book_risk(rets, w, n_paths=1_000, seed=11, threads=1, methods=("bogus",))
+
+
+# ---------------------------------------------------------------- Task 4.4: the copula's nu
+def _t_copula_gaussian_marginals(n: int, nu: float, rho: float, seed: int) -> np.ndarray:
+    """Simulated t-copula (known truth) with standard-normal marginals."""
+    from scipy import stats
+
+    rng = np.random.default_rng(seed)
+    k = 3
+    corr = np.full((k, k), rho) + (1 - rho) * np.eye(k)
+    z = rng.standard_normal((n, k)) @ np.linalg.cholesky(corr).T
+    w = rng.chisquare(nu, size=n) / nu
+    u = stats.t.cdf(z / np.sqrt(w)[:, None], nu)
+    return stats.norm.ppf(u)
+
+
+def test_copula_nu_is_the_copula_likelihood_not_the_marginals():
+    """Gaussian marginals make every per-asset t MLE run to its ceiling (the old median rule returned the clip,
+    30); the profile likelihood of the COPULA recovers the simulated nu = 5."""
+    x = _t_copula_gaussian_marginals(3000, 5.0, 0.5, seed=7)
+    assert 4.0 <= copula_nu(x) <= 6.5
+
+
+def test_copula_nu_profile_is_exposed_and_peaks_at_the_estimate():
+    from ohcamel_quant.models.mc_risk import copula_nu_profile
+
+    x = _t_copula_gaussian_marginals(3000, 5.0, 0.5, seed=7)
+    grid, ll = copula_nu_profile(x)
+    assert grid[0] == NU_BOUNDS[0] and grid[-1] == NU_BOUNDS[1] and np.all(np.diff(grid) > 0)
+    assert abs(grid[int(np.argmax(ll))] - copula_nu(x)) < 1.5     # the grid peak is near the refined optimum
+    assert ll.max() - ll[-1] > 20                                  # nu = 30 is decisively worse than the peak
+
+
+def test_the_ten_day_fhs_path_is_conditional_where_the_copula_is_iid(rets):
+    """On a high-volatility start the filtered path carries today's variance into the horizon; the copula's
+    iid unconditional draws do not. FHS 10-day P&L variance > iid draws' (same book, same series)."""
+    from ohcamel_quant import kernels
+    from ohcamel_quant.kernels.types import GarchParams
+
+    x = rets[["SPY"]].to_numpy()
+    fit = fit_gjr(x[:, 0])
+    hot = GarchParams.from_fits([fit])
+    hot.sigma2_next[:] = 9.0 * float(np.var(100 * x[:, 0]))        # a start at three times the usual volatility
+    w = np.array([1.0])
+    fhs = kernels.fhs_paths(residual_matrix([fit]), hot, w, 10, 40_000, 5, 1)
+    iid = kernels.copula_t_paths(x, w, 6.0, 10, 40_000, 5, 1)
+    assert np.var(fhs) > np.var(iid)

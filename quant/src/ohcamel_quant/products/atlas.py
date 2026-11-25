@@ -108,6 +108,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         data_asof=str(min(last).date()), provenance=[*prov, Provenance.now("ohcamel-mc", engine=br.engine).to_dict()],
         notes=[*notes, f"last {LOOKBACK} common sessions; 1-day FHS exact over residual rows; "
                         f"{int(p['n_paths']):,} paths per book for 10-day FHS and both copula horizons; "
+                        "10-day FHS paths carry today's volatility through the horizon (GJR update on each drawn "
+                        "shock), the copula's draws are iid; copula nu maximises the copula's profile likelihood; "
                         f"members: FHS only, {int(p['member_paths']):,} paths for 10-day"],
         survivorship=surv, engine=br.engine,
         verdict="DESCRIPTIVE ONLY", verdict_detail="RISK MEASUREMENT · NO GATE")

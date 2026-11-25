@@ -328,8 +328,9 @@ def _rounded_hash(df):
     return frame_hash(out)
 
 
+# summary re-pinned in Task 4.4: the copula nu is now the copula-likelihood maximiser (was the marginals' median t MLE)
 ATLAS_PIN = ({"n_paths": 2_000, "member_paths": 2_000, "members": False}, {
-    "summary": "8a0081eb7d13672faf956c13c2dea33407563fbfe310c569b169935838669e66",
+    "summary": "3da96c1bdf9554a9158fb859060c3e8200456ff9f4f4ae224368e44e6d1eba2a",
     "euler": "d40e16cf30c306b5dc524264402db9c4cc03128db375579c976eed82a06108d5",
     "members": "5a05a9781d46871fc92b8b780a4358ca99b1dab5720c74f41d0cb9cf915bdf5f"})
 

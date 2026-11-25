@@ -349,15 +349,38 @@ def gpd_var_es(u: float, xi: float, beta: float, n: int, nu: int, alpha: float) 
     return var, es
 
 
+def _evt_residuals(x: np.ndarray, notes: list[str]) -> tuple[np.ndarray, dict[str, float]] | None:
+    """Loss residuals ``-z_t`` from a GJR-GARCH(1,1)-t filter on ``x`` and the forecast scale, or ``None`` (the
+    reason appended to ``notes``) when the filter cannot be trusted: under 100 observations or no convergence."""
+    from .garch import fit_garch_fast
+
+    if x.size < 100:
+        notes.append(f"only {x.size} observations (< 100): no GARCH filter, so the unconditional tail is fitted")
+        return None
+    fit = fit_garch_fast(x, "gjr")
+    z = fit.std_resid[np.isfinite(fit.std_resid)]
+    if not fit.converged or z.size < 100:
+        notes.append("the GJR-GARCH filter did not converge: the unconditional tail is fitted instead")
+        return None
+    return -z, {"mu": fit.mu / 100.0, "sigma_next": math.sqrt(fit.next_variance_pct) / 100.0,
+                "persistence": fit.persistence}
+
+
 def evt_pot(r: np.ndarray, alpha: float = 0.99, horizon: int = 1,
-            threshold_quantile: float = 0.90) -> RiskEstimate:
+            threshold_quantile: float = 0.90, conditional: bool = True) -> RiskEstimate:
     """Peaks-over-threshold EVT: GPD fitted by maximum likelihood to the loss tail.
 
-    Threshold ``u`` = the ``threshold_quantile`` empirical quantile of losses
-    (default 90th percentile, the choice of McNeil & Frey 2000, "Estimation of
-    tail-related risk measures for heteroscedastic financial time series: an
-    extreme value approach", J. Empirical Finance 7). Exceedances ``y = L - u``
-    for ``L > u`` are fitted with a GPD(xi, beta); VaR/ES from
+    ``conditional=True`` (default; McNeil & Frey 2000): a GJR-GARCH(1,1)-t is filtered through the returns, the
+    GPD is fitted to the tail of the standardised residuals ``z_t = (r_t - mu)/sigma_t`` (loss residuals
+    ``-z_t``), and the quantile is rescaled by tomorrow's forecast: ``VaR = -mu + sigma_{T+1} q_alpha(z)``,
+    ``ES = -mu + sigma_{T+1} ES_alpha(z)`` (the residual tail is close to iid; the return tail is not, because
+    volatility clusters). The threshold ``u`` is in sigma units. With fewer than 100 observations, or a filter
+    that does not converge, the unconditional tail below is fitted and the notes say so.
+
+    ``conditional=False``: threshold ``u`` = the ``threshold_quantile`` empirical quantile of losses
+    (default 90th percentile, McNeil & Frey 2000, "Estimation of tail-related risk measures for
+    heteroscedastic financial time series: an extreme value approach", J. Empirical Finance 7).
+    Exceedances ``y = L - u`` for ``L > u`` are fitted with a GPD(xi, beta); VaR/ES from
     :func:`gpd_var_es`. Asymptotic standard errors (Smith 1985, valid for
     ``xi > -1/2``): ``Var(xi) = (1+xi)^2/N_u``, ``Var(beta) = 2 beta^2 (1+xi)/N_u``.
 
@@ -368,12 +391,16 @@ def evt_pot(r: np.ndarray, alpha: float = 0.99, horizon: int = 1,
     if not 0.5 <= threshold_quantile < 1:
         raise ValueError("EVT threshold quantile must be in [0.5, 1)")
     x = _clean(r)
-    L = -x
+    notes = _sample_notes(x.size)
+    filt = _evt_residuals(x, notes) if conditional else None
+    L = -x if filt is None else filt[0]
     n = L.size
     u = float(np.quantile(L, threshold_quantile))
     y = L[L > u] - u
     nu_exc = int(y.size)
-    notes = _sample_notes(n)
+    if filt is not None:
+        notes.append(f"tail fitted to {n} standardised residuals (r_t - mu)/sigma_t of a GJR-GARCH(1,1)-t filter, "
+                     "rescaled by the forecast sigma_{T+1} (McNeil & Frey 2000)")
     if nu_exc < 10:
         raise ValueError(f"EVT: only {nu_exc} exceedances over the threshold; cannot fit a GPD")
     if nu_exc < 50:
@@ -383,6 +410,9 @@ def evt_pot(r: np.ndarray, alpha: float = 0.99, horizon: int = 1,
         notes.append("confidence level is not beyond the threshold: the GPD tail formula is extrapolating inward")
     xi, beta = fit_gpd(y)
     var, es = gpd_var_es(u, xi, beta, n, nu_exc, alpha)
+    if filt is not None:                              # back from sigma units to a return loss
+        scale = filt[1]
+        var, es = -scale["mu"] + scale["sigma_next"] * var, -scale["mu"] + scale["sigma_next"] * es
     se_xi = (1 + xi) / math.sqrt(nu_exc) if xi > -0.5 else math.nan
     se_beta = beta * math.sqrt(2 * (1 + xi) / nu_exc) if xi > -0.5 else math.nan
     if xi >= 1:
@@ -395,7 +425,10 @@ def evt_pot(r: np.ndarray, alpha: float = 0.99, horizon: int = 1,
         "evt_pot", alpha, horizon, var * sh, es * sh,
         params={"threshold": u, "threshold_quantile": threshold_quantile, "exceedances": nu_exc,
                 "xi": xi, "beta": beta, "xi_se": se_xi, "beta_se": se_beta, "n": n,
-                "tail_index": (1 / xi) if xi > 0 else None},
+                "tail_index": (1 / xi) if xi > 0 else None, "conditional": filt is not None,
+                "threshold_unit": "residual" if filt is not None else "return",
+                **({"filter": "gjr", "sigma_next": filt[1]["sigma_next"], "mu": filt[1]["mu"]}
+                   if filt is not None else {})},
         notes=notes,
         reference="McNeil & Frey (2000) J. Empirical Finance 7; Smith (1987) Annals of Statistics 15",
     )

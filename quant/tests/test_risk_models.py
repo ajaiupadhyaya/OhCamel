@@ -307,3 +307,65 @@ def test_news_impact_curve_is_asymmetric(spy_fits):
     neg = nic[nic.shock < 0].next_vol.iloc[0]
     pos = nic[nic.shock > 0].next_vol.iloc[-1]
     assert neg > pos
+
+
+# ------------------------------------------------- Task 4.4: EVT on GARCH-standardised residuals
+def _simulate_garch(n: int, seed: int, shocks_last: tuple[float, ...] = ()):
+    """GJR-free GARCH(1,1) with standardised t(6) innovations (known truth, percent units).
+
+    Returns (decimal returns, sigma_{T+1} in decimal, 99% loss quantile of the innovation)."""
+    mu, omega, a, b, nu = 0.03, 0.02, 0.07, 0.90, 6.0
+    rng = np.random.default_rng(seed)
+    z = rng.standard_t(nu, size=n) * math.sqrt((nu - 2) / nu)
+    if shocks_last:
+        z[n - len(shocks_last):] = shocks_last
+    s2 = omega / (1 - a - b)
+    r = np.empty(n)
+    for t in range(n):
+        e = math.sqrt(s2) * z[t]
+        r[t] = mu + e
+        s2 = omega + a * e * e + b * s2
+    q = -stats.t.ppf(0.01, nu) * math.sqrt((nu - 2) / nu)           # 99% quantile of the loss innovation
+    return r / 100.0, math.sqrt(s2) / 100.0, q, mu / 100.0
+
+
+def test_evt_is_conditional_on_todays_volatility():
+    """A GARCH series that ends in a run of large losses: the simulated conditional 99% quantile at T+1 is
+    -mu + sigma_{T+1} q. The unconditional POT (the old rule) misses it by far more than 10%; the POT on
+    standardised residuals, rescaled by the forecast sigma, is within 10%."""
+    r, sigma_next, q, mu = _simulate_garch(4000, seed=0, shocks_last=(-3.0, -3.5, -3.0, -4.0))
+    truth = -mu + sigma_next * q
+    est = vm.evt_pot(r, 0.99)
+    assert est.params["conditional"] is True and est.params["filter"] == "gjr"
+    assert est.var == pytest.approx(truth, rel=0.10)
+    uncond = vm.evt_pot(r, 0.99, conditional=False)
+    assert uncond.params["conditional"] is False
+    assert abs(uncond.var - truth) / truth > 0.25
+    assert any("standardised residuals" in n for n in est.notes)
+
+
+def test_evt_conditional_error_is_the_sigma_forecast_not_the_tail_fit():
+    """Across seeds the typical error is small; a single draw can exceed 10% because sigma_{T+1} itself is estimated
+    (the GARCH parameters carry noise), which is why the headline test pins a seed and this one pins the median."""
+    errs = []
+    for seed in range(6):
+        r, sigma_next, q, mu = _simulate_garch(4000, seed=seed, shocks_last=(-3.0, -3.5, -3.0, -4.0))
+        truth = -mu + sigma_next * q
+        errs.append(abs(vm.evt_pot(r, 0.99).var / truth - 1))
+    assert float(np.median(errs)) < 0.10 and max(errs) < 0.25
+
+
+def test_evt_threshold_is_taken_on_the_residuals_and_rescaled_by_the_forecast_sigma():
+    r, sigma_next, q, mu = _simulate_garch(3000, seed=3)
+    est = vm.evt_pot(r, 0.99)
+    p = est.params
+    assert p["threshold_unit"] == "residual"                       # u is in sigma units, not return units
+    assert 0.5 < p["threshold"] < 2.5
+    assert p["sigma_next"] == pytest.approx(sigma_next, rel=0.25)
+
+
+def test_evt_falls_back_to_unconditional_and_says_so_when_the_series_is_short():
+    r, *_ = _simulate_garch(300, seed=3)
+    est = vm.evt_pot(r[:80], 0.99, threshold_quantile=0.8)
+    assert est.params["conditional"] is False
+    assert any("unconditional" in n for n in est.notes)

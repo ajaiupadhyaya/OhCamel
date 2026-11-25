@@ -140,4 +140,62 @@ def test_every_api_function_exists_on_both_sides():
 def test_rust_env_means_every_kernel_on_rust():
     if os.environ.get(kernels.ENV) != "rust":
         pytest.skip("only meaningful under OHCAMEL_QUANT_KERNELS=rust")
-    assert all(kernels.engine_of(n) == "rust" for n in kernels.API)
+    # ... except a kernel the committed benchmark table measured faster on the reference (Task 4.4)
+    assert all(kernels.engine_of(n) == "rust" for n in kernels.API if n not in kernels.TABLE_ENGINE)
+
+
+# ---------------------------------------------------------------- Task 4.4: garch_fit follows the table
+class _FakeWheel(types.SimpleNamespace):
+    def garch_fit(self, y, kind, x):                # records that Rust was asked
+        self.calls = getattr(self, "calls", 0) + 1
+        raise AssertionError("garch_fit must not reach Rust when the table says Python is faster")
+
+
+def _write_table(path, python_ms, rust_ms):
+    import json
+
+    row = {"name": "garch_fit", "python_ms": python_ms, "rust_1t_ms": rust_ms, "rust_2t_ms": None,
+           "host": "Test CPU", "measured_on": "test box", "sha": "0b87dec"}
+    path.write_text(json.dumps({"kernels": [row]}))
+
+
+def test_garch_fit_runs_on_the_reference_when_the_table_says_it_is_faster(reload_kernels, monkeypatch, tmp_path):
+    t = tmp_path / "kernels.json"
+    _write_table(t, 3.0, 20.0)
+    monkeypatch.setenv("OHCAMEL_QUANT_KERNEL_TABLE", str(t))
+    fake = _FakeWheel(API_VERSION=reload_kernels(None, None).API_VERSION, garch_fit=None)
+    k = reload_kernels("rust", fake)
+    assert k.TABLE_ENGINE == {"garch_fit": "python"}
+    assert k.engine_of("garch_fit") == "python" and k.engine_of("fhs_paths") == "python"  # fake has no fhs_paths
+    y = 100.0 * np.random.default_rng(0).standard_normal(300)
+    res = k.garch_fit(y, "gjr", None)
+    assert res.params.size == 6 and not hasattr(fake, "calls")
+
+
+def test_garch_fit_runs_on_rust_when_the_table_says_so(reload_kernels, monkeypatch, tmp_path):
+    t = tmp_path / "kernels.json"
+    _write_table(t, 30.0, 2.0)
+    monkeypatch.setenv("OHCAMEL_QUANT_KERNEL_TABLE", str(t))
+    fake = types.SimpleNamespace(API_VERSION=reload_kernels(None, None).API_VERSION, garch_fit=lambda *a: None)
+    k = reload_kernels("rust", fake)
+    assert k.TABLE_ENGINE == {"garch_fit": "rust"} and k.engine_of("garch_fit") == "rust"
+
+
+def test_a_missing_or_invalid_table_leaves_the_kernel_on_rust(reload_kernels, monkeypatch, tmp_path):
+    fake = types.SimpleNamespace(API_VERSION=reload_kernels(None, None).API_VERSION, garch_fit=lambda *a: None)
+    monkeypatch.setenv("OHCAMEL_QUANT_KERNEL_TABLE", str(tmp_path / "absent.json"))
+    assert reload_kernels("rust", fake).TABLE_ENGINE == {}
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    monkeypatch.setenv("OHCAMEL_QUANT_KERNEL_TABLE", str(bad))
+    assert reload_kernels("rust", fake).TABLE_ENGINE == {}
+
+
+def test_forced_engine_overrides_the_table(reload_kernels, monkeypatch, tmp_path):
+    t = tmp_path / "kernels.json"
+    _write_table(t, 3.0, 20.0)
+    monkeypatch.setenv("OHCAMEL_QUANT_KERNEL_TABLE", str(t))
+    fake = types.SimpleNamespace(API_VERSION=reload_kernels(None, None).API_VERSION, garch_fit=lambda *a: None)
+    k = reload_kernels("rust", fake)
+    with k.forced("rust"):
+        assert k.engine_of("garch_fit") == "rust"

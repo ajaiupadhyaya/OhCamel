@@ -141,7 +141,7 @@ export const INFO = {
   },
   m_evt_pot: {
     title: "Extreme value theory (peaks over threshold)",
-    text: "Fits a generalized Pareto distribution to only the losses beyond the 90th percentile, modelling the tail itself rather than the whole distribution.",
+    text: "Filters the returns through a GARCH model, fits a generalized Pareto distribution to the standardised losses beyond their 90th percentile, and rescales that tail by tomorrow's forecast volatility.",
     formula: "\\text{VaR}_\\alpha = u + \\tfrac{\\beta}{\\xi}\\left[\\left(\\tfrac{n}{N_u}(1-\\alpha)\\right)^{-\\xi} - 1\\right]",
     reference: "McNeil & Frey (2000), J. Empirical Finance 7; Smith (1987), Annals of Statistics 15",
   },

@@ -563,3 +563,29 @@ What does not come back: `option_snapshots` (Cboe has no history), so P7's surfa
 its latest `vol.surface_history` artifact, which carries the history forward; keep that artifact directory and
 its `jobs.sqlite` row. A corrupt but readable old file can still be copied out with DuckDB before it is
 discarded; nothing on the droplet automates that.
+
+## Measuring the kernels on the droplet (OWNER-PENDING, Task 4.4)
+
+`garch_fit` runs on whichever engine `docs/perf/kernels.json` says is faster (`ohcamel_quant.kernels`,
+`TABLE_ENGINE`; `OHCAMEL_QUANT_KERNEL_TABLE` points it at another file). The committed rows were measured on a
+developer laptop (`host` = `Apple M2 Pro`) and say the NumPy reference is faster (2.96 ms against 20.07 ms), so
+that is what runs until a droplet row exists. A row whose `host` equals the CPU model of the running process
+outranks any other host's, so the droplet's own row takes over as soon as it is committed. `host` is read from
+the machine by the run (`/proc/cpuinfo`); it cannot be typed.
+
+The agent never runs this. On the droplet, from `~/OhCamel` (the `dc` helper above), the run is read-only on the
+repository and writes to a scratch directory; it is offline (committed fixtures) and takes a few minutes, so run
+it while the worker is idle (outside the nightly window):
+
+```bash
+d=$(mktemp -d) && chmod 777 "$d" && cp docs/perf/kernels.json "$d/kernels.json"
+dc run --rm --no-deps -v "$PWD/tools/perf:/app/tools/perf:ro" -v "$d:/out" --entrypoint python ohcamel-quant \
+  /app/tools/perf/bench_kernels.py run --json /out/kernels.json --md /out/kernels.md \
+  --sha "$(git rev-parse --short=12 HEAD)" --measured-on "DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image"
+grep -h '"host"' "$d/kernels.json" | sort | uniq -c     # the droplet's CPU model must appear
+cp "$d/kernels.json" docs/perf/kernels.json && cp "$d/kernels.md" docs/perf/kernels.md
+```
+
+Then commit both files (the committed table is the dispatch source). The command has not been run: check the
+service's entrypoint and user in `deploy/docker-compose.yml` first if `dc run` refuses the bind mounts.
+

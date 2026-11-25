@@ -16,7 +16,7 @@ from ohcamel_quant.kernels import bench
 TABLE = REPO_ROOT / "docs" / "perf" / "kernels.json"
 MD = REPO_ROOT / "docs" / "perf" / "kernels.md"
 ROW = {"name": "var_es_from_pnl", "python_ms": 12.5, "rust_1t_ms": 1.25, "rust_2t_ms": None,
-       "measured_on": "test box", "sha": "0b87dec"}
+       "host": "Test CPU @ 1.0GHz", "measured_on": "test box", "sha": "0b87dec"}
 
 
 def test_markdown_is_generated_from_the_json():
@@ -113,3 +113,38 @@ def test_bench_runner_times_every_kernel(monkeypatch):
     from ohcamel_quant.kernels import API
 
     assert set(mod.cases()) == set(API)
+
+
+# ---------------------------------------------------------------- Task 4.4: dispatch follows the file
+def _doc(*rows):
+    return {"kernels": [{**ROW, "name": "garch_fit", **r} for r in rows]}
+
+
+def test_the_committed_table_records_host_and_measured_on_for_every_row():
+    for r in bench.validate_table(json.loads(TABLE.read_text(encoding="utf-8"))):
+        assert r["host"].strip() and r["measured_on"].strip()
+
+
+def test_validate_requires_a_host():
+    with pytest.raises(ValueError, match="fields"):
+        bench.validate_table({"kernels": [{k: v for k, v in ROW.items() if k != "host"}]})
+
+
+def test_faster_engine_is_whichever_the_row_measured_faster():
+    assert bench.faster_engine(_doc({"python_ms": 3.0, "rust_1t_ms": 20.0}), "garch_fit") == "python"
+    assert bench.faster_engine(_doc({"python_ms": 30.0, "rust_1t_ms": 2.0}), "garch_fit") == "rust"
+    assert bench.faster_engine(_doc({"python_ms": 3.0, "rust_1t_ms": 3.0}), "garch_fit") == "rust"   # a tie keeps the kernel
+    assert bench.faster_engine(_doc(), "garch_fit") is None                                          # nothing measured
+
+
+def test_a_row_measured_on_this_host_outranks_another_hosts():
+    doc = _doc({"python_ms": 3.0, "rust_1t_ms": 20.0, "host": "Laptop CPU"},
+               {"python_ms": 30.0, "rust_1t_ms": 2.0, "host": "Droplet CPU"})
+    assert bench.faster_engine(doc, "garch_fit", host="Laptop CPU") == "python"
+    assert bench.faster_engine(doc, "garch_fit", host="Droplet CPU") == "rust"
+    assert bench.faster_engine(doc, "garch_fit", host="Other") == "rust"      # no match: the latest row
+
+
+def test_cpu_model_is_one_nonempty_line_without_pipes():
+    m = bench.cpu_model()
+    assert m.strip() and "\n" not in m and "|" not in m
