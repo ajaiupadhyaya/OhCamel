@@ -47,9 +47,12 @@ T1. **The statistic: excess return on deployed capital.** The book's daily retur
 
 Idle cash contributes zero. *(agent's proposal: the spec fixes neither the denominator nor the risk-free rate)*
 
-The alternative is the whole account's return less `r_f` on all of its equity. The paper desk credits no
-interest on idle cash (the task 2.1 review), and at most 0.55 of equity is deployed. So that alternative charges
-a full point of return a year for every point of `r_f`, where T1 charges at most 0.55 of a point. Against the
+The alternative is the whole account's return less `r_f` on all of its equity. The desk's record has no
+interest-on-cash term: the nightly close pulls only the venue's `DIV` and `FEE` activities
+(`desk/session_close.ml`, journaled by `desk/journal.ml`), and nothing in `desk/` or `lib/` credits interest on
+cash. What Alpaca's paper account itself credits on idle cash is not established here. At most 0.55 of equity is
+deployed. So, with no interest on idle cash, that alternative charges a full point of return a year for every
+point of `r_f`, where T1 charges at most 0.55 of a point. Against the
 fixture proxy's volatility of 0.026 to 0.039 a year (*The drawdown cap, on its merits*, below), each point of
 `r_f` is a Sharpe hurdle of:
 

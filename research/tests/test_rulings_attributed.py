@@ -30,7 +30,19 @@ SKIP_DIRS = {"superpowers", ".superpowers", "node_modules", ".venv", "_build", "
 TEXT = {".md", ".py", ".ml", ".mli", ".ts", ".tsx", ".yaml", ".yml", ".sexp", ".sh", ".json",
         ".txt"}
 #: The owner's (or owner) + "ruling" + R and a digit, wrapped across a comment's lines or not.
-OWNERS = re.compile(r"owner(?:'s)?(?:\s|#|;|//|\*|>)+ruling(?:\s|#|;|//|\*)+R([1-6])\b")
+_SEP = r"(?:\s|#|;|//|\*|>)+"
+OWNERS = re.compile(
+    rf"owner(?:'s)?{_SEP}ruling{_SEP}R([1-6])\b"           # owner's ruling R3, owner ruling R3
+    rf"|owner's{_SEP}R([1-6]){_SEP}ruling\b"               # owner's R3 ruling
+    rf"|R([1-6]){_SEP}(?:is|was){_SEP}the{_SEP}owner's"    # R3 is the owner's
+    rf"|owner{_SEP}(?:has{_SEP})?ruled{_SEP}(?:on{_SEP})?R([1-6])\b"  # the owner has ruled on R3
+)
+#: The scan must reach at least this many text files, or a wrong root would pass silently.
+MIN_FILES = 500
+
+
+def _ruling(m: re.Match[str]) -> str:
+    return "R" + next(g for g in m.groups() if g)
 
 
 def answered() -> set[str]:
@@ -62,12 +74,14 @@ def test_no_file_calls_an_unanswered_ruling_the_owners() -> None:
     ok = answered()
     bad = []
     for f in _files():
+        if f.resolve() == Path(__file__).resolve():   # this file's own positive controls
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
         for m in OWNERS.finditer(text):
-            if f"R{m.group(1)}" not in ok:
+            if _ruling(m) not in ok:
                 line = text.count("\n", 0, m.start()) + 1
                 bad.append(f"{f.relative_to(REPO_ROOT)}:{line}: {m.group(0)!r}")
     assert not bad, "a ruling the owner has not given is called the owner's:\n" + "\n".join(bad)
@@ -85,3 +99,31 @@ def test_the_judged_by_note_names_no_owner() -> None:
     """Every research manifest carries this note; it states the gates, not whose they are."""
     note = judged_by_note({})
     assert "owner" not in note.lower()
+
+
+# ------------------------------------------------------------------ positive controls
+def test_the_table_records_some_ruling_as_answered() -> None:
+    """If the table parse broke, nothing would be answered and the checks above would be vacuous."""
+    assert {"R1", "R5"} <= answered()
+
+
+def test_the_scan_reaches_the_repository() -> None:
+    files = list(_files())
+    assert len(files) >= MIN_FILES, f"the scan read {len(files)} files: is ROOTS right?"
+    names = {f.relative_to(REPO_ROOT).as_posix() for f in files}
+    for must in ("docs/CHARTER.md", "research/src/ohcamel_research/battery/run.py",
+                 "quant/src/ohcamel_quant/models/verdict.py",
+                 "quant/web/src/pages/methodology/models.ts", "test/test_intake.ml"):
+        assert must in names, f"the scan never reads {must}"
+
+
+def test_the_pattern_catches_each_phrasing() -> None:
+    for text, ruling in [("the owner's ruling R3", "R3"), ("owner ruling R3", "R3"),
+                         ("the owner's R3 ruling", "R3"), ("R3 is the owner's", "R3"),
+                         ("the owner has ruled on R2", "R2"), ("the owner ruled R6", "R6"),
+                         ("the owner's\n# ruling R4", "R4"), ("(owner\n   ruling R3)", "R3")]:
+        m = OWNERS.search(text)
+        assert m and _ruling(m) == ruling, text
+    for text in ("ruling R3, the spec's default, awaiting the owner",
+                 "the owner's approval of R3 is pending"):
+        assert not OWNERS.search(text), text
