@@ -255,7 +255,7 @@ def test_record_dates_with_no_close_are_noted_not_silently_dropped():
 
 def test_the_served_record_shape_is_read_end_to_end(tmp_path, monkeypatch):
     """desk/intake.ml serves ``record: {"sessions": [{date, allocated, pnl, turnover}]}`` on the live host."""
-    from tests.test_signals_report import (  # noqa: PLC0415
+    from test_signals_report import (  # noqa: PLC0415  (tests/ is on sys.path, as lane_m_harness is)
         RESEARCH,
         SESSIONS,
         _ctx,
