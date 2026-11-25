@@ -1,4 +1,6 @@
-"""``signals.daily`` (design §4.2; INC-01): every farm cell of the roster as a
+"""``signals.daily`` (design §4.2; INC-02's roster, a draft awaiting the owner's approval; the rules are INC-01's,
+and each month's freeze also writes the ex-ante volatility the desk's stop is a multiple of, task 2.2): every farm
+cell of the roster as a
 contract-v1 document on the strategy's own decision sessions, for the desk to judge.
 
 For each roster cell whose producer is ``signals.daily`` (the research
@@ -595,7 +597,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     return _spec(emitted, refused,
                  [f"{n['written']} written, {n['late']} written late, {n['retry']} written again (the desk did not "
                   f"size the last), {n['held']} held, {n['already_present']} already present, "
-                  f"{len(refused)} refused; parameters frozen for the month (INC-01); documents only on each "
+                  f"{len(refused)} refused; parameters frozen for the month (INC-02, a draft awaiting the owner); documents only on each "
                   "strategy's own decision sessions; validation from the newest farm verdict when it tested "
                   "the frozen parameters", *run_notes, *execution_notes(todo, farm)],
                  provenance=[{"source": "farm.sweep", "artifact": farm_id},

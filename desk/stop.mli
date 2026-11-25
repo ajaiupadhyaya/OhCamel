@@ -1,8 +1,16 @@
-(** INC-01's stop rules, decided at the close: stop.ml's header says what fires and why
-    nothing un-stops on its own. *)
+(** INC-02's stop rules (a draft awaiting the owner), decided at the close: stop.ml's
+    header says what fires and why nothing un-stops on its own. *)
 
 open Core
 module Spec := Ohcamel.Config.Book.Signals_spec
+
+val threshold : ex_ante_vol:float -> multiple:float -> floor:float -> cap:float -> float
+(** A strategy's drawdown line: [multiple] x its ex-ante annualised volatility, floored at
+    [floor] and capped at [cap]. 0.04 at 2.0 is 0.08; 0.02 is the floor 0.05; 0.15 is the
+    cap 0.25. *)
+
+val line : Spec.Stop.t -> float
+(** [threshold] of a strategy's own stop words. *)
 
 val check :
   spec:Spec.Stop.t ->

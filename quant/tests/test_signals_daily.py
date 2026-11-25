@@ -1,4 +1,4 @@
-"""signals.daily (Task 14): every farm cell of INC-01's roster as a contract-v1
+"""signals.daily (Task 14): every farm cell of INC-01's roster (INC-02's now, a draft awaiting the owner) as a contract-v1
 document, computed with the backtest's own strategy function at the last close,
 under parameters frozen once a month (INC-01, *The parameter-freeze rule*).
 
@@ -22,6 +22,7 @@ from lane_m_harness import publish_artifact
 
 from ohcamel_quant.backtest import strategies
 from ohcamel_quant.config import Settings
+from ohcamel_quant.data.base import DataUnavailable
 from ohcamel_quant.data.market import Dataset, MarketData
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.jobs.db import connect
@@ -235,6 +236,79 @@ def test_freeze_reads_selected_params_once_per_month(tmp_path, monkeypatch):
     got, refused = freeze.frozen_params(None, month=date(2026, 9, 1), cells=[cell])
     assert (got, refused) == ({cell.slug: {"months": 12}}, [])
     assert n_freezes() == 3
+
+
+def _freeze_row(world: dict, slug: str) -> dict:
+    from ohcamel_quant.products.io import previous_artifact, read_table
+
+    got = previous_artifact(freeze.FREEZE_KIND, freeze._phash("2026-06"), db_path=world["db"], worker_only=True)
+    table = read_table(got[1], freeze.VOL_TABLE)
+    return table[table["slug"] == slug].iloc[-1].to_dict()
+
+
+def test_freeze_writes_the_252_session_vol_of_the_traded_backtest(world):
+    """Task 2.2: ex_ante_vol is the annualised std of the last 252 live net returns of the cell's backtest at the
+    frozen parameters, gross 1, filled at the next open -- recomputed here from the fixture warehouse, not read back."""
+    from ohcamel_quant.backtest import costs as cost_file
+    from ohcamel_quant.backtest.engine import EngineConfig, StrategyContext, run_backtest
+
+    ctx = _ctx(world, signals_dir=None)
+    try:
+        from ohcamel_quant.products.farm import _prices_and_opens
+
+        px, opens = _prices_and_opens(ctx, ["SPY", "QQQ", "IWM"])
+        try:   # the fixtures hold no T-bill rate: rf is None, as the farm and the freeze read it offline
+            rf = ctx.market.risk_free_daily(px.index[0].date(), px.index[-1].date()).data.reindex(px.index)
+            rf = rf.fillna(0.0)
+        except DataUnavailable:
+            rf = None
+    finally:
+        ctx.close()
+    spec = strategies.get_strategy("sma_trend")
+    cfg = EngineConfig(rebalance=spec.default_rebalance, max_gross_leverage=1.0, costs=cost_file.load(),
+                       fill="open", execution_lag=1)
+    res = run_backtest(StrategyContext(prices=px, rf=rf, opens=opens), spec.fn,
+                       strategies.validate_params(spec, {"months": 10}, ["SPY", "QQQ", "IWM"]), cfg)
+    live = res.live(res.returns_net).dropna()
+    want = float(live.iloc[-252:].std(ddof=1)) * np.sqrt(252)
+    row = _freeze_row(world, "farm_sma_trend_fixture")
+    assert row["ex_ante_vol"] == pytest.approx(want, rel=1e-9)
+    assert 0.0 < row["ex_ante_vol"] < 1.0
+    assert row["vol_sessions"] == len(live) >= 252
+    assert row["vol_asof"] == str(LAST)
+    # the same month's artifact is what frozen_ex_ante_vol reads back, per slug
+    cells = [Cell("farm_sma_trend_fixture", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)]
+    assert freeze.frozen_ex_ante_vol(month=date(2026, 6, 1), cells=cells) == {
+        "farm_sma_trend_fixture": pytest.approx(want, rel=1e-9)}
+
+
+def test_realised_vol_is_the_last_252_returns_annualised_and_never_from_less():
+    r = pd.Series(np.r_[np.full(10, 5.0), np.tile([0.01, -0.01], 126)])   # the last 252 alternate +-1%
+    assert freeze.realised_vol(r) == pytest.approx(np.std(np.tile([0.01, -0.01], 126), ddof=1) * np.sqrt(252))
+    assert freeze.realised_vol(r.iloc[-251:]) is None   # 251 sessions: no number
+    assert freeze.realised_vol(pd.Series([0.01, np.nan] * 200)) is None   # only 200 finite returns
+
+
+def test_a_cell_with_fewer_than_252_live_sessions_has_no_vol_and_is_not_emitted(tmp_path, monkeypatch, world):
+    from ohcamel_quant.products import farm
+
+    real = farm._prices_and_opens
+    monkeypatch.setattr(farm, "_prices_and_opens", lambda ctx, tk: tuple(x.iloc[-300:] for x in real(ctx, tk)))
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    monkeypatch.setattr(freeze, "DB_PATH", db)
+    publish_artifact(db, root, "farm.sweep", _farm_tables(FARM_ROWS), verdict="PASS",
+                     finished=datetime(2026, 5, 29, 23, 0, tzinfo=UTC))
+    cell = Cell("farm_sma_trend_fixture", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)
+    ctx = _ctx(world, signals_dir=None)
+    try:
+        got, refused = freeze.frozen_params(ctx, month=date(2026, 6, 1), cells=[cell])
+    finally:
+        ctx.close()
+    assert got == {}
+    assert len(refused) == 1 and refused[0]["slug"] == cell.slug
+    assert "no ex-ante volatility, so not emitted" in refused[0]["reason"]
+    assert "fewer than the 252" in refused[0]["reason"]
+    assert freeze.frozen_ex_ante_vol(month=date(2026, 6, 1), cells=[cell]) == {}
 
 
 def test_cell_without_params_is_refused_with_reason(world):

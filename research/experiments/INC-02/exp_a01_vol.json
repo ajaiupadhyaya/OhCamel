@@ -1,0 +1,28 @@
+{
+  "exp_a01_spy": {
+    "ex_ante_vol": 0.0957117317039083,
+    "first": "2025-05-30",
+    "last": "2026-06-01",
+    "params": {
+      "fast": 1,
+      "slow": 150,
+      "symbol": "SPY"
+    },
+    "sessions": 252,
+    "source": "battery.run.holdout_returns on fixtures/history, EXP-A01 friction, tier 50000",
+    "strategy": "ma_crossover"
+  },
+  "exp_a01_tlt": {
+    "ex_ante_vol": 0.05016474234758774,
+    "first": "2025-05-30",
+    "last": "2026-06-01",
+    "params": {
+      "fast": 1,
+      "slow": 200,
+      "symbol": "TLT"
+    },
+    "sessions": 252,
+    "source": "battery.run.holdout_returns on fixtures/history, EXP-A01 friction, tier 50000",
+    "strategy": "ma_crossover"
+  }
+}

@@ -1,12 +1,20 @@
-(* INC-01's stop rules, decided at the close.
+(* INC-02's stop rules, decided at the close (a draft awaiting the owner's
+   approval; INC-01's were a fixed 15% line over 250 sessions).
 
-   Per strategy, in the book before it trades: a drawdown from peak on allocated
-   capital, and a count of sessions since its first fill. Either one stops it. A
-   stopped strategy is recorded with the rule that fired (strategy_state), said
-   once in the alerts, sized no more, and flattened by the intake's adjust pass.
-   The desk never un-stops: only the owner's (reinstated DATE), later than the
-   stop, brings a strategy back, at the next start, and its record then begins
-   again at that date, because the fall before it is what the stop answered.
+   Per strategy, in the book before it trades: a drawdown from peak on
+   allocated capital, and a count of sessions since its first fill. Either one stops
+   it. The drawdown line is the strategy's own: [vol_multiple] x its ex-ante annualised
+   volatility, floored at [floor] and capped at [cap] ([threshold]) -- 15% stopped the
+   volatile strategies by chance and never the quiet ones. The volatility is the
+   one the monthly freeze wrote into the book at the traded parameters (gross 1,
+   filled at the next open); it is read from the book, never re-estimated here, so
+   a line does not drift with the strategy's own record. A stopped
+   strategy is recorded with the rule that fired (strategy_state), said once in the
+   alerts, sized no more, and flattened by the intake's adjust pass (the stop
+   branch, which Task 1.9 exempts from the exposure limits). The desk never
+   un-stops: only the owner's (reinstated DATE), later than the stop, brings a
+   strategy back, at the next start, and its record then begins again at that date,
+   because the fall before it is what the stop answered.
 
    Nothing evaluated these until 2026-11-03, while 23 strategies traded with them
    in the book. The record is Record.sessions_of over the strategy's own fills,
@@ -18,13 +26,26 @@
 open Core
 module Spec = Ohcamel.Config.Book.Signals_spec
 
+let threshold ~ex_ante_vol ~multiple ~floor ~cap =
+  Float.min cap (Float.max floor (multiple *. ex_ante_vol))
+
+let line (spec : Spec.Stop.t) =
+  threshold ~ex_ante_vol:spec.Spec.Stop.ex_ante_vol ~multiple:spec.Spec.Stop.vol_multiple
+    ~floor:spec.Spec.Stop.floor ~cap:spec.Spec.Stop.cap
+
 let check ~(spec : Spec.Stop.t) ~(record : Record.summary) ~sessions =
-  if Float.( >= ) record.Record.max_drawdown spec.Spec.Stop.drawdown then
+  let line = line spec in
+  if Float.( >= ) record.Record.max_drawdown line then
     `Stop
       ( "drawdown",
-        sprintf "drawdown %.1f%% reached its line of %.1f%%"
+        sprintf
+          "drawdown %.1f%% reached its line of %.1f%% (%g x its ex-ante volatility of \
+           %.1f%%, floored at %.1f%%, capped at %.1f%%)"
           (100.0 *. record.Record.max_drawdown)
-          (100.0 *. spec.Spec.Stop.drawdown) )
+          (100.0 *. line) spec.Spec.Stop.vol_multiple
+          (100.0 *. spec.Spec.Stop.ex_ante_vol)
+          (100.0 *. spec.Spec.Stop.floor)
+          (100.0 *. spec.Spec.Stop.cap) )
   else if sessions >= spec.Spec.Stop.sessions then
     `Stop
       ( "sessions",

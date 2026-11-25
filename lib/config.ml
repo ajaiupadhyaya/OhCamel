@@ -568,11 +568,24 @@ module Book = struct
       type t = Carry | Close [@@deriving sexp, compare, equal]
     end
 
-    (* The stop rules: the strategy is stopped when its drawdown from peak on
-       allocated capital reaches [drawdown], or [sessions] sessions have passed
-       since its first fill. *)
+    (* The stop rules (INC-02, a draft awaiting the owner): the strategy is stopped
+       when its drawdown from peak on allocated capital reaches
+       [vol_multiple] x its ex-ante annualised volatility ([ex_ante_vol], written
+       into the book from the monthly freeze), floored at [floor] and capped at
+       [cap]; or when [sessions] sessions have passed since its first fill. The
+       book writes them as flat strategy words -- (stop_vol_multiple 2.0)
+       (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500) (ex_ante_vol F) --
+       the first four defaulting to those values; [ex_ante_vol] has no default,
+       and a strategy without one does not load. *)
     module Stop = struct
-      type t = { drawdown : float; sessions : int } [@@deriving sexp, compare, equal]
+      type t = {
+        vol_multiple : float;
+        floor : float;
+        cap : float;
+        sessions : int;
+        ex_ante_vol : float;
+      }
+      [@@deriving sexp, compare, equal]
     end
 
     module Strategy = struct
@@ -580,20 +593,98 @@ module Book = struct
         name : string;
         symbols : string list;
         (* R4's bound, in recorded sessions: interface/README.md's default. *)
+        max_age : int;
+        sizing : sizing;
+        capital_fraction : float;
+        cadence : Cadence.t;
+        adjust : Adjust.t;
+        (* R4's bound for an intraday document, in minutes. *)
+        max_age_minutes : int;
+        horizon : Horizon.t;
+        (* None only for a record built in memory: [validate] refuses a loaded
+           strategy that has no [ex_ante_vol], naming it. *)
+        stop : Stop.t option;
+        reinstated : Date.t option;
+      }
+      [@@deriving compare, equal]
+
+      (* The book's spelling: flat words, no (stop ...). [@sexp.option], so
+         (reinstated DATE) and (ex_ante_vol F) are written bare and an absent
+         one is None. *)
+      type wire = {
+        name : string;
+        symbols : string list;
         max_age : int; [@sexp.default 3]
         sizing : sizing; [@sexp.default Advisory]
         capital_fraction : float;
         cadence : Cadence.t; [@sexp.default Cadence.Daily]
         adjust : Adjust.t; [@sexp.default Adjust.Intraday]
-        (* R4's bound for an intraday document, in minutes. *)
         max_age_minutes : int; [@sexp.default 20]
         horizon : Horizon.t; [@sexp.default Horizon.Carry]
-        (* [@sexp.option], so the book writes (stop ((drawdown F) (sessions N)))
-           and (reinstated DATE) bare, and an absent field is None. *)
-        stop : Stop.t option; [@sexp.option]
+        stop_vol_multiple : float; [@sexp.default 2.0]
+        stop_floor : float; [@sexp.default 0.05]
+        stop_cap : float; [@sexp.default 0.25]
+        stop_sessions : int; [@sexp.default 500]
+        ex_ante_vol : float option; [@sexp.option]
         reinstated : Date.t option; [@sexp.option]
       }
-      [@@deriving sexp, compare, equal]
+      [@@deriving sexp]
+
+      let of_wire (w : wire) : t =
+        {
+          name = w.name;
+          symbols = w.symbols;
+          max_age = w.max_age;
+          sizing = w.sizing;
+          capital_fraction = w.capital_fraction;
+          cadence = w.cadence;
+          adjust = w.adjust;
+          max_age_minutes = w.max_age_minutes;
+          horizon = w.horizon;
+          stop =
+            Option.map w.ex_ante_vol ~f:(fun ex_ante_vol ->
+                {
+                  Stop.vol_multiple = w.stop_vol_multiple;
+                  floor = w.stop_floor;
+                  cap = w.stop_cap;
+                  sessions = w.stop_sessions;
+                  ex_ante_vol;
+                });
+          reinstated = w.reinstated;
+        }
+
+      let to_wire (t : t) : wire =
+        let st =
+          Option.value t.stop
+            ~default:
+              {
+                Stop.vol_multiple = 2.0;
+                floor = 0.05;
+                cap = 0.25;
+                sessions = 500;
+                ex_ante_vol = Float.nan;
+              }
+        in
+        {
+          name = t.name;
+          symbols = t.symbols;
+          max_age = t.max_age;
+          sizing = t.sizing;
+          capital_fraction = t.capital_fraction;
+          cadence = t.cadence;
+          adjust = t.adjust;
+          max_age_minutes = t.max_age_minutes;
+          horizon = t.horizon;
+          stop_vol_multiple = st.vol_multiple;
+          stop_floor = st.floor;
+          stop_cap = st.cap;
+          stop_sessions = st.sessions;
+          ex_ante_vol = Option.map t.stop ~f:(fun s -> s.Stop.ex_ante_vol);
+          reinstated = t.reinstated;
+        }
+
+      let t_of_sexp s = of_wire (wire_of_sexp s)
+      let sexp_of_t t = sexp_of_wire (to_wire t)
     end
 
     type t = { strategies : Strategy.t list } [@@deriving sexp, compare, equal]
@@ -645,22 +736,35 @@ module Book = struct
               else if s.max_age_minutes < 1 then
                 fail s.name "max_age_minutes must be at least 1, got %d" s.max_age_minutes
               else
-                match (s.stop, s.reinstated) with
-                | Some stop, _
-                  when not Float.(stop.Stop.drawdown > 0.0 && stop.Stop.drawdown <= 1.0)
-                  ->
-                    fail s.name "stop.drawdown must be in (0, 1], got %g"
-                      stop.Stop.drawdown
-                | Some stop, _ when stop.Stop.sessions < 1 ->
-                    fail s.name "stop.sessions must be at least 1, got %d"
+                match s.stop with
+                | None ->
+                    fail s.name
+                      "ex_ante_vol is missing: INC-02's stop is a multiple of the \
+                       strategy's own volatility, written into the book from the monthly \
+                       freeze, and a strategy without one has no line"
+                | Some stop
+                  when not
+                         (Float.is_finite stop.Stop.ex_ante_vol
+                         && Float.(stop.Stop.ex_ante_vol > 0.0)) ->
+                    fail s.name "ex_ante_vol must be a positive number, got %g"
+                      stop.Stop.ex_ante_vol
+                | Some stop when not Float.(stop.Stop.vol_multiple > 0.0) ->
+                    fail s.name "stop_vol_multiple must be positive, got %g"
+                      stop.Stop.vol_multiple
+                | Some stop
+                  when not
+                         Float.(
+                           stop.Stop.floor > 0.0
+                           && stop.Stop.floor <= stop.Stop.cap
+                           && stop.Stop.cap <= 1.0) ->
+                    fail s.name
+                      "stop_floor and stop_cap must satisfy 0 < floor <= cap <= 1, got \
+                       %g and %g"
+                      stop.Stop.floor stop.Stop.cap
+                | Some stop when stop.Stop.sessions < 1 ->
+                    fail s.name "stop_sessions must be at least 1, got %d"
                       stop.Stop.sessions
-                | None, Some date ->
-                    (* Reinstating is the owner's answer to a stop, and the
-                       desk never un-stops on its own: with no stop there is
-                       nothing for the date to answer. *)
-                    fail s.name "reinstated is %s but the strategy has no stop"
-                      (Date.to_string date)
-                | _ -> Ok ())
+                | Some _ -> Ok ())
       in
       match List.find_a_dup names ~compare:String.compare with
       | Some name -> fail name "two strategies have this name"

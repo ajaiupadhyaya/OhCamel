@@ -54,6 +54,8 @@ MAX_ROWS = 50_000
 PUBLIC_TABLES: dict[str, frozenset[str]] = {
     "desk.report": frozenset({"book_summary", "var_score"}),
     "signals.overlay": frozenset({"overlay", "sources"}),
+    # the freeze's ``volatility`` table holds each strategy's ex-ante volatility, the input of its stop's threshold
+    "signals.freeze": frozenset({"params"}),
 }
 #: Kinds whose notes quote the book: the session's equity, gross, net and P&L.
 NOTES_WITHHELD = frozenset({"desk.report"})

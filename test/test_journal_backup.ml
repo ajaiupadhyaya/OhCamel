@@ -1633,7 +1633,15 @@ let test_record_diff_reads_and_never_writes () =
           adjust = Spec.Adjust.Intraday;
           max_age_minutes = 20;
           horizon = Spec.Horizon.Carry;
-          stop = Some { Spec.Stop.drawdown = 0.002; sessions = 250 };
+          stop =
+            Some
+              {
+                Spec.Stop.vol_multiple = 2.0;
+                floor = 0.001;
+                cap = 0.25;
+                sessions = 250;
+                ex_ante_vol = 0.001;
+              };
           reinstated = None;
         }
       in
@@ -1755,7 +1763,15 @@ let test_record_diff_says_each_strategy_once () =
           adjust = Spec.Adjust.Intraday;
           max_age_minutes = 20;
           horizon = Spec.Horizon.Carry;
-          stop = Some { Spec.Stop.drawdown = 0.15; sessions = 250 };
+          stop =
+            Some
+              {
+                Spec.Stop.vol_multiple = 2.0;
+                floor = 0.05;
+                cap = 0.25;
+                sessions = 250;
+                ex_ante_vol = 0.075;
+              };
           reinstated = None;
         }
       in

@@ -167,8 +167,9 @@ let test_a_signals_block_parses_and_sizing_defaults_to_advisory () =
       (Book.of_string
          (book
             "(signals ((strategies (((name exp_a01_spy) (symbols (SPY)) \
-             (capital_fraction 0.5)) ((name exp_a01_tlt) (symbols (TLT)) (max_age 5) \
-             (sizing live) (capital_fraction 1.0))))))"))
+             (capital_fraction 0.5) (ex_ante_vol 0.04)) ((name exp_a01_tlt) (symbols \
+             (TLT)) (max_age 5) (sizing live) (capital_fraction 1.0) (ex_ante_vol \
+             0.04))))))"))
   in
   match given.Book.signals with
   | None -> Alcotest.fail "the block was dropped"
@@ -192,7 +193,8 @@ let test_a_signals_block_is_refused_when_it_cannot_be_fed () =
     | Error e -> contains what ~substring:naming (Error.to_string_hum e)
   in
   let s ?(name = "exp_a") ?(symbols = "(SPY)") ?(extra = "") fraction =
-    sprintf "((name %s) (symbols %s) (capital_fraction %s)%s)" name symbols fraction extra
+    sprintf "((name %s) (symbols %s) (capital_fraction %s) (ex_ante_vol 0.04)%s)" name
+      symbols fraction extra
   in
   refused "an upper-case name" (s ~name:"Exp_a" "0.5") ~naming:"^[a-z][a-z0-9_]{1,63}$";
   refused "a one-letter name" (s ~name:"e" "0.5") ~naming:"^[a-z][a-z0-9_]{1,63}$";

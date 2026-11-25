@@ -170,8 +170,11 @@ S3. **What a stop does**, as in INC-01: the strategy is flattened by a zero-targ
 rule that fired, shown STOPPED and sized no more; only the owner reinstates it, by a `(reinstated DATE)` in the
 book and a restart. The desk never un-stops. *(awaiting approval)*
 
-S4. **No INC-02 session trades on INC-01's stops.** Until the desk reads S1 and S2 from the book (completion
-task 2.2), `book.example.sexp` still carries INC-01's `(stop ((drawdown 0.15) (sessions 250)))`.
+S4. **No INC-02 session trades on INC-01's stops.** The desk reads S1 and S2 from the book since completion
+task 2.2 (`(stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500) (ex_ante_vol F)`, and a
+strategy with no `ex_ante_vol` does not load), and `book.example.sexp` carries them. Its `ex_ante_vol` is measured
+for EXP-A01's two rows (`tools/inc02_exp_a01_vol.py`) and is a stated placeholder, 0.075 (twice it is INC-01's
+0.15), for the 20 farm rows until the freeze on the droplet's warehouse writes theirs (`tools/book_ex_ante_vol.py`).
 *(awaiting approval)*
 
 ## The book's limits

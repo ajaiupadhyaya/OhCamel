@@ -212,6 +212,20 @@ def test_the_overlay_serves_its_scale_and_not_the_target_book(api):
     assert "names" not in client.get("/api/artifacts/signals.overlay/latest").json()["manifest"]["tables"]
 
 
+def test_the_freeze_serves_its_parameters_and_not_the_stops_volatility(api):
+    """Completion task 2.2: ex_ante_vol is the input of a strategy's stop threshold, a limit threshold, so the
+    freeze's ``volatility`` table is not public; its ``params`` table (as before) is."""
+    client, db, root = api
+    aid, _ = publish_artifact(db, root, "signals.freeze", {
+        "params": pd.DataFrame({"slug": ["farm_x"], "selected_params": ['{"months": 10}']}),
+        "volatility": pd.DataFrame({"slug": ["farm_x"], "ex_ante_vol": [0.0421]}),
+    }, finished=utcnow())
+    assert client.get(f"/api/artifacts/signals.freeze/{aid}/params").status_code == 200
+    r = client.get(f"/api/artifacts/signals.freeze/{aid}/volatility")
+    assert r.status_code == 404 and "0.0421" not in r.text
+    assert "volatility" not in client.get("/api/artifacts/signals.freeze/latest").json()["manifest"]["tables"]
+
+
 def test_a_table_added_to_a_book_kind_is_private_until_someone_lists_it(api):
     client, db, root = api
     aid, _ = publish_artifact(db, root, "desk.report", {"brand_new": pd.DataFrame({"x": [1]})}, finished=utcnow())

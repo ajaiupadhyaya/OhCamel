@@ -96,3 +96,45 @@ def test_load_roster_refuses_an_unknown_top_level_key(tmp_path):
     path.write_text("extra: 1\n" + _HEAD + _ROW.format(slug="a_one", f=0.1))
     with pytest.raises(ValueError, match="unknown"):
         load_roster(path)
+
+
+# ---- completion task 2.2: the stop's volatility, written into the book ----------------------------------------------
+def test_the_example_book_gives_every_roster_row_an_ex_ante_vol_and_says_which_are_measured():
+    """book.example.sexp is held to the roster row for row; here, each row's ``(ex_ante_vol F)`` and the stop words:
+    EXP-A01's two are the committed script output's, the farm's 20 are the stated placeholder (0.075)."""
+    import json
+    import re
+
+    from ohcamel_quant.config import REPO_ROOT
+
+    text = (REPO_ROOT / "book.example.sexp").read_text()
+    text = text[text.index("\n (signals\n"):]
+    blocks = re.split(r"(?=\(\(name\s)", text)[1:]
+    vols = {}
+    for b in blocks:
+        slug = re.match(r"\(\(name (\w+)\)", b).group(1)
+        assert "(stop ((drawdown" not in b, f"{slug} still carries INC-01's stop"
+        for word in ("(stop_vol_multiple 2.0)", "(stop_floor 0.05)", "(stop_cap 0.25)", "(stop_sessions 500)"):
+            assert word in b, f"{slug} lacks {word}"
+        vols[slug] = float(re.search(r"\(ex_ante_vol ([^)\s]+)\)", b).group(1))
+    assert list(vols) == [c.slug for c in load_roster().cells]
+    measured = json.loads((REPO_ROOT / "research/experiments/INC-02/exp_a01_vol.json").read_text())
+    for slug, row in measured.items():
+        assert vols[slug] == pytest.approx(row["ex_ante_vol"], abs=5e-7), slug
+    assert all(v == 0.075 for s, v in vols.items() if s.startswith("farm_")), "a farm row that is neither measured nor the placeholder"
+
+
+def test_book_ex_ante_vol_rewrites_farm_rows_from_the_freeze_and_refuses_a_missing_one():
+    import importlib.util
+
+    from ohcamel_quant.config import REPO_ROOT
+
+    spec = importlib.util.spec_from_file_location("book_ex_ante_vol", REPO_ROOT / "tools" / "book_ex_ante_vol.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    book = ("((name exp_a01_spy) (ex_ante_vol 0.0957))\n((name farm_a) (ex_ante_vol 0.075))\n"
+            "((name farm_b) (ex_ante_vol 0.075))")
+    new, done, refused = tool.rewrite(book, {"farm_a": 0.0421, "exp_a01_spy": 9.0})
+    assert done == ["farm_a"] and refused == ["farm_b"]
+    assert "(ex_ante_vol 0.042100)" in new and "(ex_ante_vol 0.0957)" in new   # EXP-A01 untouched
+    assert new.count("(ex_ante_vol 0.075)") == 1   # the refused row keeps what it held

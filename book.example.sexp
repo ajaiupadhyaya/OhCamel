@@ -385,9 +385,17 @@
  ;   max_age_minutes   R4 for an intraday document, in minutes. Default 20.
  ;   horizon           carry | close. Close is flattened at the desk's
  ;                     flatten_at. Default carry.
- ;   stop              ((drawdown F) (sessions N)): the strategy is stopped
- ;                     when its drawdown from peak reaches F, or N sessions
- ;                     after its first fill, and is sized no more.
+ ;   stop words       INC-02's volatility-scaled stop (a draft awaiting the
+ ;                     owner): the strategy is stopped when its drawdown from
+ ;                     peak reaches stop_vol_multiple x its ex_ante_vol, floored
+ ;                     at stop_floor and capped at stop_cap, or stop_sessions
+ ;                     sessions after its first fill, and is sized no more.
+ ;                     Defaults 2.0, 0.05, 0.25, 500. ex_ante_vol has no
+ ;                     default and a strategy without one does not load: it is
+ ;                     the annualised volatility of the cell's 252-session
+ ;                     backtest at its traded parameters, gross 1, filled at
+ ;                     the next open, which the monthly freeze writes
+ ;                     (signals/freeze.py).
  ;   reinstated        a date the owner writes after a stop to resume it.
  ;
  ; Incubation is the charter's paper tier (docs/CHARTER.md). An incubation
@@ -405,73 +413,107 @@
  ; awaits the owner's approval: INC-01's 23 less farm_pairs_coint_sectors
  ; (pairs_coint takes two tickers, and sectors is eleven), with no slot held
  ; for EXP-Q01 (its pre-registration lets nothing reach the desk). INC-01
- ; closed at 2026-11-05. The stop words below are still INC-01's; INC-02's
- ; volatility-scaled stop (completion task 2.2) replaces them.
+ ; closed at 2026-11-05.
+ ;
+ ; THE EX_ANTE_VOL VALUES BELOW ARE NOT ALL MEASURED. exp_a01_spy and exp_a01_tlt
+ ; carry EXP-A01's own: its battery's holdout backtest re-run at the manifests'
+ ; selected_params on the committed fixtures, the last 252 sessions
+ ; (tools/inc02_exp_a01_vol.py; output research/experiments/INC-02/
+ ; exp_a01_vol.json). The 20 farm rows carry 0.075, a placeholder and no
+ ; measurement: twice it is 0.15, exactly the fixed line INC-01 drew for every
+ ; strategy, so an unreplaced placeholder draws the very drawdown line INC-01 drew
+ ; (the sessions count is 500, not 250).
+ ; The fixtures hold no farm universe whole (9 of the roster's 42 ETFs), so the
+ ; real figure comes only from the freeze on the droplet's warehouse. Before the
+ ; owner deploys, tools/book_ex_ante_vol.py rewrites every row from the month's
+ ; signals.freeze artifact and refuses a row that has none.
  (signals
   ((strategies
     (((name exp_a01_spy) (symbols (SPY)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.095712))
      ((name exp_a01_tlt) (symbols (TLT)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.050165))
      ((name farm_tsmom_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_tsmom_rates) (symbols (BIL SHY IEI IEF TLT TIP)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_tsmom_commodities) (symbols (GLD SLV USO UNG DBA DBC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_tsmom_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_tsmom_credit) (symbols (LQD HYG EMB)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_xsmom_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_xsmom_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_dual_momentum_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_dual_momentum_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_sma_trend_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_sma_trend_commodities) (symbols (GLD SLV USO UNG DBA DBC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_sma_trend_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_vol_managed_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_risk_parity_rates) (symbols (BIL SHY IEI IEF TLT TIP)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_risk_parity_credit) (symbols (LQD HYG EMB)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_risk_parity_commodities) (symbols (GLD SLV USO UNG DBA DBC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_risk_parity_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_low_beta_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_st_reversal_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075))
      ((name farm_pairs_distance_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)
-      (stop ((drawdown 0.15) (sessions 250)))))))))
+      (stop_vol_multiple 2.0) (stop_floor 0.05) (stop_cap 0.25) (stop_sessions 500)
+      (ex_ante_vol 0.075)))))))

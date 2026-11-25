@@ -1,5 +1,6 @@
-(* INC-01's stop rules: a strategy is stopped when its drawdown from peak on
-   allocated capital reaches the book's line, or when the book's count of sessions
+(* INC-02's stop rules (a draft awaiting the owner): a strategy is stopped when its
+   drawdown from peak on allocated capital reaches twice its own ex-ante volatility
+   (floored at 5%, capped at 25%), or when the book's count of sessions
    has passed since its first fill. Stopped, it is recorded with the rule, said in
    the alerts, sized no more and flattened; only the owner's (reinstated DATE)
    brings it back. Until 2026-11-03 nothing evaluated them. *)
@@ -12,7 +13,13 @@ module Spec = Ohcamel.Config.Book.Signals_spec
 let at = Time_ns.of_string_with_utc_offset
 let d = Date.of_string
 let zone = Time_float.Zone.of_utc_offset ~hours:(-4)
-let line = { Spec.Stop.drawdown = 0.15; sessions = 250 }
+
+let stop_words ?(sessions = 500) ?(floor = 0.05) ?(cap = 0.25) vol =
+  { Spec.Stop.vol_multiple = 2.0; floor; cap; sessions; ex_ante_vol = vol }
+
+(* 2.0 x 0.075 = 0.15: the line INC-01 drew for everyone, so the fixtures below keep
+   their arithmetic. *)
+let line = stop_words ~sessions:250 0.075
 let summary ~drawdown = { (D.Record.summarise []) with D.Record.max_drawdown = drawdown }
 
 let test_the_drawdown_rule_fires_at_its_line () =
@@ -21,7 +28,10 @@ let test_the_drawdown_rule_fires_at_its_line () =
   | `Stop (rule, detail) ->
       Alcotest.(check string) "the rule" "drawdown" rule;
       Alcotest.(check string)
-        "the sentence" "drawdown 15.0% reached its line of 15.0%" detail
+        "the sentence"
+        "drawdown 15.0% reached its line of 15.0% (2 x its ex-ante volatility of 7.5%, \
+         floored at 5.0%, capped at 25.0%)"
+        detail
   | `Continue -> Alcotest.fail "15% did not stop at a 15% line");
   match check 0.149 with
   | `Continue -> ()
@@ -33,6 +43,111 @@ let test_the_sessions_rule_fires_at_its_count () =
   | `Stop (rule, _) -> Alcotest.(check string) "the rule" "sessions" rule
   | `Continue -> Alcotest.fail "250 sessions did not stop");
   match check 249 with `Continue -> () | `Stop _ -> Alcotest.fail "249 sessions stopped"
+
+(* Task 2.2: the line is the strategy's own. *)
+let test_the_threshold_is_twice_the_volatility_between_a_floor_and_a_cap () =
+  let t vol = D.Stop.threshold ~ex_ante_vol:vol ~multiple:2.0 ~floor:0.05 ~cap:0.25 in
+  Alcotest.(check (float 1e-12)) "vol 0.04 gives 0.08" 0.08 (t 0.04);
+  Alcotest.(check (float 1e-12)) "vol 0.02 gives the floor 0.05" 0.05 (t 0.02);
+  Alcotest.(check (float 1e-12)) "vol 0.15 gives the cap 0.25" 0.25 (t 0.15);
+  Alcotest.(check (float 1e-12)) "vol 0.025 is exactly the floor" 0.05 (t 0.025);
+  Alcotest.(check (float 1e-12)) "vol 0.125 is exactly the cap" 0.25 (t 0.125)
+
+let test_a_quiet_strategy_stops_at_its_own_line_a_volatile_one_at_the_cap () =
+  let quiet = stop_words 0.04 and wild = stop_words 0.15 in
+  let check spec dd = D.Stop.check ~spec ~record:(summary ~drawdown:dd) ~sessions:10 in
+  (match check quiet 0.08 with
+  | `Stop ("drawdown", _) -> ()
+  | _ -> Alcotest.fail "8% did not stop a strategy of 4% volatility");
+  (match check quiet 0.079 with
+  | `Continue -> ()
+  | `Stop _ -> Alcotest.fail "7.9% stopped a strategy of 4% volatility");
+  (match check wild 0.24 with
+  | `Continue -> ()
+  | `Stop _ -> Alcotest.fail "24% stopped a strategy whose line is the 25% cap");
+  match check wild 0.25 with
+  | `Stop ("drawdown", _) -> ()
+  | _ -> Alcotest.fail "25% did not stop at the cap"
+
+let universe = [ "SPY"; "TLT" ]
+
+let strategy_text ?(extra = "") name =
+  sprintf
+    "((name %s) (symbols (SPY)) (max_age 3) (sizing incubation) (capital_fraction 0.025) \
+     %s)"
+    name extra
+
+let load text =
+  Or_error.try_with (fun () ->
+      Spec.t_of_sexp (Sexp.of_string (sprintf "((strategies (%s)))" text)))
+  |> Or_error.bind ~f:(fun t -> Or_error.map (Spec.validate ~universe t) ~f:(fun () -> t))
+
+let test_the_book_words_load_with_their_defaults () =
+  (match load (strategy_text ~extra:"(ex_ante_vol 0.04)" "s_a") with
+  | Ok { Spec.strategies = [ s ] } ->
+      Alcotest.(check bool)
+        "the four words default to INC-02's values" true
+        (Option.equal Spec.Stop.equal s.Spec.Strategy.stop
+           (Some
+              {
+                Spec.Stop.vol_multiple = 2.0;
+                floor = 0.05;
+                cap = 0.25;
+                sessions = 500;
+                ex_ante_vol = 0.04;
+              }))
+  | Ok _ | Error _ -> Alcotest.fail "a strategy with an ex_ante_vol did not load");
+  match
+    load
+      (strategy_text
+         ~extra:
+           "(stop_vol_multiple 3.0) (stop_floor 0.06) (stop_cap 0.2) (stop_sessions 400) \
+            (ex_ante_vol 0.05)"
+         "s_b")
+  with
+  | Ok { Spec.strategies = [ s ] } ->
+      Alcotest.(check bool)
+        "written words are read" true
+        (Option.equal Spec.Stop.equal s.Spec.Strategy.stop
+           (Some
+              {
+                Spec.Stop.vol_multiple = 3.0;
+                floor = 0.06;
+                cap = 0.2;
+                sessions = 400;
+                ex_ante_vol = 0.05;
+              }));
+      Alcotest.(check bool)
+        "and round-trip through the book's spelling" true
+        (Spec.Strategy.equal s (Spec.Strategy.t_of_sexp (Spec.Strategy.sexp_of_t s)))
+  | Ok _ | Error _ -> Alcotest.fail "the stop words did not load"
+
+let test_a_strategy_with_no_ex_ante_vol_does_not_load_and_is_named () =
+  match load (strategy_text "s_no_vol") with
+  | Ok _ -> Alcotest.fail "a strategy with no ex_ante_vol loaded"
+  | Error e ->
+      let msg = Error.to_string_hum e in
+      Alcotest.(check bool)
+        "the message names the strategy and the word" true
+        (String.is_substring msg ~substring:"s_no_vol"
+        && String.is_substring msg ~substring:"ex_ante_vol")
+
+let test_a_bad_stop_word_does_not_load () =
+  let bad extra =
+    match load (strategy_text ~extra "s_bad") with Ok _ -> false | Error _ -> true
+  in
+  Alcotest.(check bool) "zero vol" true (bad "(ex_ante_vol 0.0)");
+  Alcotest.(check bool)
+    "a floor above the cap" true
+    (bad "(ex_ante_vol 0.04) (stop_floor 0.3)");
+  Alcotest.(check bool) "no sessions" true (bad "(ex_ante_vol 0.04) (stop_sessions 0)");
+  Alcotest.(check bool)
+    "an old (stop ...) alone is no ex_ante_vol" true
+    (match
+       load (strategy_text ~extra:"(stop ((drawdown 0.15) (sessions 250)))" "s_old")
+     with
+    | Ok _ -> false
+    | Error _ -> true)
 
 (* Two strategies on one journal, each with its own name and fills. s_dd buys 10 AAPL
    at 100 on its first session and AAPL closes 100 then 80: -200 on 1,000 allocated,
@@ -396,7 +511,7 @@ let test_a_deferred_drawdown_rule_does_not_fire_that_night () =
     "a sessions count still stops a deferred strategy" [ "s_ok" ]
     (evaluate
        ~defer:(fun _ -> Some "deferred")
-       [ strategy ~stop:(Some { Spec.Stop.drawdown = 0.15; sessions = 2 }) "s_ok" ]);
+       [ strategy ~stop:(Some { line with Spec.Stop.sessions = 2 }) "s_ok" ]);
   Alcotest.(check (list string))
     "the next night, nothing deferred, it fires" [ "s_dd" ]
     (evaluate ~defer:(fun _ -> None) [ strategy "s_dd" ]);
@@ -495,6 +610,16 @@ let suite =
         test_the_cash_receipt_is_not_counted_twice;
       Alcotest.test_case "only a session's quote is an arrival" `Quick
         test_only_a_session's_quote_is_an_arrival;
+      Alcotest.test_case "the threshold is twice the volatility, floored and capped"
+        `Quick test_the_threshold_is_twice_the_volatility_between_a_floor_and_a_cap;
+      Alcotest.test_case "a quiet strategy stops at its own line" `Quick
+        test_a_quiet_strategy_stops_at_its_own_line_a_volatile_one_at_the_cap;
+      Alcotest.test_case "the book words load with their defaults" `Quick
+        test_the_book_words_load_with_their_defaults;
+      Alcotest.test_case "no ex_ante_vol does not load, and is named" `Quick
+        test_a_strategy_with_no_ex_ante_vol_does_not_load_and_is_named;
+      Alcotest.test_case "a bad stop word does not load" `Quick
+        test_a_bad_stop_word_does_not_load;
       Alcotest.test_case "the drawdown rule fires at its line" `Quick
         test_the_drawdown_rule_fires_at_its_line;
       Alcotest.test_case "the sessions rule fires at its count" `Quick

@@ -5789,7 +5789,14 @@ let tlt_strategies =
       max_age_minutes = 20;
       horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
       stop =
-        Some { Ohcamel.Config.Book.Signals_spec.Stop.drawdown = 0.002; sessions = 250 };
+        Some
+          {
+            Ohcamel.Config.Book.Signals_spec.Stop.vol_multiple = 2.0;
+            floor = 0.001;
+            cap = 0.25;
+            sessions = 250;
+            ex_ante_vol = 0.001;
+          };
       reinstated = None;
     };
   ]
@@ -6539,7 +6546,15 @@ let soak_strategies =
     soak_strategy ~name:"soak_gov" ~symbols:[ "SPY"; "TLT" ] ~capital_fraction:0.5
       ~stop:None;
     soak_strategy ~name:"soak_stop" ~symbols:[ "SPY" ] ~capital_fraction:0.3
-      ~stop:(Some { Ohcamel.Config.Book.Signals_spec.Stop.drawdown = 0.5; sessions = 2 });
+      ~stop:
+        (Some
+           {
+             Ohcamel.Config.Book.Signals_spec.Stop.vol_multiple = 2.0;
+             floor = 0.05;
+             cap = 0.5;
+             sessions = 2;
+             ex_ante_vol = 0.25;
+           });
   ]
 
 (* One process: what bin/main.ml builds at a start, in its order. *)

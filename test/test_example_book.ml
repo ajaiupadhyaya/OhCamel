@@ -234,11 +234,21 @@ let test_the_example_book_registers_the_incubation_roster () =
         (List.init 22 ~f:(fun _ -> "incubation"))
         (List.map strategies ~f:(fun s -> S.sizing_to_string s.S.Strategy.sizing));
       Alcotest.(check bool)
-        "max_age 3 and the stop at 15% or 250 sessions, on every one" true
+        "max_age 3 and INC-02's stop words on every one: twice its ex-ante vol, floored \
+         at 5%, capped at 25%, 500 sessions"
+        true
         (List.for_all strategies ~f:(fun s ->
              s.S.Strategy.max_age = 3
-             && Option.equal S.Stop.equal s.S.Strategy.stop
-                  (Some { S.Stop.drawdown = 0.15; sessions = 250 })))
+             &&
+             match s.S.Strategy.stop with
+             | Some st ->
+                 Float.equal st.S.Stop.vol_multiple 2.0
+                 && Float.equal st.S.Stop.floor 0.05
+                 && Float.equal st.S.Stop.cap 0.25
+                 && st.S.Stop.sessions = 500
+                 && Float.is_finite st.S.Stop.ex_ante_vol
+                 && Float.( > ) st.S.Stop.ex_ante_vol 0.0
+             | None -> false))
 
 (* One cost configuration (Task 15). research/config/friction_v1.yaml is the
    file the backtest was costed with, and EXP-A01's pre-registration reads its
@@ -384,7 +394,7 @@ let five_problem_limits =
 let five_problem_extra =
   "(alerts ((enabled true) (sinks (Log)) (clear_below 1.5) (kill_switch_enabled false) \
    (kill_switch_trips_on ()))) (desk ((price_collar 1.5))) (signals ((strategies (((name \
-   s_one) (symbols (GOOG)) (capital_fraction 0.5))))))"
+   s_one) (symbols (GOOG)) (capital_fraction 0.5) (ex_ante_vol 0.04))))))"
 
 let five_problem_book = book ~limits:five_problem_limits ~extra:five_problem_extra
 
@@ -575,8 +585,9 @@ let test_check_reports_the_live_sum_beside_a_strategy's_own_problem () =
      GOOG, which the book does not hold. Both problems, in one run. *)
   let extra =
     "(signals ((strategies (((name s_a) (symbols (SPY)) (sizing Live) (capital_fraction \
-     0.7)) ((name s_b) (symbols (AAPL)) (sizing Live) (capital_fraction 0.7)) ((name \
-     s_c) (symbols (GOOG)) (capital_fraction 0.5))))))"
+     0.7) (ex_ante_vol 0.04)) ((name s_b) (symbols (AAPL)) (sizing Live) \
+     (capital_fraction 0.7) (ex_ante_vol 0.04)) ((name s_c) (symbols (GOOG)) \
+     (capital_fraction 0.5) (ex_ante_vol 0.04))))))"
   in
   with_book (book ~limits:"" ~extra) ~f:(fun p ->
       let errors = refusal_of p in
@@ -590,8 +601,9 @@ let test_check_reports_a_duplicate_strategy_name_beside_a_member's_problem () =
      over only the strategies that passed alone would see one s_one and no
      duplicate, so this case holds the run over all of them in place. *)
   let extra =
-    "(signals ((strategies (((name s_one) (symbols (GOOG)) (capital_fraction 0.5)) \
-     ((name s_one) (symbols (SPY)) (capital_fraction 0.5))))))"
+    "(signals ((strategies (((name s_one) (symbols (GOOG)) (capital_fraction 0.5) \
+     (ex_ante_vol 0.04)) ((name s_one) (symbols (SPY)) (capital_fraction 0.5) \
+     (ex_ante_vol 0.04))))))"
   in
   with_book (book ~limits:"" ~extra) ~f:(fun p ->
       let errors = refusal_of p in
@@ -1058,8 +1070,9 @@ let test_incubation_sum_over_one () =
   with_book
     (tiered ~desk:"(incubation_cap 0.6)"
        ~strategies:
-         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.6)) ((name \
-          s_b) (symbols (AAPL)) (sizing incubation) (capital_fraction 0.6))") ~f:(fun p ->
+         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.6) \
+          (ex_ante_vol 0.04)) ((name s_b) (symbols (AAPL)) (sizing incubation) \
+          (capital_fraction 0.6) (ex_ante_vol 0.04))") ~f:(fun p ->
       let errors = refusal_of p in
       Alcotest.(check int) "one problem: the incubation sum" 1 (List.length errors);
       Alcotest.(check bool)
@@ -1070,8 +1083,9 @@ let test_incubation_sum_over_one () =
   with_book
     (tiered ~desk:"(incubation_cap 0.6)"
        ~strategies:
-         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.4)) ((name \
-          s_b) (symbols (AAPL)) (sizing incubation) (capital_fraction 0.4))") ~f:(fun p ->
+         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.4) \
+          (ex_ante_vol 0.04)) ((name s_b) (symbols (AAPL)) (sizing incubation) \
+          (capital_fraction 0.4) (ex_ante_vol 0.04))") ~f:(fun p ->
       match Config.check p with
       | Ok _ -> ()
       | Error errors ->
@@ -1084,8 +1098,9 @@ let test_live_plus_incubation_over_one () =
   with_book
     (tiered ~desk:"(incubation_cap 0.6)"
        ~strategies:
-         "((name s_a) (symbols (AAPL)) (sizing live) (capital_fraction 0.5)) ((name s_b) \
-          (symbols (SPY)) (sizing incubation) (capital_fraction 0.6))") ~f:(fun p ->
+         "((name s_a) (symbols (AAPL)) (sizing live) (capital_fraction 0.5) (ex_ante_vol \
+          0.04)) ((name s_b) (symbols (SPY)) (sizing incubation) (capital_fraction 0.6) \
+          (ex_ante_vol 0.04))") ~f:(fun p ->
       let errors = refusal_of p in
       Alcotest.(check int) "one problem: the two tiers' sum" 1 (List.length errors);
       Alcotest.(check bool)
@@ -1096,13 +1111,15 @@ let test_stop_drawdown_range () =
   with_book
     (tiered ~desk:"(incubation_cap 0.6)"
        ~strategies:
-         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.1) (stop \
-          ((drawdown 1.5) (sessions 250))))") ~f:(fun p ->
+         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.1) \
+          (ex_ante_vol 0.04) (stop_cap 1.5))") ~f:(fun p ->
       let errors = refusal_of p in
       Alcotest.(check int) "one problem: the stop" 1 (List.length errors);
       Alcotest.(check bool)
         "naming the drawdown" true
-        (names "stop.drawdown must be in (0, 1], got 1.5" errors))
+        (names
+           "stop_floor and stop_cap must satisfy 0 < floor <= cap <= 1, got 0.05 and 1.5"
+           errors))
 
 let test_flatten_at_parses () =
   let ofday = Alcotest.testable Time_ns.Ofday.pp Time_ns.Ofday.equal in
@@ -1463,18 +1480,29 @@ let test_every_new_strategy_refusal_has_its_row () =
         ~strategies:
           (sprintf "((name s_a) (symbols (SPY)) (capital_fraction 0.1) %s)" field))
     [
-      ("(max_age_minutes 1)", []);
-      ("(max_age_minutes 0)", refused "max_age_minutes must be at least 1, got 0");
-      ("(stop ((drawdown 1.0) (sessions 1)))", []);
-      ( "(stop ((drawdown 0.0) (sessions 250)))",
-        refused "stop.drawdown must be in (0, 1], got 0" );
-      ( "(stop ((drawdown nan) (sessions 250)))",
-        refused "stop.drawdown must be in (0, 1], got nan" );
-      ( "(stop ((drawdown 0.15) (sessions 0)))",
-        refused "stop.sessions must be at least 1, got 0" );
-      ("(stop ((drawdown 0.15) (sessions 250))) (reinstated 2026-11-02)", []);
+      ("(max_age_minutes 1) (ex_ante_vol 0.04)", []);
+      ( "(max_age_minutes 0) (ex_ante_vol 0.04)",
+        refused "max_age_minutes must be at least 1, got 0" );
+      ("(ex_ante_vol 0.04) (stop_cap 1.0) (stop_sessions 1)", []);
+      ( "(ex_ante_vol 0.04) (stop_floor 0.0)",
+        refused
+          "stop_floor and stop_cap must satisfy 0 < floor <= cap <= 1, got 0 and 0.25" );
+      ( "(ex_ante_vol 0.04) (stop_cap nan)",
+        refused
+          "stop_floor and stop_cap must satisfy 0 < floor <= cap <= 1, got 0.05 and nan"
+      );
+      ( "(ex_ante_vol 0.04) (stop_sessions 0)",
+        refused "stop_sessions must be at least 1, got 0" );
+      ( "(ex_ante_vol 0.04) (stop_vol_multiple 0.0)",
+        refused "stop_vol_multiple must be positive, got 0" );
+      ("(ex_ante_vol 0.0)", refused "ex_ante_vol must be a positive number, got 0");
+      ("(ex_ante_vol nan)", refused "ex_ante_vol must be a positive number, got nan");
+      ("(ex_ante_vol 0.04) (reinstated 2026-11-02)", []);
       ( "(reinstated 2026-11-02)",
-        refused "reinstated is 2026-11-02 but the strategy has no stop" );
+        refused
+          "ex_ante_vol is missing: INC-02's stop is a multiple of the strategy's own \
+           volatility, written into the book from the monthly freeze, and a strategy \
+           without one has no line" );
     ]
 
 let suite =

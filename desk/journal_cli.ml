@@ -362,7 +362,7 @@ let record_diff ~journal:path ~since ~dividends ~strategies:specs ~zone =
                               (sprintf
                                  "%s  drawdown %s -> %s (line %s)  sessions %d of %d%s%s"
                                  strategy (pct b.max_drawdown) (pct a.max_drawdown)
-                                 (pct line.Ohcamel.Config.Book.Signals_spec.Stop.drawdown)
+                                 (pct (Stop.line line))
                                  an line.Ohcamel.Config.Book.Signals_spec.Stop.sessions
                                  verdict stopped)))
               with
