@@ -57,15 +57,16 @@ let test_the_example_book_parses_and_ships_inert () =
     (List.init 42 ~f:(fun _ -> 0.0))
     (List.map (List.drop book.Book.positions 6) ~f:(fun p -> p.Book.Position_spec.qty));
   Alcotest.(check int) "fifteen limits" 15 (List.length book.Book.limits);
-  (* Inert as shipped: no orders, and no alerting, until a person edits it. *)
+  (* Inert as shipped: no orders until a person edits it. Alerting is ON since
+     Task 1.11, to the log only (the watch pages a person; the engine's own
+     Slack sink stays off). *)
   Alcotest.(check bool)
     "the desk ships disabled" true
     (Desk_spec.equal_trading book.Book.desk.Desk_spec.trading Desk_spec.Disabled);
   Alcotest.(check bool)
-    "alerting ships off" false book.Book.alerts.Ohcamel.Config.Alerts.enabled;
-  (* The kill switch lives inside alerting, so an armed switch under disabled
-     alerting would be a configuration that does nothing. Shipped, both are
-     off. *)
+    "alerting ships on, to the log" true book.Book.alerts.Ohcamel.Config.Alerts.enabled;
+  (* The kill switch is a separate decision from alerting (see the alerts
+     block): shipped, it is disarmed. *)
   Alcotest.(check bool)
     "the kill switch ships disarmed" false
     book.Book.alerts.Ohcamel.Config.Alerts.kill_switch_enabled
@@ -468,7 +469,7 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
         "the desk ships disabled" (Some "disabled")
         (List.Assoc.find summary.Summary.desk "trading" ~equal:String.equal);
       Alcotest.(check (option string))
-        "alerting ships off" (Some "false")
+        "alerting ships on, to the log" (Some "true")
         (List.Assoc.find summary.Summary.alerts "enabled" ~equal:String.equal);
       Alcotest.(check (option string))
         "and the kill switch disarmed" (Some "disabled")

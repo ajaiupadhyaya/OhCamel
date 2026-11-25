@@ -82,6 +82,7 @@ exec)
 	esac
 	;;
 restart) echo "$2" ;;
+logs) cat "$SHIM_DIR/logs" 2>/dev/null || true ;;
 *) exit 9 ;;
 esac
 EOF
@@ -150,6 +151,7 @@ rfc() { jq -rn --argjson e "$1" '$e | strftime("%Y-%m-%dT%H:%M:%S") + ".00000000
 desk() {
 	local now=$1; shift
 	local is_open=true source=venue-clock read_at=$((now - 30)) last_sync=$((now - 20))
+	local extra='{}'
 	local last_error=null kill='"clear"' close_date=2026-09-18 close=$CLOSE sessions='"2026-09-17"'
 	local kv
 	for kv in "$@"; do
@@ -161,6 +163,7 @@ desk() {
 		last_error=*) last_error=${kv#*=} ;;
 		kill=*) kill=${kv#*=} ;;
 		sessions=*) sessions=${kv#*=} ;;
+		extra=*) extra=${kv#*=} ;;
 		*) echo "desk: unknown $kv" >&2; exit 2 ;;
 		esac
 	done
@@ -173,6 +176,7 @@ desk() {
           "next_close_date":"$close_date","read_at":"$(rfc "$read_at")","source":"$source"},
  "recent_sessions":[$sess_json]}
 JSON
+	jq -c --argjson x "$extra" '. + $x' "$work/desk.json" >"$work/desk.json.new" && mv "$work/desk.json.new" "$work/desk.json"
 }
 
 # A fresh journal copy, 1 h old at T0.
@@ -182,8 +186,8 @@ fresh_backup() {
 }
 
 reset_scene() {
-	rm -rf "$state" "$work/ops.env" "$work/reboot-required"
-	: >"$work/log"
+	rm -rf "$state" "$work/ops.env" "$work/reboot-required" "$work/alert.env"
+	: >"$work/log" "$work/logs"
 	ps_all_healthy
 	printf 'exp_a01_spy-2026-09-17.json\nexp_a01_tlt-2026-09-17.json\n' >"$work/signals"
 	fresh_backup
@@ -199,6 +203,7 @@ run() {
 		OHCAMEL_WATCH_NOW="$now" \
 		OHCAMEL_WATCH_STATE_DIR="$state" \
 		OHCAMEL_WATCH_OPS_ENV="$work/ops.env" \
+		OHCAMEL_WATCH_ALERT_ENV="$work/alert.env" \
 		OHCAMEL_WATCH_BOOK="${BOOK:-$book}" \
 		OHCAMEL_WATCH_REBOOT_FILE="$work/reboot-required" \
 		OHCAMEL_BACKUP_DIR="$backups" \
@@ -522,6 +527,197 @@ fi
 run "$T0" S_DISK=42
 if grep -q '^CURL url=https://hc-ping.test/uuid-1234 ' "$work/log"; then ok "healthchecks: a clean run pings the bare URL"; else no "healthchecks ok" "$(grep '^CURL' "$work/log" || echo none)"; fi
 if [ "$(grep -c '^CURL url=https://hooks.slack.test' "$work/log")" = 1 ]; then ok "slack: the recovery is posted too"; else no "slack recovery" "$(grep '^CURL' "$work/log")"; fi
+
+
+# ---------------------------------------------------------------------------
+# 6b. Paging a person (Task 1.11): OHCAMEL_ALERT_URL in deploy/.env
+# ---------------------------------------------------------------------------
+echo "== the watch pages a person"
+ALERT_URL="https://alert.test/hook/SECRET-TOKEN-1234"
+set_alert_url() { printf '# deploy/.env\nOHCAMEL_ACME_EMAIL=x@y.test\nOHCAMEL_ALERT_URL=%s\n' "$ALERT_URL" >"$work/alert.env"; }
+pages() { grep -c '^CURL url=https://alert.test/hook' "$work/log" || true; }
+paged_text() { grep '^CURL url=https://alert.test/hook' "$work/log" | head -n 1; }
+TRIP='{"switch":{"state":"tripped","limit":"dd-cap","why":null,"at":"__AT__"}}'
+tripped_at() { printf '%s' "${TRIP/__AT__/$(rfc "$1")}"; }
+
+# --- a trip over more than one session pages once a day
+reset_scene
+touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+set_alert_url
+TRIP_MON=$(epoch 2026-09-14T15:00:00Z)
+# Tripped Monday 09-14; sessions recorded Monday only: the trip is one session old.
+desk "$T0" kill='"tripped"' sessions='"2026-09-14"' extra="$(tripped_at "$TRIP_MON")"
+run "$T0"
+expect_count "page: a trip inside its first session does not page" "PAGE trip" 0
+if [ "$(pages)" = 0 ]; then ok "page: ... and posts nothing"; else no "page trip 1 session" "$(paged_text)"; fi
+# Monday and Tuesday both recorded: more than one session.
+desk "$T0" kill='"tripped"' sessions='"2026-09-14","2026-09-15"' extra="$(tripped_at "$TRIP_MON")"
+run "$T0"
+expect_count "page: a trip over more than one session pages" "PAGE trip" 1
+if [ "$(pages)" = 1 ]; then ok "page: ... and posts once to OHCAMEL_ALERT_URL"; else no "page trip post" "pages=$(pages)"; fi
+run $((T0 + 300))
+if [ "$(pages)" = 0 ]; then ok "page: the next run (5 min on) does not page again"; else no "page trip repeat" "pages=$(pages)"; fi
+expect_count "page: ... and does not log a second PAGE" "PAGE trip" 0
+run $((T0 + 23 * 3600))
+expect_count "page: 23 h later it is still once a day" "PAGE trip" 0
+run $((T0 + 24 * 3600 + 60))
+expect_count "page: 24 h later, still tripped, it pages again" "PAGE trip" 1
+# A restart (a fresh process, same state dir) does not re-page.
+run $((T0 + 24 * 3600 + 120))
+expect_count "page: a re-run on the same state (a restart) does not re-page" "PAGE trip" 0
+# Clear: silent.
+reset_scene
+set_alert_url
+desk "$T0"
+run "$T0"
+expect_count "page: a clear switch is silent" "PAGE" 0
+# Halted by hand (since 2026-11-16): no page, one status line a day.
+reset_scene
+set_alert_url
+touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+HALT_AT=$(epoch 2026-09-01T15:00:00Z)
+desk "$T0" kill='"halted"' sessions='"2026-09-01","2026-09-02","2026-09-03"' \
+	extra='{"switch":{"state":"halted","limit":null,"why":"by hand","at":"'"$(rfc "$HALT_AT")"'"}}'
+run "$T0"
+expect_count "page: a by-hand halt over many sessions does not PAGE" "PAGE trip" 0
+if [ "$(pages)" = 0 ]; then ok "page: ... and posts nothing to the webhook"; else no "halt post" "$(paged_text)"; fi
+expect_count "page: the daily status line says halted by hand since the date" "halted by hand since 2026-09-01" 1
+run $((T0 + 300))
+expect_count "page: the status line is once a day" "halted by hand since" 0
+run $((T0 + 24 * 3600 + 60))
+expect_count "page: ... and comes again the next day" "halted by hand since 2026-09-01" 1
+
+# --- a sub-ledger break
+reset_scene
+set_alert_url
+touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+desk "$T0"
+run "$T0"
+expect_count "page: no sub-ledger line, no sub-ledger page" "PAGE subledger" 0
+printf '%s\n' '  2026-09-18 14:30:00.000000Z    desk      sub-ledger at a sync: SPY: the strategies sum to 123.0 and the account holds 456.0; nothing that grows a strategy'"'"'s position in SPY is sent, and a reduction only if it also shrinks the account'"'"'s' >"$work/logs"
+run "$T0"
+expect_count "page: a sub-ledger break pages" "PAGE subledger" 1
+if grep '^CURL url=https://alert.test/hook' "$work/log" | sed 's/^.* data=//' | grep -q '123\|456'; then no "page subledger figures" "a figure reached the webhook"; else ok "page: the sub-ledger page carries no figure"; fi
+if grep -q '^DOCKER logs .*--since 1h' "$work/log"; then ok "page: the live log is read for the last hour"; else no "page logs" "$(grep '^DOCKER logs' "$work/log" || echo 'no docker logs call')"; fi
+run $((T0 + 300))
+expect_count "page: the same line still in the hour does not page twice" "PAGE subledger" 0
+printf '%s\n' '  2026-09-18 20:35:00.000000Z    desk      sub-ledger at the close of 2026-09-18: SPY' >"$work/logs"
+reset_scene; set_alert_url; desk "$T0"; printf '%s\n' '  x    desk      sub-ledger at the close of 2026-09-18: SPY' >"$work/logs"
+run "$T0"
+expect_count "page: the close's repeat of a break pages too" "PAGE subledger" 1
+
+# --- completions exhausted
+reset_scene
+set_alert_url
+touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+desk "$T0"
+run "$T0"
+expect_count "page: no cap line, no completion page" "PAGE completions" 0
+printf '%s\n' '  2026-09-18 14:50:00.000000Z    intake    "exp_a01_spy" 12: 3 of its orders ended unfilled, and its completion was tried 3 times this session; it waits for the next' >"$work/logs"
+run "$T0"
+expect_count "page: completions exhausted pages" "PAGE completions" 1
+if paged_text | grep -q 'exp_a01_spy'; then ok "page: ... naming the strategy"; else no "page completions name" "$(paged_text)"; fi
+printf '%s\n' '  2026-09-18 14:51:00.000000Z    intake    "exp_a01_tlt" is stopped and still holds shares; its flatten was tried 3 times this session and waits for the next' >>"$work/logs"
+run $((T0 + 60))
+expect_count "page: a second strategy's cap is its own page" "PAGE completions" 1
+run $((T0 + 120))
+expect_count "page: and neither repeats within the day" "PAGE completions" 0
+
+# --- the overlay older than 4 session hours
+OV='{"overlay":{"value":0.8,"as_of":"__AS__","age_s":__AGE__,"state":"stale","reason":null,"governor_cap":null}}'
+overlay_at() { # received-epoch now-epoch
+	local x=${OV/__AS__/$(rfc "$1")}
+	printf '%s' "${x/__AGE__/$(($2 - $1))}"
+}
+# Friday 2026-09-18 11:00 EDT = 15:00Z (T0). Sessions on record: Thursday 09-17.
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+R=$(epoch 2026-09-17T18:00:00Z)   # Thu 14:00 EDT: 2 h left Thu + 1.5 h Fri = 3.5 h
+desk "$T0" extra="$(overlay_at "$R" "$T0")"
+run "$T0"
+expect_count "page: an overlay 3.5 session hours old is silent" "PAGE overlay" 0
+R=$(epoch 2026-09-17T17:30:00Z)   # Thu 13:30 EDT: 2.5 + 1.5 = 4.0 h exactly
+desk "$T0" extra="$(overlay_at "$R" "$T0")"
+run "$T0"
+expect_count "page: exactly 4.0 session hours is silent (older than, not as old as)" "PAGE overlay" 0
+R=$(epoch 2026-09-17T17:29:00Z)
+desk "$T0" extra="$(overlay_at "$R" "$T0")"
+run "$T0"
+expect_count "page: 4.02 session hours pages" "PAGE overlay" 1
+run $((T0 + 300))
+expect_count "page: and not again within the day" "PAGE overlay" 0
+# Friday's overlay, Monday 09:31 EDT: a weekend is not 4 hours.
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-21.db" 0
+MON=$(epoch 2026-09-21T13:31:00Z)
+R=$(epoch 2026-09-18T19:00:00Z)   # Fri 15:00 EDT: 1 h Fri + 1 min Mon
+desk "$MON" sessions='"2026-09-17","2026-09-18"' extra="$(overlay_at "$R" "$MON")"
+run "$MON"
+expect_count "page: Friday 15:00's overlay at Monday 09:31 is silent (weekend and nights do not count)" "PAGE overlay" 0
+# ... Friday's overlay at Monday 14:00 EDT = 18:00Z: 1 h + 4.5 h = 5.5 h.
+MON2=$(epoch 2026-09-21T18:00:00Z)
+desk "$MON2" sessions='"2026-09-17","2026-09-18"' extra="$(overlay_at "$R" "$MON2")"
+run "$MON2"
+expect_count "page: ... and at Monday 14:00 (5.5 session hours) it pages" "PAGE overlay" 1
+# A holiday Monday (no row) is not a session: Friday 15:00's overlay at Tuesday 09:31.
+reset_scene; set_alert_url
+TUE=$(epoch 2026-09-22T13:31:00Z)
+desk "$TUE" sessions='"2026-09-17","2026-09-18"' extra="$(overlay_at "$R" "$TUE")"
+run "$TUE"
+expect_count "page: a weekday with no session row (a holiday) adds no session hours" "PAGE overlay" 0
+# Absent overlay: not this alert's business.
+reset_scene; set_alert_url
+desk "$T0" extra='{"overlay":{"value":null,"as_of":null,"age_s":null,"state":"absent","reason":null,"governor_cap":null}}'
+run "$T0"
+expect_count "page: an absent overlay does not page as stale" "PAGE overlay" 0
+
+# --- var_score.light = red
+VS_RED='{"var_score":{"source":"x","as_of":"2026-09-17","window":250,"level":0.99,"min_sessions":60,"scores":[{"estimator":"ewma","n":120,"exceptions":9,"kupiec_p":0.001,"christoffersen_p":0.4,"light":"red","message":null},{"estimator":"historical","n":120,"exceptions":1,"kupiec_p":0.5,"christoffersen_p":0.4,"light":"green","message":null}]}}'
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+desk "$T0" extra="$VS_RED"
+run "$T0"
+expect_count "page: a red light pages" "PAGE varscore" 1
+if paged_text | grep -q 'ewma' && ! paged_text | grep -q '120\|0.001'; then ok "page: ... names the estimator and carries no count or p-value"; else no "page var text" "$(paged_text)"; fi
+run $((T0 + 300))
+expect_count "page: not again within the day" "PAGE varscore" 0
+desk "$T0" extra='{"var_score":{"scores":[{"estimator":"ewma","n":120,"light":"yellow"},{"estimator":"historical","n":90,"light":"green"}]}}'
+run "$T0"
+expect_count "page: yellow and green are silent" "PAGE varscore" 0
+desk "$T0" extra='{"var_score":{"scores":[{"estimator":"ewma","n":41,"light":null,"message":"41 of 60 sessions scored"}]}}'
+run "$T0"
+expect_count "page: an absent light (41 of 60) is silent" "PAGE varscore" 0
+desk "$T0" extra='{"var_score":{"reason":"simulated sessions: not a 1-day VaR, not scored","as_of":"2026-09-17","scores":[]}}'
+run "$T0"
+expect_count "page: a simulated venue's var_score (reason only) is silent" "PAGE varscore" 0
+desk "$T0"
+run "$T0"
+expect_count "page: no var_score at all is silent" "PAGE varscore" 0
+
+# --- OHCAMEL_ALERT_URL unset: log only, said once a day
+reset_scene; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+desk "$T0" kill='"tripped"' sessions='"2026-09-14","2026-09-15"' extra="$(tripped_at "$TRIP_MON")"
+run "$T0"
+expect_count "page: with no OHCAMEL_ALERT_URL the page is still logged" "PAGE trip" 1
+if grep -q '^CURL' "$work/log"; then no "page: unset URL" "curl ran: $(grep '^CURL' "$work/log")"; else ok "page: ... and nothing is posted"; fi
+expect_count "page: unset URL is said" "OHCAMEL_ALERT_URL is not set" 1
+run $((T0 + 300))
+expect_count "page: ... once a day, not every run" "OHCAMEL_ALERT_URL is not set" 0
+run $((T0 + 24 * 3600 + 60))
+expect_count "page: ... and again the next day" "OHCAMEL_ALERT_URL is not set" 1
+# An empty value is unset too.
+printf 'OHCAMEL_ALERT_URL=\n' >"$work/alert.env"
+rm -rf "$state"; run "$T0"
+expect_count "page: an empty OHCAMEL_ALERT_URL is unset" "OHCAMEL_ALERT_URL is not set" 1
+
+# --- the URL and secrets stay out of the output; no position or limit values
+reset_scene; set_alert_url; touch_at "$backups/desk-2026-09-18.db" $((T0 - 3600))
+printf '%s\n' '  x  desk      sub-ledger at a sync: SPY: sum 123.0 account 456.0; position in SPY is sent' >"$work/logs"
+desk "$T0" kill='"tripped"' sessions='"2026-09-14","2026-09-15"' extra="$(jq -cn --argjson a "$(tripped_at "$TRIP_MON")" --argjson b "$VS_RED" '$a + $b')"
+run "$T0"
+if printf '%s\n' "$out" | grep -q 'alert.test\|SECRET-TOKEN'; then no "page: URL printed" "the alert URL or its token reached stdout"; else ok "page: the alert URL is never printed"; fi
+if grep '^CURL' "$work/log" | grep 'alert.test' | grep -q 'args=.*alert.test'; then no "page: URL on argv" "on curl's command line"; else ok "page: the alert URL never reaches curl's argv"; fi
+if [ "$(pages)" = 3 ]; then ok "page: three kinds in one run are three posts"; else no "page three" "pages=$(pages)"; fi
+if grep '^CURL url=https://alert.test' "$work/log" | sed 's/^.* data=//' | grep -q 'dd-cap\|0.99\|0.001\|120'; then no "page: values" "a limit name or figure reached the webhook"; else ok "page: no limit name, threshold or observed value in a post"; fi
+if grep '^CURL url=https://alert.test' "$work/log" | grep -qi 'runbook\|desk.md'; then ok "page: each post names its runbook section"; else no "page: runbook" "no runbook pointer"; fi
+if grep -q 'ALERT' <<<"$(printf '%s\n' "$out" | grep -i 'PAGE')"; then no "page: vocabulary" "PAGE lines say ALERT"; else ok "page: PAGE lines are their own vocabulary"; fi
 
 # ---------------------------------------------------------------------------
 # 8. Journald, the state directory, the units
