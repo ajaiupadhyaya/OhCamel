@@ -41,11 +41,15 @@ from ..backtest.engine import LookAheadError
 from ..models.xsec import hac_t
 from . import alpha158 as A
 from . import expr as E
+from . import models as FM
+from . import performance as PF
 
 EXPLORATION_END = pd.Timestamp("2023-12-31")
 HORIZONS = (1, 5, 10, 20)
 DUPLICATE = 0.99
 MIN_HYPOTHESIS_WORDS = 8
+BETA_WINDOW = 60
+CS_SOURCE = "fixtures/history ETF opens (open-to-open labels), exploration window"
 NAMES = ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "XLE", "XLF", "XLK")
 
 
@@ -153,6 +157,51 @@ def signal_report(values: pd.DataFrame, open_adj: pd.DataFrame, *, horizons: tup
         {"ic": ic, "rank_ic": ric}, index=values.index), "groups": grp}
 
 
+# ============================================================ cross-sectional tests (Fama-MacBeth, GRS)
+def _zscore_rows(df: pd.DataFrame) -> pd.DataFrame:
+    sd = df.std(axis=1, ddof=0).replace(0.0, np.nan)
+    return df.sub(df.mean(axis=1), axis=0).div(sd, axis=0)
+
+
+def cross_section_report(values: pd.DataFrame, open_adj: pd.DataFrame, *, beta_window: int = BETA_WINDOW) -> dict[str, Any]:
+    """The factor's price of risk, and whether its tercile portfolios earn alpha.
+
+    **Fama-MacBeth** (``models.fama_macbeth``): each date the next-session open-to-open return label is regressed
+    on the cross-sectionally standardised signal known at that date's close, so a premium is the return per one
+    cross-sectional standard deviation of the signal. A second run residualises the signal on a trailing
+    ``beta_window``-day beta to the equal-weight market (estimated on data to that same close, never later)
+    before standardising. Standard errors are Newey-West; the Shanken correction uses the slope series' own
+    covariance as the factor covariance (the signal is not a loading on an observed factor).
+
+    **GRS** (``models.grs_test``): are the top and bottom tercile portfolios' alphas, against the equal-weight
+    market, jointly zero? (The middle tercile is left out: with equal terciles the three sum to the market.)
+    Reported, not gated; a screen is not a result.
+    """
+    fwd1 = forward_returns(open_adj, 1).reindex_like(values)
+    ret = open_adj.pct_change(fill_method=None).reindex_like(values)
+    mkt = ret.mean(axis=1)
+    beta = ret.rolling(beta_window, min_periods=beta_window).cov(mkt).div(mkt.rolling(beta_window, min_periods=beta_window).var(), axis=0)
+    z = _zscore_rows(values)
+    zn = _zscore_rows(PF.neutralise(z, groups=None, betas=beta))
+    rows = {}
+    for name, sig in (("signal", z), ("signal, beta-neutral", zn)):
+        r = FM.fama_macbeth(fwd1, {"signal": sig})
+        row = r.table().loc["signal"].to_dict()
+        row.update(shanken_c=r.shanken_c, nw_lags=r.nw_lags, n_periods=r.n_periods, mean_assets=r.mean_assets)
+        rows[name] = row
+    pct = values.rank(axis=1, pct=True)
+    bucket = np.ceil(pct * 3).clip(1, 3)
+    low, high = (fwd1.where(bucket == g).mean(axis=1) for g in (1, 3))
+    market = fwd1.mean(axis=1)
+    panel = pd.concat({"bottom": low, "top": high, "mkt": market}, axis=1).dropna()
+    g = FM.grs_test(panel[["bottom", "top"]], panel[["mkt"]])
+    as_of = fwd1.dropna(how="all").index[-1]
+    return {"premia": pd.DataFrame(rows).T, "source": CS_SOURCE, "as_of": str(as_of.date()),
+            "grs": {"statistic": g.statistic, "p_value": g.p_value, "n_assets": g.n_assets, "n_factors": g.n_factors,
+                    "n_obs": g.n_obs, "alpha_bottom_bp_day": 1e4 * float(g.alphas["bottom"]),
+                    "alpha_top_bp_day": 1e4 * float(g.alphas["top"])}}
+
+
 # ============================================================ the ledger
 @dataclass
 class Trial:
@@ -195,6 +244,7 @@ class Evaluation:
     similar: pd.DataFrame
     report: dict[str, Any] | None
     n_trials: int
+    cross_section: dict[str, Any] | None = None
 
 
 class Refused(ValueError):
@@ -221,13 +271,14 @@ def evaluate(expression: str, hypothesis: str, fields: dict[str, pd.DataFrame], 
     similar = redundancy(values, lib)
     dup = similar.loc[similar["duplicate"], "factor"].tolist()
     report = signal_report(values, open_adj) if all(c.ok for c in checks) else None
+    cross = cross_section_report(values, open_adj) if report else None
     trial = Trial(ts=datetime.now(UTC).isoformat(timespec="seconds"), hash=E.expr_hash(node), expression=str(node),
                   hypothesis=hypothesis.strip(), window_end=str(window_end.date()),
                   lint_ok=all(c.ok for c in checks), duplicate_of=dup[0] if dup else None,
                   summary=report["summary"] if report else {})
     if ledger is not None:
         ledger.append(trial)
-    return Evaluation(trial, checks, similar, report, ledger.n_trials() if ledger else 1)
+    return Evaluation(trial, checks, similar, report, ledger.n_trials() if ledger else 1, cross)
 
 
 def fixture_fields(names: tuple[str, ...] = NAMES) -> dict[str, pd.DataFrame]:
@@ -254,6 +305,17 @@ def render(ev: Evaluation) -> str:
                   f"{1e4 * s['long_short_mean_daily']:+.2f} bp/day (HAC t {s['long_short_hac_t']:+.2f})",
                   "  decay: " + "   ".join(f"{r.horizon}d {r.rank_ic_mean:+.4f} (t {r.rank_ic_hac_t:+.2f})"
                                           for r in ev.report["decay"].itertuples())]
+        if ev.cross_section:
+            c = ev.cross_section
+            lines += ["", f"Fama-MacBeth premia, return per 1 s.d. of signal per day (Newey-West; Shanken-corrected t; "
+                          f"source {c['source']}; as of {c['as_of']})"]
+            lines += [f"  {n:<22} {1e4 * r.premium:+.2f} bp/day   t {r.t_nw:+.2f} (Shanken {r.t_shanken:+.2f}, "
+                      f"c {r.shanken_c:.3f})   NW lags {int(r.nw_lags)}, {int(r.n_periods)} days" for n, r in c["premia"].iterrows()]
+            g = c["grs"]
+            lines += [f"  GRS: top and bottom tercile alphas vs the equal-weight market, F = {g['statistic']:.2f}, "
+                      f"p = {g['p_value']:.3f} (alpha bottom {g['alpha_bottom_bp_day']:+.1f}, top "
+                      f"{g['alpha_top_bp_day']:+.1f} bp/day, N = {g['n_assets']}, {g['n_obs']} days; "
+                      f"source {c['source']}; as of {c['as_of']})"]
     else:
         lines += ["", "signal report not run: the factor failed lint"]
     lines += ["", "A screen is not a result. Promotion goes through a pre-registration and the battery."]

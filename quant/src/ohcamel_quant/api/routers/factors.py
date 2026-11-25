@@ -4,6 +4,8 @@
   of a portfolio or single ticker on Kenneth French's daily factors.
 * ``POST /factors/custom``     -- the same analysis on *tradable* long/short
   ETF factors built from real prices (works when French's server is down).
+* ``POST /factors/cross-section`` -- Fama-MacBeth premia (Newey-West, Shanken) and the GRS test of a set of
+  test assets on tradable ETF factors, monthly, betas estimated before each month.
 * ``GET  /factors/library``    -- the French factor dashboard.
 * ``GET  /factors/models``     -- supported models and the default ETF preset.
 """
@@ -315,6 +317,110 @@ def _custom(body: CustomIn, market: MarketData) -> dict[str, Any]:
             "nw_lags": out["stats"]["nw_lags"],
             "risk_free": rf_source(rf, rf_prov),
             "attribution": "b_k f_k,t + alpha + e_t; Carino (1999) linking",
+        },
+        "notes": notes,
+        "provenance": prov,
+    })
+
+
+# ------------------------------------------------------------------ cross-section
+SECTION_ASSETS = ["XLE", "XLF", "XLK", "QQQ", "GLD", "IEF"]
+SECTION_FACTORS = [{"name": "MKT", "long": "SPY", "short": None}, {"name": "SIZE", "long": "IWM", "short": "SPY"}]
+
+
+class CrossSectionIn(BaseModel):
+    tickers: list[str] = Field(default_factory=lambda: list(SECTION_ASSETS), min_length=4, max_length=30)
+    factors: list[FactorDef] | None = Field(default=None, min_length=1, max_length=4)
+    start: date | None = None
+    end: date | None = None
+    beta_window: int = Field(default=36, ge=12, le=120)
+    nw_lags: int | None = Field(default=None, ge=0, le=24)
+
+    @field_validator("tickers")
+    @classmethod
+    def _tickers(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(t.strip().upper() for t in v if t.strip()))
+
+
+def _monthly(daily: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+    """Compounded calendar-month returns; a trailing month that has not finished is dropped."""
+    m = (1.0 + daily).groupby(daily.index.to_period("M")).prod() - 1.0
+    last = daily.index[-1]
+    if (last + pd.offsets.BDay(1)).month == last.month:
+        m = m.iloc[:-1]
+    m.index = m.index.to_timestamp("M")
+    return m
+
+
+def _prior_betas(excess: pd.DataFrame, factors: pd.DataFrame, window: int) -> dict[str, pd.DataFrame]:
+    """Row ``t`` = OLS betas on the ``window`` months BEFORE month ``t`` (month ``t`` itself is never used)."""
+    n_m, n_a, k = len(excess), excess.shape[1], factors.shape[1]
+    out = np.full((n_m, n_a, k), np.nan)
+    y, f = excess.to_numpy(float), factors.to_numpy(float)
+    for t in range(window, n_m):
+        x = np.column_stack([np.ones(window), f[t - window:t]])
+        out[t] = np.linalg.lstsq(x, y[t - window:t], rcond=None)[0][1:].T
+    return {n: pd.DataFrame(out[:, :, i], index=excess.index, columns=excess.columns) for i, n in enumerate(factors.columns)}
+
+
+@router.post("/cross-section")
+def cross_section(body: CrossSectionIn, market: Market) -> dict[str, Any]:
+    """Fama-MacBeth premia and the GRS test for ETF test assets on tradable ETF factors."""
+    return cached("factors.cross_section", body, lambda: _cross_section(body, market), ttl_s=1800.0)
+
+
+def _cross_section(body: CrossSectionIn, market: MarketData) -> dict[str, Any]:
+    defs = [fm.LongShortFactor(d.name, d.long, d.short) for d in body.factors] if body.factors else [
+        fm.LongShortFactor(d["name"], d["long"], d["short"]) for d in SECTION_FACTORS]
+    legs = [t for d in defs for t in d.tickers]
+    clash = sorted(set(body.tickers) & set(legs))
+    if clash:
+        raise ValueError(f"{', '.join(clash)} is both a test asset and a factor leg; the factors would explain it by construction")
+    rets, prov, failed = _returns_tolerant(market, [*body.tickers, *legs], body.start, body.end)
+    if failed:
+        raise DataUnavailable("; ".join(failed.values()))
+    rets = rets.dropna(how="any")
+    if len(rets) < 60:
+        raise DataUnavailable(f"only {len(rets)} common return observations")
+    rf, rf_prov, rf_notes = risk_free(market, rets.index)
+    prov += rf_prov
+    m_rets = _monthly(rets)
+    m_rf = _monthly(rf.fillna(0.0)) if rf is not None else None
+    factors = fm.long_short_factors(m_rets, defs, m_rf)
+    excess = m_rets[body.tickers] - (m_rf.reindex(m_rets.index).to_numpy()[:, None] if m_rf is not None else 0.0)
+    need = body.beta_window + 24
+    if len(excess) < need:
+        raise DataUnavailable(f"only {len(excess)} complete months; a {body.beta_window}-month beta window needs {need}")
+    exposures = _prior_betas(excess, factors, body.beta_window)
+    res = fm.fama_macbeth(excess, exposures, nw_lags=body.nw_lags, factors=factors)
+    g = fm.grs_test(excess, factors)
+    notes = data_notes(prov) + rf_notes
+    notes.append(f"A cross-section of {len(body.tickers)} assets: the premia are imprecise and the GRS test has "
+                 f"{g.n_assets} assets against {g.n_obs} months; read them as a worked example, not as prices of risk.")
+    notes.append(f"Betas for month t come from the {body.beta_window} months before t (nothing from month t), so each "
+                 "cross-section uses only what was known at the start of the month.")
+    notes.append("Premia are per month, per unit of beta, on excess returns; the Shanken correction multiplies the "
+                 "slope variances by c = 1 + lambda' Sigma_f^-1 lambda with Sigma_f the sample covariance of the factors.")
+    notes.append("Tradable ETF factors proxy but do not equal the academic Fama-French factors.")
+    tab = res.table().reset_index().rename(columns={"index": "term"})
+    return clean({
+        "model": {"factors": [{"name": d.name, "long": d.long, "short": d.short} for d in defs],
+                  "tickers": body.tickers},
+        "premia": records(tab),
+        "grs": {"statistic": g.statistic, "p_value": g.p_value, "n_assets": g.n_assets, "n_factors": g.n_factors,
+                "n_obs": g.n_obs, "mean_abs_alpha_monthly": g.mean_abs_alpha,
+                "alphas": [{"ticker": k, "alpha_monthly": float(v)} for k, v in g.alphas.items()]},
+        "stats": {"start": res.lambdas.index[0], "end": res.lambdas.index[-1], "n_periods": res.n_periods,
+                  "nw_lags": res.nw_lags, "shanken_c": res.shanken_c, "beta_window": body.beta_window,
+                  "mean_assets": res.mean_assets, "mean_r2": res.mean_r2,
+                  "grs_start": excess.index[0], "grs_end": excess.index[-1]},
+        "method": {
+            "premia": "Fama & MacBeth (1973): monthly cross-sectional OLS of excess returns on prior-window betas "
+                      "(with intercept), time-series mean; Newey & West (1987) standard errors, lag floor(4 (T/100)^(2/9)) "
+                      "unless overridden",
+            "shanken": "Shanken (1992) correction c = 1 + lambda' Sigma_f^-1 lambda applied to the slope variances",
+            "grs": "Gibbons, Ross & Shanken (1989): F(N, T-N-L), MLE covariances, full-sample alphas",
+            "nw_lags": res.nw_lags,
         },
         "notes": notes,
         "provenance": prov,

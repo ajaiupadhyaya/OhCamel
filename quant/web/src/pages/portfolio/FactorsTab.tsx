@@ -3,6 +3,7 @@
  *   GET  /api/factors/models      model catalogue + ETF preset
  *   POST /api/factors/regression  Fama–French / Carhart on Ken French's daily factors
  *   POST /api/factors/custom      the same on tradable long/short ETF spreads (works offline)
+ *   POST /api/factors/cross-section  Fama–MacBeth premia (Newey–West, Shanken) and the GRS line, ETF source
  * When the French library is unreachable (503) the cell says DATA UNAVAILABLE and offers ETF.
  */
 import { useMemo, useState } from "react";
@@ -15,7 +16,8 @@ import { useApiPost, useApiQuery } from "../../lib/query";
 import type { PortfolioIn } from "../../lib/types";
 import { INFO } from "./info";
 import { KV, RunButton, asDates, useCommitted } from "./shared";
-import type { FactorDef, FactorModelsOut, FactorOut, Loading, Rebalance } from "./types";
+import { grsLine, shankenFlips, sourceLine } from "./crossSection";
+import type { CrossSectionOut, FactorDef, FactorModelsOut, FactorOut, Loading, PremiumRow, Rebalance } from "./types";
 
 type Source = "french" | "etf";
 
@@ -42,6 +44,7 @@ export function FactorsTab({ req }: { req: PortfolioIn }) {
   const { committed, run, dirty } = useCommitted(draft);
   const custom = useApiPost<FactorOut>("/factors/custom", committed, { enabled: source === "etf" });
 
+  const section = useApiPost<CrossSectionOut>("/factors/cross-section", {}, { enabled: source === "etf" });
   const q = source === "french" ? french : custom;
   const spec = models.data?.models.find((m) => m.key === model);
 
@@ -86,6 +89,7 @@ export function FactorsTab({ req }: { req: PortfolioIn }) {
       {source === "etf" && <FactorEditor defs={defs} onChange={(d) => (setServerPreset(false), setDefs(d))} onRun={run} dirty={dirty} busy={custom.isFetching} preset={models.data?.etf_preset} serverPreset={serverPreset} onServerPreset={() => setServerPreset(true)} />}
 
       {!(source === "french" && frenchDown) && <FactorResults q={q} />}
+      {source === "etf" && <CrossSectionPanel q={section} />}
     </Section>
   );
 }
@@ -269,6 +273,40 @@ function LoadingsTable({ d }: { d: FactorOut }) {
           <InfoTip info={{ text: "Legs used. Preset factors without data here are dropped (see notes)." }} size={12} label="Legs" />
         </div>
       )}
+    </>
+  );
+}
+
+// ------------------------------------------------------------------ cross-section: premia and GRS
+
+function CrossSectionPanel({ q }: { q: ReturnType<typeof useApiPost<CrossSectionOut>> }) {
+  return (
+    <Panel<CrossSectionOut> title="Cross-section · premia and GRS" query={q} skeletonHeight={220} flush notes={[]} asOf={q.data?.stats.end ?? undefined}>
+      {(d) => <PremiaTable d={d} />}
+    </Panel>
+  );
+}
+
+function PremiaTable({ d }: { d: CrossSectionOut }) {
+  const cols: Column<PremiumRow>[] = [
+    { key: "term", label: "Term", render: (r) => <span className="num">{r.term.toUpperCase()}</span> },
+    { key: "premium", label: "Premium / mo", numeric: true, render: (r) => fmtSignedPct(r.premium, 2) },
+    { key: "se_nw", label: "SE NW", numeric: true, format: (v) => fmtPct(v, 2), hideBelow: 900 },
+    { key: "t_nw", label: "t NW", numeric: true, format: (v) => fmtNum(v, 2), info: INFO.nw_t, color: (v) => (Math.abs(v) >= 2 ? undefined : "subtle") },
+    { key: "t_shanken", label: "t Shanken", numeric: true, format: (v) => fmtNum(v, 2), color: (v) => (Math.abs(v) >= 2 ? undefined : "subtle"), info: { title: "Shanken (1992) t", text: "The Newey–West t with the variance inflated by c = 1 + λ′Σ_f⁻¹λ, because the betas that price the cross-section are themselves estimated. c is never below 1, so this t is never larger." } },
+  ];
+  const flips = shankenFlips(d);
+  return (
+    <>
+      <DataTable rows={d.premia} columns={cols} rowKey={(r) => r.term} compact />
+      <div className="pl-foot num">
+        <span>{grsLine(d)}</span>
+        <span>
+          c {fmtNum(d.stats.shanken_c, 3)} · NW {d.stats.nw_lags} · {d.stats.n_periods} months {fmtDate(d.stats.start, "month")} – {fmtDate(d.stats.end, "month")}
+          {flips.length > 0 ? ` · Shanken removes significance: ${flips.join(", ")}` : ""}
+        </span>
+        <span className="subtle">{sourceLine(d)}</span>
+      </div>
     </>
   );
 }

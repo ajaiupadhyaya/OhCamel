@@ -27,6 +27,7 @@ Everything here is pure (numpy / pandas / statsmodels); no I/O.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,9 +35,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from scipy import stats
 from statsmodels.regression.rolling import RollingOLS
 
-from .hac import nw_lag_rule
+from .hac import newey_west_lrv, nw_lag_rule
 
 TRADING_DAYS = 252
 
@@ -391,8 +393,159 @@ def long_short_factors(
     return out
 
 
+# ------------------------------------------------- cross-sectional tests
+@dataclass(frozen=True)
+class FamaMacBeth:
+    """Fama & MacBeth (1973) premia with Newey-West and Shanken (1992) standard errors.
+
+    ``premia`` is the time-series mean of the per-period cross-sectional OLS slopes (``intercept`` first).
+    ``t_nw`` is the PLAIN t: mean / Newey-West standard error of that mean. ``t_shanken`` divides by the same
+    standard error times sqrt(c), c = 1 + lambda' Sigma_f^-1 lambda (slopes only; the intercept is not
+    inflated). ``se_nw`` is NOT inflated; ``se_shanken`` is.
+    """
+
+    terms: tuple[str, ...]
+    premia: pd.Series
+    se_nw: pd.Series
+    t_nw: pd.Series
+    se_shanken: pd.Series
+    t_shanken: pd.Series
+    shanken_c: float
+    nw_lags: int
+    n_periods: int
+    mean_assets: float
+    mean_r2: float
+    lambdas: pd.DataFrame
+    sigma_f_source: str
+
+    def table(self) -> pd.DataFrame:
+        return pd.DataFrame({"premium": self.premia, "se_nw": self.se_nw, "t_nw": self.t_nw,
+                             "se_shanken": self.se_shanken, "t_shanken": self.t_shanken})
+
+
+def fama_macbeth(returns: pd.DataFrame, exposures: dict[str, pd.DataFrame], *, nw_lags: int | None = None,
+                 factors: pd.DataFrame | None = None) -> FamaMacBeth:
+    """Per-period cross-sectional OLS of returns on exposures (with an intercept), then time-series averages.
+
+    **No-lookahead convention.** Row ``t`` of every exposure frame must be information available BEFORE period
+    ``t`` begins (e.g. betas estimated on data ending at ``t-1``, a signal known at the prior close); this
+    function aligns rows by label and never shifts, so the caller owns the timing. Dates or assets where any
+    exposure or the return is missing are dropped; a date needs at least ``K + 2`` assets.
+
+    Standard errors: Newey & West (1987) on the series of slopes, lag ``floor(4 (T/100)^(2/9))`` unless
+    ``nw_lags`` is given. Shanken (1992): ``c = 1 + lambda' Sigma_f^-1 lambda`` multiplies the variance of the
+    slopes. ``Sigma_f`` is the sample covariance of ``factors`` (aligned to the periods used) when given, which
+    is the right object when the exposures are betas on those factors; otherwise it is proxied by the sample
+    covariance of the slope series itself (reported in ``sigma_f_source``).
+    """
+    names = list(exposures)
+    if not names:
+        raise ValueError("fama_macbeth: no exposures")
+    k = len(names)
+    idx = returns.index
+    for n in names:
+        idx = idx.intersection(exposures[n].index)
+    cols = returns.columns
+    for n in names:
+        cols = cols.intersection(exposures[n].columns)
+    y = returns.loc[idx, cols].to_numpy(float)
+    xs = np.stack([exposures[n].loc[idx, cols].to_numpy(float) for n in names], axis=2)   # T x N x K
+    rows: list[np.ndarray] = []
+    dates, n_assets, r2s = [], [], []
+    for t in range(len(idx)):
+        ok = np.isfinite(y[t]) & np.isfinite(xs[t]).all(axis=1)
+        if ok.sum() < k + 2:
+            continue
+        x = np.column_stack([np.ones(ok.sum()), xs[t][ok]])
+        coef = np.linalg.lstsq(x, y[t][ok], rcond=None)[0]
+        res = y[t][ok] - x @ coef
+        tss = float(((y[t][ok] - y[t][ok].mean()) ** 2).sum())
+        rows.append(coef)
+        dates.append(idx[t])
+        n_assets.append(int(ok.sum()))
+        r2s.append(1.0 - float(res @ res) / tss if tss > 0 else np.nan)
+    if len(rows) < 3:
+        raise ValueError(f"fama_macbeth: too few usable periods ({len(rows)}) or assets per period")
+    terms = ("intercept", *names)
+    lam = pd.DataFrame(np.array(rows), index=pd.DatetimeIndex(dates), columns=list(terms))
+    t_n = len(lam)
+    lags = nw_lag_rule(t_n) if nw_lags is None else int(nw_lags)
+    mean = lam.mean()
+    dev = (lam - mean).to_numpy()
+    var_mean = np.diag(newey_west_lrv(dev, lags)) / t_n
+    se = pd.Series(np.sqrt(var_mean), index=list(terms))
+    slopes = mean.iloc[1:].to_numpy()
+    if factors is not None:
+        f = factors.reindex(lam.index).dropna()
+        if len(f) < max(3, k + 1) or f.shape[1] != k:
+            raise ValueError("fama_macbeth: factors must have one column per exposure and cover the periods")
+        sigma_f, src = np.atleast_2d(f.cov().to_numpy()), "factor covariance"
+    else:
+        sigma_f, src = np.atleast_2d(lam.iloc[:, 1:].cov().to_numpy()), "covariance of the slope series (proxy)"
+    c = float(1.0 + slopes @ np.linalg.solve(sigma_f, slopes))
+    infl = pd.Series([1.0] + [math.sqrt(c)] * k, index=list(terms))
+    se_s = se * infl
+    return FamaMacBeth(terms, mean, se, mean / se, se_s, mean / se_s, c, lags, t_n,
+                       float(np.mean(n_assets)), float(np.nanmean(r2s)), lam, src)
+
+
+@dataclass(frozen=True)
+class GRSResult:
+    statistic: float
+    p_value: float
+    n_assets: int
+    n_factors: int
+    n_obs: int
+    alphas: pd.Series
+    mean_abs_alpha: float
+
+
+def grs(alphas, resid_cov, factor_means, factor_cov, T: int, *, mle: bool = True) -> tuple[float, float]:
+    """Gibbons, Ross & Shanken (1989) test that all N alphas are zero, ``F(N, T-N-L)``.
+
+    ``F = (T-N-L)/N * a' S^-1 a / (1 + m' O^-1 m)`` with ``S`` the residual covariance and ``O`` the factor
+    covariance, both with the MLE divisor ``T`` (``mle=True``, the form in the paper). With ``mle=False`` the
+    inputs are the unbiased forms (``S`` divided by ``T-L-1``, ``O`` by ``T-1``) and are converted to MLE, so
+    the statistic is the same. It equals the common textbook form
+    ``(T/N)(T-N-L)/(T-L-1) a' S_u^-1 a / (1 + m' O_mle^-1 m)`` (unbiased S, MLE O; using the unbiased O in
+    the denominator instead is a slightly different, non-GRS statistic).
+    """
+    a = np.asarray(alphas, float).ravel()
+    m = np.asarray(factor_means, float).ravel()
+    n, l_ = a.size, m.size
+    s = np.asarray(resid_cov, float).reshape(n, n)
+    o = np.asarray(factor_cov, float).reshape(l_, l_)
+    if T - n - l_ <= 0:
+        raise ValueError(f"grs: needs T > N + L (T={T}, N={n}, L={l_})")
+    if not mle:
+        s = s * (T - l_ - 1) / T
+        o = o * (T - 1) / T
+    stat = (T - n - l_) / n * float(a @ np.linalg.solve(s, a)) / (1.0 + float(m @ np.linalg.solve(o, m)))
+    return stat, float(stats.f.sf(stat, n, T - n - l_))
+
+
+def grs_test(excess: pd.DataFrame | np.ndarray, factors: pd.DataFrame | np.ndarray) -> GRSResult:
+    """Run the N time-series regressions ``r_i = a_i + b_i' f + e_i`` (one least-squares solve) and test a = 0.
+
+    ``excess`` is T x N excess returns, ``factors`` T x L; rows with any missing value are dropped together."""
+    ycols = list(excess.columns) if isinstance(excess, pd.DataFrame) else [f"r{i}" for i in range(np.shape(excess)[1])]
+    y = np.asarray(excess, float)
+    f = np.asarray(factors, float)
+    if f.ndim == 1:
+        f = f[:, None]
+    ok = np.isfinite(y).all(axis=1) & np.isfinite(f).all(axis=1)
+    y, f = y[ok], f[ok]
+    t, n = y.shape
+    x = np.column_stack([np.ones(t), f])
+    coef = np.linalg.solve(x.T @ x, x.T @ y)
+    resid = y - x @ coef
+    a = coef[0]
+    stat, p = grs(a, resid.T @ resid / t, f.mean(axis=0), np.atleast_2d(np.cov(f.T, ddof=0)), t)
+    return GRSResult(stat, p, n, f.shape[1], t, pd.Series(a, index=ycols), float(np.abs(a).mean()))
+
+
 __all__ = [
     "FACTOR_MODELS", "FACTOR_DESCRIPTIONS", "FactorModelSpec", "FactorRegression", "LongShortFactor",
-    "TRADING_DAYS", "factor_regression", "long_short_factors", "model_spec", "return_attribution",
+    "TRADING_DAYS", "FamaMacBeth", "GRSResult", "fama_macbeth", "grs", "grs_test", "factor_regression", "long_short_factors", "model_spec", "return_attribution",
     "risk_decomposition", "rolling_regression",
 ]

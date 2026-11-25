@@ -795,6 +795,53 @@ def performance_report(
     return out
 
 
+# =============================================================== neutralisation
+def neutralise(signal: pd.DataFrame, *, groups: pd.Series | None = None,
+               betas: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Remove group and beta exposure from a signal, date by date, JOINTLY.
+
+    Each date the cross-section of ``signal`` (dates x assets) is regressed on a full set of group dummies
+    (no separate intercept: they span it) and on that date's ``betas`` (same shape as ``signal``), and the
+    residual is returned. Because the residual is orthogonal to every regressor, it has zero mean inside every
+    group AND zero cross-sectional covariance with beta at the same time. (Demeaning by group and then
+    residualising on beta would break the first property; that is why the fit is joint.) With only ``betas``
+    the regressors are a constant and beta; with only ``groups``, this is the within-group demeaning; with
+    neither, the signal is returned unchanged. ``groups`` maps asset -> label; assets without a label, or with
+    a missing signal or beta on a date, come back NaN for that date. Betas must be known at the date
+    they are applied (the caller's timing).
+    """
+    if groups is None and betas is None:
+        return signal.copy()
+    vals = signal.to_numpy(float)
+    out = np.full_like(vals, np.nan)
+    if groups is not None:
+        g = groups.reindex(signal.columns)
+        codes, _ = pd.factorize(g)
+        has_g = codes >= 0
+    else:
+        codes, has_g = np.zeros(vals.shape[1], int), np.ones(vals.shape[1], bool)
+    b = betas.reindex(index=signal.index, columns=signal.columns).to_numpy(float) if betas is not None else None
+    for t in range(vals.shape[0]):
+        ok = np.isfinite(vals[t]) & has_g
+        if b is not None:
+            ok &= np.isfinite(b[t])
+        if ok.sum() == 0:
+            continue
+        cols = []
+        if groups is not None:
+            cc = codes[ok]
+            for c in np.unique(cc):
+                cols.append((cc == c).astype(float))
+        else:
+            cols.append(np.ones(ok.sum()))
+        if b is not None:
+            cols.append(b[t][ok])
+        x = np.column_stack(cols)
+        coef = np.linalg.lstsq(x, vals[t][ok], rcond=None)[0]
+        out[t, ok] = vals[t][ok] - x @ coef
+    return pd.DataFrame(out, index=signal.index, columns=signal.columns)
+
+
 __all__ = [
     "DeflatedSharpe", "TRADING_DAYS", "annualized_vol", "cagr", "calmar_ratio", "capture_ratios",
     "deflated_sharpe", "distribution_stats", "drawdown_episodes", "drawdown_series", "equity_curve",

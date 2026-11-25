@@ -104,3 +104,17 @@ def test_custom_explicit_drops_unservable_factor(client):
     assert [row["term"] for row in j["loadings"]] == ["alpha", "MKT", "SIZE", "TERM"]
     ok = _ok(client.post("/api/factors/custom", json={**PF, "factors": DEFS}))
     assert ok["dropped"] == []
+
+
+def test_cross_section_offline(client):
+    j = _ok(client.post("/api/factors/cross-section", json={}))
+    assert [r["term"] for r in j["premia"]] == ["intercept", "MKT", "SIZE"]
+    mkt = next(r for r in j["premia"] if r["term"] == "MKT")
+    assert mkt["se_shanken"] >= mkt["se_nw"] and abs(mkt["t_shanken"]) <= abs(mkt["t_nw"])
+    g = j["grs"]
+    assert g["n_assets"] == 6 and g["n_factors"] == 2 and 0 <= g["p_value"] <= 1 and g["n_obs"] > 60
+    assert j["stats"]["start"] < j["stats"]["end"] and j["stats"]["beta_window"] == 36
+    assert j["stats"]["nw_lags"] >= 1 and j["stats"]["shanken_c"] >= 1
+    assert any("six" in n.lower() or "6 assets" in n for n in j["notes"])
+    assert client.post("/api/factors/cross-section", json={"tickers": ["XLK", "XLE"]}).status_code == 422
+    assert client.post("/api/factors/cross-section", json={"beta_window": 3}).status_code == 422

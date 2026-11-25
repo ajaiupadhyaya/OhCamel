@@ -103,3 +103,30 @@ def test_cli_refuses_without_a_hypothesis_and_screens_with_one(capsys):
     assert W.main(["Mean($close, 20)/$close", "--hypothesis", HYP, "--no-log"]) == 0
     out = capsys.readouterr().out
     assert "MA20" in out and "DUPLICATE" in out and "exploration only" in out
+
+
+def test_the_cross_section_report_gives_premia_and_a_grs_line(fields, lib):
+    ev = W.evaluate("Mean($close, 5)/$close", HYP, fields, library=lib)
+    cs = ev.cross_section
+    assert cs is not None
+    t = cs["premia"]
+    assert list(t.index) == ["signal", "signal, beta-neutral"]
+    assert (t["shanken_c"] >= 1.0).all() and (t["t_shanken"].abs() <= t["t_nw"].abs() + 1e-12).all()
+    g = cs["grs"]
+    assert g["n_assets"] == 2 and g["n_factors"] == 1 and 0.0 <= g["p_value"] <= 1.0
+    assert cs["source"] and pd.Timestamp(cs["as_of"]) <= W.EXPLORATION_END
+    out = W.render(ev)
+    assert "Fama-MacBeth" in out and "GRS" in out and cs["as_of"] in out and "Shanken" in out
+
+
+def test_the_cross_section_report_reads_the_oracle_and_never_peeks(fields):
+    o = fields["open"].loc[:W.EXPLORATION_END]
+    label = W.forward_returns(o, 1)
+    good = W.cross_section_report(label, o)["premia"]
+    assert good.loc["signal", "premium"] > 0 and good.loc["signal", "t_nw"] > 10
+    keep = pd.Series(fields["close"].index <= W.EXPLORATION_END, index=fields["close"].index)
+    poisoned = {k: v.where(keep, v * 1e6, axis=0) for k, v in fields.items()}
+    v = E.evaluate(E.parse("Mean($close, 5)/$close"), {k: x.loc[:W.EXPLORATION_END] for k, x in fields.items()})
+    a = W.cross_section_report(v, o)
+    b = W.cross_section_report(v, poisoned["open"].loc[:W.EXPLORATION_END])
+    assert a["premia"].equals(b["premia"])

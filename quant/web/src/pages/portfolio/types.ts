@@ -493,3 +493,29 @@ export interface LiquidityOut extends Envelope {
   lines: LiquidityLine[];
   method: { participation: number; impact_coefficient: number; adv_window: number };
 }
+
+/** POST /api/factors/cross-section: Fama–MacBeth premia (Newey–West, Shanken) and the GRS test. Monthly. */
+export interface PremiumRow {
+  term: string;
+  premium: number;
+  se_nw: number;
+  t_nw: number;
+  se_shanken: number;
+  t_shanken: number;
+}
+
+export interface CrossSectionOut extends Envelope {
+  model: { factors: FactorDef[]; tickers: string[] };
+  premia: PremiumRow[];
+  grs: {
+    statistic: number;
+    p_value: number;
+    n_assets: number;
+    n_factors: number;
+    n_obs: number;
+    mean_abs_alpha_monthly: number;
+    alphas: { ticker: string; alpha_monthly: number }[];
+  };
+  stats: { start: string; end: string; n_periods: number; nw_lags: number; shanken_c: number; beta_window: number; mean_assets: number; mean_r2: number; grs_start: string; grs_end: string };
+  method: Record<string, unknown>;
+}

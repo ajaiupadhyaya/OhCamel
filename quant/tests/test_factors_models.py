@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ import statsmodels.api as sm
 from ohcamel_quant.factors import hac
 from ohcamel_quant.factors import library as lib
 from ohcamel_quant.factors import models as fm
+from ohcamel_quant.factors import performance as perf
 
 
 @pytest.fixture(scope="module")
@@ -203,3 +205,134 @@ def test_regression_rejects_collinear_factors(etf_returns):
     const = pd.DataFrame({"A": etf_returns["SPY"], "C": 0.001}, index=etf_returns.index)
     with pytest.raises(ValueError, match="collinear"):
         fm.factor_regression(etf_returns["XLK"], const)
+
+
+# ------------------------------------------------- cross-sectional factor tests (task 4.8)
+FRENCH_SLICE = Path(__file__).parent / "data" / "french_25_size_bm_ff3_monthly_1996-2025.csv"
+
+
+def _fm_panel(seed: int = 11, n_t: int = 240, n_a: int = 150, premium: float = 0.005):
+    """Returns r_it = beta_i f_t + e_it with E[f] = premium: the true price of one unit of beta."""
+    rng = np.random.default_rng(seed)
+    beta = rng.uniform(0.4, 1.6, n_a)
+    f = premium + 0.04 * rng.standard_normal(n_t)
+    r = np.outer(f, beta) + 0.03 * rng.standard_normal((n_t, n_a))
+    idx = pd.date_range("2000-01-31", periods=n_t, freq="ME")
+    cols = [f"A{i:03d}" for i in range(n_a)]
+    ret = pd.DataFrame(r, index=idx, columns=cols)
+    exp = pd.DataFrame(np.tile(beta, (n_t, 1)), index=idx, columns=cols)
+    return ret, {"beta": exp}, pd.DataFrame({"f": f}, index=idx)
+
+
+def test_fama_macbeth_recovers_a_half_percent_premium_and_shanken_widens_the_error():
+    ret, exposures, factors = _fm_panel()
+    for kw in ({}, {"factors": factors}):
+        res = fm.fama_macbeth(ret, exposures, **kw)
+        lam, se = res.premia["beta"], res.se_nw["beta"]
+        assert abs(lam - 0.005) < 2 * se, (lam, se)
+        assert res.shanken_c > 1.0
+        assert res.t_shanken["beta"] < res.t_nw["beta"]          # the plain t is the Newey-West t
+        assert res.se_shanken["beta"] == pytest.approx(se * math.sqrt(res.shanken_c), rel=1e-12)
+        assert res.n_periods == 240 and res.nw_lags == hac.nw_lag_rule(240)
+
+
+def test_fama_macbeth_is_the_time_series_mean_of_per_period_ols():
+    ret, exposures, _ = _fm_panel(n_t=60, n_a=40)
+    res = fm.fama_macbeth(ret, exposures, nw_lags=3)
+    b = exposures["beta"].iloc[0].to_numpy()
+    lam_t = [sm.OLS(ret.iloc[t].to_numpy(), sm.add_constant(b)).fit().params for t in range(60)]
+    assert np.allclose(res.lambdas.to_numpy(), np.array(lam_t), atol=1e-12)
+    assert res.premia["beta"] == pytest.approx(np.mean([p[1] for p in lam_t]), abs=1e-14)
+    dev = res.lambdas["beta"].to_numpy() - res.premia["beta"]
+    assert res.se_nw["beta"] == pytest.approx(math.sqrt(hac.newey_west_lrv(dev, 3)[0, 0] / 60), rel=1e-12)
+    assert res.nw_lags == 3
+
+
+def test_fama_macbeth_uses_the_exposures_it_is_given_without_peeking():
+    # a date whose exposures are missing is skipped; shifting returns against exposures changes the answer
+    ret, exposures, _ = _fm_panel(n_t=80, n_a=30)
+    exposures["beta"].iloc[5] = np.nan
+    assert fm.fama_macbeth(ret, exposures).n_periods == 79
+    with pytest.raises(ValueError, match="too few"):
+        fm.fama_macbeth(ret.iloc[:, :2], {"beta": exposures["beta"].iloc[:, :2]})
+
+
+def _sim_grs_panel(rng, alpha, n=10, t=240, k=3):
+    f = 0.005 + 0.04 * rng.standard_normal((t, k))
+    b = rng.uniform(0.3, 1.2, (k, n))
+    mix = rng.standard_normal((n, n)) * 0.01 + np.eye(n) * 0.03
+    e = rng.standard_normal((t, n)) @ mix
+    return alpha + f @ b + e, f
+
+
+def test_grs_p_values_are_uniform_under_the_null_and_reject_a_half_percent_alpha():
+    from scipy import stats
+    rng = np.random.default_rng(7)
+    p = np.array([fm.grs_test(*_sim_grs_panel(rng, 0.0)).p_value for _ in range(500)])
+    assert stats.kstest(p, "uniform").pvalue > 0.01
+    rej = fm.grs_test(*_sim_grs_panel(np.random.default_rng(7), 0.005))
+    assert rej.p_value < 0.01
+
+
+def test_grs_is_a_function_of_regression_outputs_and_the_mle_unbiased_forms_agree():
+    rng = np.random.default_rng(3)
+    y, f = _sim_grs_panel(rng, 0.001, n=6, t=200, k=2)
+    r = fm.grs_test(y, f)
+    t, n, nl = 200, 6, 2
+    x = np.column_stack([np.ones(t), f])
+    resid = y - x @ np.linalg.lstsq(x, y, rcond=None)[0]
+    s_mle = resid.T @ resid / t
+    om_mle = np.cov(f.T, ddof=0)
+    a = r.alphas.to_numpy()
+    s1 = fm.grs(a, s_mle, f.mean(0), om_mle, t)
+    s2 = fm.grs(a, resid.T @ resid / (t - nl - 1), f.mean(0), np.cov(f.T, ddof=1), t, mle=False)
+    assert s1[0] == pytest.approx(s2[0], rel=1e-12) and s1[1] == pytest.approx(s2[1], rel=1e-10)
+    # the paper's form, residual covariance unbiased (T-L-1) and factor covariance MLE: (T/N)(T-N-L)/(T-L-1) a'S^-1 a / (1 + m'O^-1 m)
+    su = resid.T @ resid / (t - nl - 1)
+    ou = np.cov(f.T, ddof=0)            # GRS (1989): the factor covariance is the MLE one
+    m = f.mean(0)
+    book = (t / n) * (t - n - nl) / (t - nl - 1) * a @ np.linalg.solve(su, a) / (1 + m @ np.linalg.solve(ou, m))
+    assert s1[0] == pytest.approx(book, rel=1e-10)
+    assert (r.statistic, r.p_value) == pytest.approx(s1, rel=1e-12)
+
+
+def test_grs_on_the_french_25_size_value_portfolios_matches_an_independent_computation():
+    from scipy import stats
+    d = pd.read_csv(FRENCH_SLICE, index_col="month") / 100.0
+    ports, fac, rf = d.iloc[:, :25], d[["Mkt-RF", "SMB", "HML"]], d["RF"]
+    assert ports.shape == (360, 25)
+    y = ports.sub(rf, axis=0)
+    r = fm.grs_test(y, fac)
+    # independent path: statsmodels OLS per portfolio, then the textbook formula on its outputs
+    t, n, nl = len(y), 25, 3
+    fits = [sm.OLS(y.iloc[:, i], sm.add_constant(fac)).fit() for i in range(n)]
+    a = np.array([f.params["const"] for f in fits])
+    resid = np.column_stack([f.resid for f in fits])
+    s_u = resid.T @ resid / (t - nl - 1)
+    mu, om_u = fac.mean().to_numpy(), fac.cov(ddof=0).to_numpy()
+    stat = (t / n) * (t - n - nl) / (t - nl - 1) * a @ np.linalg.solve(s_u, a) / (1 + mu @ np.linalg.solve(om_u, mu))
+    assert r.statistic == pytest.approx(stat, abs=1e-8)
+    assert r.p_value == pytest.approx(stats.f.sf(stat, n, t - n - nl), abs=1e-8)
+    assert r.n_assets == 25 and r.n_factors == 3 and r.n_obs == 360
+
+
+def test_neutralise_leaves_zero_group_means_and_zero_covariance_with_beta():
+    rng = np.random.default_rng(5)
+    idx = pd.date_range("2024-01-01", periods=40, freq="B")
+    names = [f"S{i:02d}" for i in range(30)]
+    beta = pd.DataFrame(rng.uniform(0.3, 1.7, (40, 30)), index=idx, columns=names)
+    signal = pd.DataFrame(rng.standard_normal((40, 30)) + 2.0 * beta.to_numpy(), index=idx, columns=names)
+    groups = pd.Series(np.arange(30) % 4, index=names)
+    out = perf.neutralise(signal, groups=groups, betas=beta)
+    for _, cols in groups.groupby(groups).groups.items():
+        assert np.abs(out[list(cols)].mean(axis=1)).max() < 1e-10
+    cov = ((out - out.mean(axis=1).to_numpy()[:, None]) * (beta - beta.mean(axis=1).to_numpy()[:, None])).mean(axis=1)
+    assert np.abs(cov).max() < 1e-10
+    g_only = perf.neutralise(signal, groups=groups, betas=None)
+    assert np.abs(g_only[names[0::4]].mean(axis=1)).max() < 1e-10
+    b_only = perf.neutralise(signal, groups=None, betas=beta)
+    assert np.abs(b_only.mean(axis=1)).max() < 1e-10
+    assert perf.neutralise(signal, groups=None, betas=None).equals(signal)
+    sparse = signal.copy()
+    sparse.iloc[3, :5] = np.nan
+    assert perf.neutralise(sparse, groups=groups, betas=beta).iloc[3, :5].isna().all()
