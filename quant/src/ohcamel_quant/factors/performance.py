@@ -807,7 +807,8 @@ def neutralise(signal: pd.DataFrame, *, groups: pd.Series | None = None,
     residualising on beta would break the first property; that is why the fit is joint.) With only ``betas``
     the regressors are a constant and beta; with only ``groups``, this is the within-group demeaning; with
     neither, the signal is returned unchanged. ``groups`` maps asset -> label; assets without a label, or with
-    a missing signal or beta on a date, come back NaN for that date. Betas must be known at the date
+    a missing signal or beta on a date, come back NaN for that date; so does a date with as many regressors as
+    names or more (counted in ``result.attrs['rank_deficient_dates']`` with a ``note``). Betas must be known at the date
     they are applied (the caller's timing).
     """
     if groups is None and betas is None:
@@ -821,11 +822,16 @@ def neutralise(signal: pd.DataFrame, *, groups: pd.Series | None = None,
     else:
         codes, has_g = np.zeros(vals.shape[1], int), np.ones(vals.shape[1], bool)
     b = betas.reindex(index=signal.index, columns=signal.columns).to_numpy(float) if betas is not None else None
+    skipped = 0
     for t in range(vals.shape[0]):
         ok = np.isfinite(vals[t]) & has_g
         if b is not None:
             ok &= np.isfinite(b[t])
         if ok.sum() == 0:
+            continue
+        n_reg = (len(np.unique(codes[ok])) if groups is not None else 1) + (1 if b is not None else 0)
+        if n_reg >= ok.sum():                 # as many regressors as names or more: the fit would be exact, not a neutralisation
+            skipped += 1
             continue
         cols = []
         if groups is not None:
@@ -839,7 +845,11 @@ def neutralise(signal: pd.DataFrame, *, groups: pd.Series | None = None,
         x = np.column_stack(cols)
         coef = np.linalg.lstsq(x, vals[t][ok], rcond=None)[0]
         out[t, ok] = vals[t][ok] - x @ coef
-    return pd.DataFrame(out, index=signal.index, columns=signal.columns)
+    res = pd.DataFrame(out, index=signal.index, columns=signal.columns)
+    res.attrs["rank_deficient_dates"] = skipped
+    res.attrs["note"] = (f"{skipped} date(s) returned NaN: no more names than regressors (groups + beta), so a fit "
+                         "would be exact rather than a neutralisation" if skipped else "")
+    return res
 
 
 __all__ = [

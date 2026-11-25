@@ -170,8 +170,8 @@ def cross_section_report(values: pd.DataFrame, open_adj: pd.DataFrame, *, beta_w
     on the cross-sectionally standardised signal known at that date's close, so a premium is the return per one
     cross-sectional standard deviation of the signal. A second run residualises the signal on a trailing
     ``beta_window``-day beta to the equal-weight market (estimated on data to that same close, never later)
-    before standardising. Standard errors are Newey-West; the Shanken correction uses the slope series' own
-    covariance as the factor covariance (the signal is not a loading on an observed factor).
+    before standardising. Standard errors are Newey-West only: a signal is a characteristic, not an estimated
+    beta on an observed factor, so Shanken's errors-in-variables correction does not apply and is not reported.
 
     **GRS** (``models.grs_test``): are the top and bottom tercile portfolios' alphas, against the equal-weight
     market, jointly zero? (The middle tercile is left out: with equal terciles the three sum to the market.)
@@ -183,12 +183,13 @@ def cross_section_report(values: pd.DataFrame, open_adj: pd.DataFrame, *, beta_w
     beta = ret.rolling(beta_window, min_periods=beta_window).cov(mkt).div(mkt.rolling(beta_window, min_periods=beta_window).var(), axis=0)
     z = _zscore_rows(values)
     zn = _zscore_rows(PF.neutralise(z, groups=None, betas=beta))
-    rows = {}
+    rows, slopes = {}, {}
     for name, sig in (("signal", z), ("signal, beta-neutral", zn)):
-        r = FM.fama_macbeth(fwd1, {"signal": sig})
-        row = r.table().loc["signal"].to_dict()
-        row.update(shanken_c=r.shanken_c, nw_lags=r.nw_lags, n_periods=r.n_periods, mean_assets=r.mean_assets)
+        r = FM.fama_macbeth(fwd1, {"signal": sig}, shanken=False)
+        row = r.table().loc["signal", ["premium", "se_nw", "t_nw"]].to_dict()
+        row.update(nw_lags=r.nw_lags, n_periods=r.n_periods, mean_assets=r.mean_assets)
         rows[name] = row
+        slopes[name] = r.lambdas["signal"]
     pct = values.rank(axis=1, pct=True)
     bucket = np.ceil(pct * 3).clip(1, 3)
     low, high = (fwd1.where(bucket == g).mean(axis=1) for g in (1, 3))
@@ -196,7 +197,7 @@ def cross_section_report(values: pd.DataFrame, open_adj: pd.DataFrame, *, beta_w
     panel = pd.concat({"bottom": low, "top": high, "mkt": market}, axis=1).dropna()
     g = FM.grs_test(panel[["bottom", "top"]], panel[["mkt"]])
     as_of = fwd1.dropna(how="all").index[-1]
-    return {"premia": pd.DataFrame(rows).T, "source": CS_SOURCE, "as_of": str(as_of.date()),
+    return {"premia": pd.DataFrame(rows).T, "daily_premia": pd.DataFrame(slopes), "source": CS_SOURCE, "as_of": str(as_of.date()),
             "grs": {"statistic": g.statistic, "p_value": g.p_value, "n_assets": g.n_assets, "n_factors": g.n_factors,
                     "n_obs": g.n_obs, "alpha_bottom_bp_day": 1e4 * float(g.alphas["bottom"]),
                     "alpha_top_bp_day": 1e4 * float(g.alphas["top"])}}
@@ -307,10 +308,10 @@ def render(ev: Evaluation) -> str:
                                           for r in ev.report["decay"].itertuples())]
         if ev.cross_section:
             c = ev.cross_section
-            lines += ["", f"Fama-MacBeth premia, return per 1 s.d. of signal per day (Newey-West; Shanken-corrected t; "
+            lines += ["", f"Fama-MacBeth premia, return per 1 s.d. of signal per day (Newey-West t; no Shanken correction: the signal is a characteristic; "
                           f"source {c['source']}; as of {c['as_of']})"]
-            lines += [f"  {n:<22} {1e4 * r.premium:+.2f} bp/day   t {r.t_nw:+.2f} (Shanken {r.t_shanken:+.2f}, "
-                      f"c {r.shanken_c:.3f})   NW lags {int(r.nw_lags)}, {int(r.n_periods)} days" for n, r in c["premia"].iterrows()]
+            lines += [f"  {n:<22} {1e4 * r.premium:+.2f} bp/day   t {r.t_nw:+.2f}   "
+                      f"NW lags {int(r.nw_lags)}, {int(r.n_periods)} days" for n, r in c["premia"].iterrows()]
             g = c["grs"]
             lines += [f"  GRS: top and bottom tercile alphas vs the equal-weight market, F = {g['statistic']:.2f}, "
                       f"p = {g['p_value']:.3f} (alpha bottom {g['alpha_bottom_bp_day']:+.1f}, top "

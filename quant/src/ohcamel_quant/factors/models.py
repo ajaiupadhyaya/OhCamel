@@ -28,6 +28,7 @@ Everything here is pure (numpy / pandas / statsmodels); no I/O.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -424,7 +425,7 @@ class FamaMacBeth:
 
 
 def fama_macbeth(returns: pd.DataFrame, exposures: dict[str, pd.DataFrame], *, nw_lags: int | None = None,
-                 factors: pd.DataFrame | None = None) -> FamaMacBeth:
+                 factors: pd.DataFrame | None = None, shanken: bool = True) -> FamaMacBeth:
     """Per-period cross-sectional OLS of returns on exposures (with an intercept), then time-series averages.
 
     **No-lookahead convention.** Row ``t`` of every exposure frame must be information available BEFORE period
@@ -436,7 +437,10 @@ def fama_macbeth(returns: pd.DataFrame, exposures: dict[str, pd.DataFrame], *, n
     ``nw_lags`` is given. Shanken (1992): ``c = 1 + lambda' Sigma_f^-1 lambda`` multiplies the variance of the
     slopes. ``Sigma_f`` is the sample covariance of ``factors`` (aligned to the periods used) when given, which
     is the right object when the exposures are betas on those factors; otherwise it is proxied by the sample
-    covariance of the slope series itself (reported in ``sigma_f_source``).
+    covariance of the slope series itself (reported in ``sigma_f_source``), which is NOT the Shanken correction
+    and understates c; that path emits a ``UserWarning``. For characteristic exposures (a signal, not an
+    estimated beta on an observed factor) pass ``shanken=False``: se_shanken, t_shanken and c are NaN and
+    ``sigma_f_source`` says the correction was not applied.
     """
     names = list(exposures)
     if not names:
@@ -475,15 +479,22 @@ def fama_macbeth(returns: pd.DataFrame, exposures: dict[str, pd.DataFrame], *, n
     var_mean = np.diag(newey_west_lrv(dev, lags)) / t_n
     se = pd.Series(np.sqrt(var_mean), index=list(terms))
     slopes = mean.iloc[1:].to_numpy()
-    if factors is not None:
+    if not shanken:
+        c, src = float("nan"), "not applied (characteristic exposures, not estimated betas)"
+        sigma_f = None
+    elif factors is not None:
         f = factors.reindex(lam.index).dropna()
         if len(f) < max(3, k + 1) or f.shape[1] != k:
             raise ValueError("fama_macbeth: factors must have one column per exposure and cover the periods")
         sigma_f, src = np.atleast_2d(f.cov().to_numpy()), "factor covariance"
     else:
         sigma_f, src = np.atleast_2d(lam.iloc[:, 1:].cov().to_numpy()), "covariance of the slope series (proxy)"
-    c = float(1.0 + slopes @ np.linalg.solve(sigma_f, slopes))
-    infl = pd.Series([1.0] + [math.sqrt(c)] * k, index=list(terms))
+        warnings.warn("fama_macbeth: no `factors` given, so the Shanken c uses the slope series' covariance as a "
+                      "proxy for the factor covariance; that is not Shanken's correction and understates c",
+                      UserWarning, stacklevel=2)
+    if sigma_f is not None:
+        c = float(1.0 + slopes @ np.linalg.solve(sigma_f, slopes))
+    infl = pd.Series([1.0] + [math.sqrt(c)] * k, index=list(terms)) if shanken else pd.Series(np.nan, index=list(terms))
     se_s = se * infl
     return FamaMacBeth(terms, mean, se, mean / se, se_s, mean / se_s, c, lags, t_n,
                        float(np.mean(n_assets)), float(np.nanmean(r2s)), lam, src)

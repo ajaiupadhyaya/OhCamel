@@ -114,6 +114,8 @@ def test_cross_section_offline(client):
     g = j["grs"]
     assert g["n_assets"] == 6 and g["n_factors"] == 2 and 0 <= g["p_value"] <= 1 and g["n_obs"] > 60
     assert j["stats"]["start"] < j["stats"]["end"] and j["stats"]["beta_window"] == 36
+    assert j["stats"]["sigma_f_source"] == "factor covariance"
+    assert any("factor covariance" in n for n in j["notes"])
     assert j["stats"]["nw_lags"] >= 1 and j["stats"]["shanken_c"] >= 1
     assert any("six" in n.lower() or "6 assets" in n for n in j["notes"])
     assert client.post("/api/factors/cross-section", json={"tickers": ["XLK", "XLE"]}).status_code == 422

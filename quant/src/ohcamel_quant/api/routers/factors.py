@@ -400,7 +400,7 @@ def _cross_section(body: CrossSectionIn, market: MarketData) -> dict[str, Any]:
     notes.append(f"Betas for month t come from the {body.beta_window} months before t (nothing from month t), so each "
                  "cross-section uses only what was known at the start of the month.")
     notes.append("Premia are per month, per unit of beta, on excess returns; the Shanken correction multiplies the "
-                 "slope variances by c = 1 + lambda' Sigma_f^-1 lambda with Sigma_f the sample covariance of the factors.")
+                 f"slope variances by c = 1 + lambda' Sigma_f^-1 lambda with Sigma_f the {res.sigma_f_source} of the ETF factors.")
     notes.append("Tradable ETF factors proxy but do not equal the academic Fama-French factors.")
     tab = res.table().reset_index().rename(columns={"index": "term"})
     return clean({
@@ -412,7 +412,7 @@ def _cross_section(body: CrossSectionIn, market: MarketData) -> dict[str, Any]:
                 "alphas": [{"ticker": k, "alpha_monthly": float(v)} for k, v in g.alphas.items()]},
         "stats": {"start": res.lambdas.index[0], "end": res.lambdas.index[-1], "n_periods": res.n_periods,
                   "nw_lags": res.nw_lags, "shanken_c": res.shanken_c, "beta_window": body.beta_window,
-                  "mean_assets": res.mean_assets, "mean_r2": res.mean_r2,
+                  "mean_assets": res.mean_assets, "mean_r2": res.mean_r2, "sigma_f_source": res.sigma_f_source,
                   "grs_start": excess.index[0], "grs_end": excess.index[-1]},
         "method": {
             "premia": "Fama & MacBeth (1973): monthly cross-sectional OLS of excess returns on prior-window betas "

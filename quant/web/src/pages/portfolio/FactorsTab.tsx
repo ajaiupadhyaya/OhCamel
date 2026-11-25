@@ -281,7 +281,7 @@ function LoadingsTable({ d }: { d: FactorOut }) {
 
 function CrossSectionPanel({ q }: { q: ReturnType<typeof useApiPost<CrossSectionOut>> }) {
   return (
-    <Panel<CrossSectionOut> title="Cross-section · premia and GRS" query={q} skeletonHeight={220} flush notes={[]} asOf={q.data?.stats.end ?? undefined}>
+    <Panel<CrossSectionOut> title="Cross-section · premia and GRS" query={q} skeletonHeight={220} flush asOf={q.data?.stats.end ?? undefined}>
       {(d) => <PremiaTable d={d} />}
     </Panel>
   );

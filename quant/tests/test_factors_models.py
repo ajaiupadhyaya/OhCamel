@@ -336,3 +336,29 @@ def test_neutralise_leaves_zero_group_means_and_zero_covariance_with_beta():
     sparse = signal.copy()
     sparse.iloc[3, :5] = np.nan
     assert perf.neutralise(sparse, groups=groups, betas=beta).iloc[3, :5].isna().all()
+
+
+def test_fama_macbeth_without_factors_warns_and_names_its_proxy_and_a_characteristic_run_skips_shanken():
+    ret, exposures, factors = _fm_panel(n_t=80, n_a=30)
+    with pytest.warns(UserWarning, match="proxy"):
+        res = fm.fama_macbeth(ret, exposures)
+    assert "proxy" in res.sigma_f_source
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ok = fm.fama_macbeth(ret, exposures, factors=factors)
+        char = fm.fama_macbeth(ret, exposures, shanken=False)
+    assert ok.sigma_f_source == "factor covariance"
+    assert math.isnan(char.shanken_c) and char.t_shanken.isna().all() and "not applied" in char.sigma_f_source
+    assert char.t_nw["beta"] == pytest.approx(ok.t_nw["beta"], rel=1e-12)
+
+
+def test_neutralise_returns_nan_for_a_date_with_no_more_names_than_regressors():
+    idx = pd.date_range("2024-01-01", periods=3, freq="B")
+    names = list("ABCDEF")
+    sig = pd.DataFrame(np.arange(18.0).reshape(3, 6) ** 1.3, index=idx, columns=names)
+    beta = pd.DataFrame(np.linspace(0.5, 1.5, 18).reshape(3, 6), index=idx, columns=names)
+    sig.iloc[1, 3:] = np.nan                       # date 1: 3 names, 2 groups + beta = 3 regressors
+    out = perf.neutralise(sig, groups=pd.Series(["x", "x", "y", "y", "z", "z"], index=names), betas=beta)
+    assert out.iloc[1].isna().all() and out.iloc[0].notna().all() and out.iloc[2].notna().all()
+    assert out.attrs["rank_deficient_dates"] == 1 and "1 date" in out.attrs["note"]

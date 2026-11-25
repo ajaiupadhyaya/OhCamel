@@ -2,8 +2,22 @@
   "source": "ken-french",
   "synthetic": false,
   "files": [
-    {"name": "25_Portfolios_5x5_CSV.zip", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/25_Portfolios_5x5_CSV.zip", "table": "Average Value Weighted Returns -- Monthly", "original_sha256": "ec3a80f94edf98b730790e4fff4f30ed5f0a00494a665c20e15665f580e41557", "original_bytes": 549163, "columns": "the 25 size x book-to-market portfolios"},
-    {"name": "F-F_Research_Data_Factors_CSV.zip", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_CSV.zip", "table": "monthly factors", "original_sha256": "b03d39e4bb253dda0f14893db3b78e64b40b8d6549a0fc0fd4111dae84c98618", "original_bytes": 13078, "columns": "Mkt-RF, SMB, HML, RF"}
+    {
+      "name": "25_Portfolios_5x5_CSV.zip",
+      "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/25_Portfolios_5x5_CSV.zip",
+      "table": "Average Value Weighted Returns -- Monthly",
+      "original_sha256": "ec3a80f94edf98b730790e4fff4f30ed5f0a00494a665c20e15665f580e41557",
+      "original_bytes": 549163,
+      "columns": "the 25 size x book-to-market portfolios"
+    },
+    {
+      "name": "F-F_Research_Data_Factors_CSV.zip",
+      "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_CSV.zip",
+      "table": "monthly factors",
+      "original_sha256": "b03d39e4bb253dda0f14893db3b78e64b40b8d6549a0fc0fd4111dae84c98618",
+      "original_bytes": 13078,
+      "columns": "Mkt-RF, SMB, HML, RF"
+    }
   ],
   "fetched_utc": "2026-11-25T19:42:42Z",
   "fetched_note": "both archives downloaded in one session; the CRSP vintage in the files is 202609",
@@ -11,5 +25,6 @@
   "units": "percent per month as published (divide by 100); portfolio returns are NOT excess returns, RF is the last column",
   "trimmed": "rows outside the window dropped; columns kept are the 25 portfolios plus Mkt-RF, SMB, HML, RF; values as parsed from the published text, not altered",
   "sha256": "aaf3a83ec6300c6aff76fbb761a014f5ea708fc8172fdfe3fcb22a518dbef3a9",
-  "used_by": "completion task 4.8: the GRS test on the 25 size-value portfolios (tests/test_factors_models.py)"
+  "used_by": "completion task 4.8: the GRS test on the 25 size-value portfolios (tests/test_factors_models.py)",
+  "redistribution": "Source: Kenneth R. French Data Library (Dartmouth Tuck), https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html. A 360-row slice committed unaltered as a test fixture for completion task 4.8, with attribution; terms of use are those the library publishes at that URL. Not for redistribution as a data product."
 }

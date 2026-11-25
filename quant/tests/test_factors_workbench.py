@@ -111,22 +111,30 @@ def test_the_cross_section_report_gives_premia_and_a_grs_line(fields, lib):
     assert cs is not None
     t = cs["premia"]
     assert list(t.index) == ["signal", "signal, beta-neutral"]
-    assert (t["shanken_c"] >= 1.0).all() and (t["t_shanken"].abs() <= t["t_nw"].abs() + 1e-12).all()
+    assert "t_shanken" not in t.columns and "shanken_c" not in t.columns   # a signal is a characteristic
     g = cs["grs"]
     assert g["n_assets"] == 2 and g["n_factors"] == 1 and 0.0 <= g["p_value"] <= 1.0
     assert cs["source"] and pd.Timestamp(cs["as_of"]) <= W.EXPLORATION_END
     out = W.render(ev)
-    assert "Fama-MacBeth" in out and "GRS" in out and cs["as_of"] in out and "Shanken" in out
+    assert "Fama-MacBeth" in out and "GRS" in out and cs["as_of"] in out
+    assert "Shanken-corrected" not in out and "Shanken +" not in out and "no Shanken correction" in out
 
 
-def test_the_cross_section_report_reads_the_oracle_and_never_peeks(fields):
+def test_the_cross_section_report_reads_the_oracle(fields):
     o = fields["open"].loc[:W.EXPLORATION_END]
-    label = W.forward_returns(o, 1)
-    good = W.cross_section_report(label, o)["premia"]
+    good = W.cross_section_report(W.forward_returns(o, 1), o)["premia"]
     assert good.loc["signal", "premium"] > 0 and good.loc["signal", "t_nw"] > 10
-    keep = pd.Series(fields["close"].index <= W.EXPLORATION_END, index=fields["close"].index)
-    poisoned = {k: v.where(keep, v * 1e6, axis=0) for k, v in fields.items()}
+
+
+def test_the_cross_section_report_never_peeks_inside_the_window_it_reads(fields):
+    """Poison every open after a cut INSIDE the window: the per-date slopes up to two sessions before the cut
+    (the label looks two opens ahead) and so the trailing betas behind them are untouched."""
+    o = fields["open"].loc[:W.EXPLORATION_END]
     v = E.evaluate(E.parse("Mean($close, 5)/$close"), {k: x.loc[:W.EXPLORATION_END] for k, x in fields.items()})
-    a = W.cross_section_report(v, o)
-    b = W.cross_section_report(v, poisoned["open"].loc[:W.EXPLORATION_END])
-    assert a["premia"].equals(b["premia"])
+    cut = o.index[-300]
+    bad = o.copy()
+    bad.loc[bad.index > cut] *= 1e6
+    a, b = W.cross_section_report(v, o)["daily_premia"], W.cross_section_report(v, bad)["daily_premia"]
+    safe = a.index[a.index <= o.index[o.index.get_loc(cut) - 2]]
+    assert len(safe) > 1000 and a.loc[safe].equals(b.loc[safe])
+    assert not a.loc[a.index > cut].equals(b.loc[b.index > cut])        # the poison is real: later slopes do move
