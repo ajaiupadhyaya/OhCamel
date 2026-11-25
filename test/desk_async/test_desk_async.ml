@@ -6212,6 +6212,153 @@ let test_one_strategy's_deferral_raising_is_said_and_not_deferred () =
   D.Journal.close journal;
   return ()
 
+(* A FILL THE BOOK ALREADY HOLDS (Task 1.12, round 1). The desk's account read
+   can run ahead of the venue's update stream: a read started after one fill
+   can already carry the next. AAPL +100 at market fills and is applied; MSFT
+   +50 and XOM +200 rest as limits until their marks fall, the venue fills
+   both, and an account read lands BEFORE either update reaches the manager.
+   The updates then arrive: each names the venue's position after it, which
+   the graph already holds, so neither moves cash a second time -- the
+   graph's cash, quantities and equity are the venue's. In the normal order
+   (the updates first, then the read) the same fills are applied once each,
+   as before. *)
+let race_case ~read_first =
+  let f = fixture () in
+  let oms = manager f in
+  let desk =
+    D.Desk.create ~graph:f.graph ~journal:f.journal
+      ~venue:(D.Desk.Reads (D.Sim_venue.read f.venue))
+      ~spec:(D.Oms.spec oms) ~on_change:ignore ~on_first_sync:ignore
+  in
+  let read () =
+    let seq = D.Desk.start_read desk in
+    D.Desk.sync_with desk ~account:(D.Sim_venue.account f.venue)
+      ~positions:(Ok (D.Sim_venue.positions f.venue))
+      ~at:(Time_ns.now ()) ~seq
+  in
+  let%bind _ = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 100) in
+  let%bind () = pump f in
+  read ();
+  let%bind _ =
+    D.Oms.propose oms
+      (ticket ~kind:(D.Order.Kind.Limit (Price.of_float 199.0)) msft D.Order.Side.Buy 50)
+  in
+  let%bind _ =
+    D.Oms.propose oms
+      (ticket ~kind:(D.Order.Kind.Limit (Price.of_float 49.9)) xom D.Order.Side.Buy 200)
+  in
+  let%bind () = settle () in
+  mark f msft 198.5;
+  mark f xom 49.5;
+  D.Sim_venue.pump f.venue;
+  let%bind () =
+    if read_first then (
+      read ();
+      settle ())
+    else
+      let%map () = settle () in
+      read ()
+  in
+  let venue = Or_error.ok_exn (D.Sim_venue.account f.venue) in
+  let result =
+    ( Notional.to_float (Graph.cash f.graph),
+      Notional.to_float venue.D.Venue.Account.cash,
+      Notional.to_float (Graph.equity f.graph),
+      Notional.to_float venue.D.Venue.Account.equity,
+      List.map [ aapl; msft; xom ] ~f:(fun s -> Qty.to_float (Graph.qty f.graph s)) )
+  in
+  Graph.destroy f.graph;
+  return result
+
+let test_a_read_ahead_of_the_updates_is_not_credited_twice () =
+  let check what (cash, venue_cash, equity, venue_equity, qty) =
+    Alcotest.(check (float 1e-6))
+      (what ^ ": the graph's cash is the venue's")
+      venue_cash cash;
+    Alcotest.(check (float 1e-6))
+      (what ^ ": the graph's equity is the venue's")
+      venue_equity equity;
+    Alcotest.(check (list (float 0.0)))
+      (what ^ ": the quantities are the venue's")
+      [ 100.0; 50.0; 200.0 ] qty
+  in
+  let%bind raced = race_case ~read_first:true in
+  check "the read ahead of the updates" raced;
+  let%map normal = race_case ~read_first:false in
+  check "the updates ahead of the read" normal
+
+(* The same race over partial fills. AAPL +10 rests as a limit at 99; the
+   venue reports 4 filled (position 4) and the manager applies it: cash
+   down 396. A read then carries the rest -- position 10, cash down 990 --
+   before the second partial's update (6 more, position 10) arrives, which
+   moves nothing: cash is down 990, once. *)
+let test_a_partial_fill_the_read_already_holds_moves_nothing () =
+  let f = fixture () in
+  let oms = manager f in
+  let desk =
+    D.Desk.create ~graph:f.graph ~journal:f.journal
+      ~venue:(D.Desk.Reads (D.Sim_venue.read f.venue))
+      ~spec:(D.Oms.spec oms) ~on_change:ignore ~on_first_sync:ignore
+  in
+  let%bind _, o =
+    D.Oms.propose oms
+      (ticket ~kind:(D.Order.Kind.Limit (Price.of_float 99.0)) aapl D.Order.Side.Buy 10)
+  in
+  let%bind () = settle () in
+  let vo =
+    Option.value_exn
+      (D.Sim_venue.find_now f.venue o.D.Order.request.D.Order.Request.client_order_id)
+  in
+  let partial ~id ~qty ~filled ~position ~status =
+    D.Sim_venue.emit f.venue
+      {
+        D.Venue.Update.event =
+          (if String.equal status "filled" then "fill" else "partial_fill");
+        order = { vo with D.Venue.Venue_order.filled_qty = filled; status };
+        fill =
+          Some
+            {
+              D.Order.Fill.execution_id = id;
+              qty;
+              price = Price.of_float 99.0;
+              at = Time_ns.now ();
+              position_qty = Some position;
+            };
+        at = Time_ns.now ();
+      }
+  in
+  partial ~id:"p-1" ~qty:4.0 ~filled:4.0 ~position:4.0 ~status:"partially_filled";
+  let%bind () = settle () in
+  Alcotest.(check (pair (float 1e-6) (float 0.0)))
+    "the first partial is applied: 4 held, cash down 396"
+    (1_000_000.0 -. 396.0, 4.0)
+    (Notional.to_float (Graph.cash f.graph), Qty.to_float (Graph.qty f.graph aapl));
+  let account = Or_error.ok_exn (D.Sim_venue.account f.venue) in
+  let seq = D.Desk.start_read desk in
+  D.Desk.sync_with desk
+    ~account:
+      (Ok { account with D.Venue.Account.cash = Notional.of_float (1_000_000.0 -. 990.0) })
+    ~positions:
+      (Ok
+         [
+           {
+             D.Venue.Position.symbol = aapl;
+             asset_class = "us_equity";
+             qty = Qty.of_float 10.0;
+             avg_entry_price = None;
+             market_value = None;
+           };
+         ])
+    ~at:(Time_ns.now ()) ~seq;
+  partial ~id:"p-2" ~qty:6.0 ~filled:10.0 ~position:10.0 ~status:"filled";
+  let%map () = settle () in
+  Alcotest.(check (pair (float 1e-6) (float 0.0)))
+    "the read held the second partial: cash down 990, once; 10 held"
+    (1_000_000.0 -. 990.0, 10.0)
+    (Notional.to_float (Graph.cash f.graph), Qty.to_float (Graph.qty f.graph aapl));
+  Alcotest.(check string) "and the order is filled" "filled" (state f o);
+  Graph.destroy f.graph
+
 (* A REDUCTION NEAR THE DRAWDOWN CAP (Task 1.12), the switch clear: the
    strategy exp_a01_aapl owns AAPL 1,000 of the account's 1,000 at 100, with
    900,000 cash, and the equity trail's peak puts the drawdown at 0.995% under
@@ -6708,7 +6855,7 @@ let soak_price_for_drawdown s symbol ~target =
   let price = Hashtbl.find_exn s.s_marks symbol in
   price +. (((peak *. (1.0 -. target)) -. equity) /. qty)
 
-let soak_week ~r2 =
+let soak_week_in ~r2 ~dir =
   let clock = Time_source.create ~now:(soak_at 0 ~hr:14 ~min:0) () in
   let marks = Symbol.Table.create () in
   Hashtbl.set marks ~key:soak_spy ~data:500.0;
@@ -6721,7 +6868,6 @@ let soak_week ~r2 =
       ~cash:(Notional.of_float 1_000_000.0)
       ~positions:[] ()
   in
-  let dir = Filename_unix.temp_dir "ohcamel-soak-" "" in
   let path = Filename.concat dir "journal.sqlite" in
   let events = Queue.create () in
   let say line =
@@ -6840,6 +6986,18 @@ let soak_week ~r2 =
   let%bind () = soak_adjust s in
   soak_show s "Wednesday, after the adjust pass under the trip";
   Alcotest.(check string) "still tripped after the pass" "tripped" (soak_switch s);
+  (* The fills' updates arrive after the account read that already holds
+     them (the venue fills all three, then reports): none is credited twice,
+     so the drawdown never reads as recovered and dd-cap never clears. *)
+  Alcotest.(check (list string))
+    "no false clear of dd-cap while the cuts fill" []
+    (List.filter_map (Ohcamel.Alerts.history s.s_p.p_alerts) ~f:(fun e ->
+         match e.Ohcamel.Alerts.Event.kind with
+         | Ohcamel.Alerts.Event.Cleared -> Some e.Ohcamel.Alerts.Event.limit_name
+         | _ -> None));
+  Alcotest.(check bool)
+    "and the drawdown is still past dd-cap" true
+    Float.(Graph.current_drawdown s.s_p.p_graph > 0.01);
   if r2 then (
     Alcotest.(check (list (pair string (float 0.0))))
       "R2 on: soak_stop's flatten filled through the trip" [] (soak_own s "soak_stop");
@@ -6969,9 +7127,18 @@ let soak_week ~r2 =
   soak_show s "the week's end";
   D.Journal.close s.s_p.p_journal;
   Graph.destroy s.s_p.p_graph;
-  Array.iter (Sys_unix.readdir dir) ~f:(fun n -> Core_unix.unlink (Filename.concat dir n));
-  Core_unix.rmdir dir;
   return ()
+
+(* The journal's directory goes whether the week passes or fails. *)
+let soak_week ~r2 =
+  let dir = Filename_unix.temp_dir "ohcamel-soak-" "" in
+  Monitor.protect
+    (fun () -> soak_week_in ~r2 ~dir)
+    ~finally:(fun () ->
+      Array.iter (Sys_unix.readdir dir) ~f:(fun n ->
+          Core_unix.unlink (Filename.concat dir n));
+      Core_unix.rmdir dir;
+      return ())
 
 let test_a_week_with_a_gap_day_trips_cuts_flattens_and_restarts_tripped () =
   soak_week ~r2:true
@@ -7204,6 +7371,10 @@ let suites =
       ] );
     ( "reductions",
       [
+        case "a read ahead of the updates is not credited twice"
+          test_a_read_ahead_of_the_updates_is_not_credited_twice;
+        case "a partial fill the read already holds moves nothing"
+          test_a_partial_fill_the_read_already_holds_moves_nothing;
         case "a reduction near the drawdown cap passes, and a raise does not"
           test_a_reduction_near_the_drawdown_cap_passes_and_a_raise_does_not;
       ] );

@@ -600,6 +600,14 @@ let test_a_reduction's_drawdown_is_judged_at_the_mark () =
     (Gate.Verdict.passed v, names v.Gate.Verdict.created);
   let v = run ~peak:1_010_000.0 ~at_mark:true sale in
   Alcotest.(check bool) "at the mark: passes" true (Gate.Verdict.passed v);
+  Alcotest.(check (list string))
+    "and dd-cap is named as judged at the mark, in waived" [ "dd-cap" ]
+    (names v.Gate.Verdict.waived);
+  Alcotest.(check bool)
+    "with its after at the sale's price: the realised 1.089%" true
+    (match v.Gate.Verdict.waived with
+    | [ { Gate.Move.after = Some a; _ } ] -> Breach.breached a
+    | _ -> false);
   Alcotest.(check (float 1e-6))
     "equity_after is still the price's" 999_000.0
     (Notional.to_float v.Gate.Verdict.equity_after);
@@ -608,7 +616,12 @@ let test_a_reduction's_drawdown_is_judged_at_the_mark () =
     "breached already: at its price, further over" (false, [ "dd-cap" ])
     (Gate.Verdict.passed v, names v.Gate.Verdict.worsened);
   let v = run ~peak:1_020_000.0 ~at_mark:true sale in
-  Alcotest.(check bool) "at the mark: not worsened, passes" true (Gate.Verdict.passed v)
+  Alcotest.(check bool) "at the mark: not worsened, passes" true (Gate.Verdict.passed v);
+  Alcotest.(check (list string))
+    "named in waived" [ "dd-cap" ] (names v.Gate.Verdict.waived);
+  let v = run ~peak:1_010_000.0 ~at_mark:true [ fill spy (-1000.0) 100.0 ] in
+  Alcotest.(check (list string))
+    "a sale at the mark itself waives nothing" [] (names v.Gate.Verdict.waived)
 
 let suite =
   ( "gate",

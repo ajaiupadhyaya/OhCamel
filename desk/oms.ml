@@ -2024,6 +2024,15 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
         (if n - k = 1 then "" else "s")
         (if n - k = 1 then "is" else "are")
   in
+  (* Every leg shrinks the strategy's own position toward zero without
+     crossing it (Rules.shrinks_position): what the stop-flatten waiver and
+     the drawdown-at-the-mark rule below both ask. *)
+  let every_leg_shrinks =
+    List.for_all legs ~f:(fun (leg : Rebalance.Leg.t) ->
+        Rules.shrinks_position
+          ~position:(Option.value (Map.find own leg.Rebalance.Leg.symbol) ~default:0.0)
+          ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+  in
   (* A STOP'S FLATTEN (Task 1.9, round 1): the intake says the rebalance is
      one ([stop_flatten]), and it is let past the exposure limits' created
      and worsened, and past an unevaluable trip-limit's refusal of a raise in
@@ -2044,10 +2053,7 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
         with
       | Ok (Some (`Stopped, _, _, _)) -> true
       | Ok (Some (`Active, _, _, _)) | Ok None | Error _ -> false)
-    && List.for_all legs ~f:(fun (leg : Rebalance.Leg.t) ->
-        Rules.shrinks_position
-          ~position:(Option.value (Map.find own leg.Rebalance.Leg.symbol) ~default:0.0)
-          ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+    && every_leg_shrinks
   in
   (* A REDUCTION'S DRAWDOWN AT THE MARK (Task 1.12): when every leg shrinks
      the strategy's own position toward zero without crossing it, the gate
@@ -2062,10 +2068,7 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
       | Halt.State.Clear -> true
       | Halt.State.Tripped _ -> t.spec.Desk_spec.reduce_through_trip
       | Halt.State.Halted _ | Halt.State.Stopped _ -> false)
-    && List.for_all legs ~f:(fun (leg : Rebalance.Leg.t) ->
-        Rules.shrinks_position
-          ~position:(Option.value (Map.find own leg.Rebalance.Leg.symbol) ~default:0.0)
-          ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+    && every_leg_shrinks
   in
   let gate ids =
     let orders = List.map ids ~f:(fun i -> (i, by_place.(i))) in
@@ -2373,21 +2376,45 @@ let propose_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
   in
   go [] waves
 
+(* A FILL THE BOOK ALREADY HOLDS (Task 1.12, round 1). [Desk.fill_applied]
+   refuses an account read that started before a fill; it cannot refuse one
+   that started after an earlier fill and already carries LATER fills whose
+   updates have not arrived -- the venue's account can run ahead of its
+   update stream. Applied on top of that read, such a fill's cash moved
+   twice while [position_qty] put the quantity back: the equity was
+   overstated by the fill's notional for a read's round trip, which read as
+   no drawdown, cleared a firing alert and restarted its debounce, and fed
+   the gate and the governor. So a fill whose venue position the graph
+   already holds -- its quantity equal to [position_qty] or past it in the
+   fill's direction -- is in the book already and moves nothing. Keyed on
+   quantities, never on time (start_read's comment says why). A fill that
+   names no position is applied as before. Should a later fill's update ever
+   arrive before an earlier one's, the earlier one is skipped and its cash
+   waits for the read [after_fill] starts, which is the correction either
+   way: an understatement for one round trip, never a double count. *)
+let already_held ~held ~side ~position =
+  match side with
+  | Order.Side.Buy -> Float.( >= ) held (position -. Order.epsilon)
+  | Order.Side.Sell -> Float.( <= ) held (position +. Order.epsilon)
+
 let apply_to_graph t (o : Order.t) (f : Order.Fill.t) =
   let symbol = o.Order.request.Order.Request.symbol in
-  if List.mem (Graph.symbols t.graph) symbol ~equal:Symbol.equal then (
-    Graph.apply_fill t.graph
-      {
-        Fill.symbol;
-        qty =
-          Qty.of_float
-            (Order.Side.sign o.Order.request.Order.Request.side *. f.Order.Fill.qty);
-        price = f.Order.Fill.price;
-        time = f.Order.Fill.at;
-      };
-    Option.iter f.Order.Fill.position_qty ~f:(fun q ->
-        Graph.set_qty t.graph symbol (Qty.of_float q));
-    Graph.stabilize t.graph);
+  let side = o.Order.request.Order.Request.side in
+  (if List.mem (Graph.symbols t.graph) symbol ~equal:Symbol.equal then
+     let held = Qty.to_float (Graph.qty t.graph symbol) in
+     match f.Order.Fill.position_qty with
+     | Some position when already_held ~held ~side ~position -> ()
+     | position_qty ->
+         Graph.apply_fill t.graph
+           {
+             Fill.symbol;
+             qty = Qty.of_float (Order.Side.sign side *. f.Order.Fill.qty);
+             price = f.Order.Fill.price;
+             time = f.Order.Fill.at;
+           };
+         Option.iter position_qty ~f:(fun q ->
+             Graph.set_qty t.graph symbol (Qty.of_float q));
+         Graph.stabilize t.graph);
   t.after_fill ()
 
 (* An order this desk declared failed -- every lookup missed -- that the venue

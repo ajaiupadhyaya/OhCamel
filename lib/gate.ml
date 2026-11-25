@@ -97,8 +97,11 @@ module Verdict = struct
     (* What a stop's flatten is let past ([waive_exposure]): the exposure
        limits ([is_exposure]) the fills would breach or take further over,
        then the trip-limits that cannot be evaluated while the fills raise
-       gross. Empty for every other proposal, whose created, worsened and
-       unknown_trips hold them instead. *)
+       gross. And a reduction's Max_drawdown that the fills at their own
+       prices would breach or take further over but at the mark do not
+       ([reductions_at_mark]), with its after at the fills' prices. Empty for
+       every other proposal, whose created, worsened and unknown_trips hold
+       them instead. *)
     waived : Move.t list;
     gross_before : Notional.t;
     gross_after : Notional.t;
@@ -162,7 +165,8 @@ let apply (graph : Graph.t) (fills : Fill.t list) =
    A strategy whose stop has latched must be able to leave, whatever the
    other strategy holds; the breach its flatten leaves then refuses every
    raise as usual. Every other limit -- the risk statistics, the drawdown --
-   still refuses a breach it creates or worsens. An unevaluable trip-limit
+   still refuses a breach it creates or worsens (a reduction's drawdown is
+   judged at the mark, [reductions_at_mark] below, and refuses on that). An unevaluable trip-limit
    does not refuse such a flatten's raise in gross (round 1b): that raise is
    the account's, from netting, and the flatten lowers its own strategy's
    risk; the limit is reported in [waived] too. The caller decides when a proposal is such a flatten (Oms.check_rebalance:
@@ -230,32 +234,42 @@ let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
                      | None -> f));
               Some (Graph.limit_results marked))
       in
-      let moves =
-        List.mapi (List.zip_exn limits_before after_results) ~f:(fun i ((l, b), (_, a)) ->
-            let a =
-              match at_mark with
-              | Some results when is_drawdown l -> snd (List.nth_exn results i)
-              | Some _ | None -> a
-            in
+      let priced =
+        List.map2_exn limits_before after_results ~f:(fun (l, b) (_, a) ->
             { Move.limit = Limit.name l; before = b; after = a })
       in
-      let created =
-        List.filter moves ~f:(fun m -> breached m.after && not (breached m.before))
+      let moves =
+        List.mapi (List.zip_exn limits_before priced) ~f:(fun i ((l, _), m) ->
+            match at_mark with
+            | Some results when is_drawdown l ->
+                { m with Move.after = snd (List.nth_exn results i) }
+            | Some _ | None -> m)
       in
-      let worsened =
-        List.filter moves ~f:(fun m ->
-            match (m.before, m.after) with
-            | Some b, Some a ->
-                Breach.breached b && Breach.breached a
-                && Float.( > ) (Breach.excess a) (Breach.excess b +. epsilon)
-            | _ -> false)
+      let is_created (m : Move.t) = breached m.after && not (breached m.before) in
+      let is_worsened (m : Move.t) =
+        match (m.before, m.after) with
+        | Some b, Some a ->
+            Breach.breached b && Breach.breached a
+            && Float.( > ) (Breach.excess a) (Breach.excess b +. epsilon)
+        | _ -> false
+      in
+      let created = List.filter moves ~f:is_created in
+      let worsened = List.filter moves ~f:is_worsened in
+      (* A drawdown let past only because it was judged at the mark: reported
+         in [waived] with its after AT THE FILLS' PRICES -- the realised,
+         post-cost drawdown -- so the journal's verdict does not hide it. *)
+      let judged_at_mark =
+        List.filter_map (List.zip_exn priced moves) ~f:(fun (p, m) ->
+            Option.some_if
+              ((is_created p || is_worsened p) && not (is_created m || is_worsened m))
+              p)
       in
       let waivable (m : Move.t) =
         waive_exposure
         && List.exists limits_before ~f:(fun (l, _) ->
             String.equal (Limit.name l) m.Move.limit && is_exposure (Limit.kind l))
       in
-      let waived = List.filter (created @ worsened) ~f:waivable in
+      let waived = List.filter (created @ worsened) ~f:waivable @ judged_at_mark in
       let created = List.filter created ~f:(fun m -> not (waivable m)) in
       let worsened = List.filter worsened ~f:(fun m -> not (waivable m)) in
       let cleared =
