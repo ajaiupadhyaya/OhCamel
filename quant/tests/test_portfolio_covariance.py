@@ -166,3 +166,69 @@ def test_zero_variance_asset_rejected(rets):
     for m in cv.ESTIMATORS:
         with pytest.raises(ValueError, match="zero return variance"):
             cv.estimate_covariance(bad, m)
+
+
+# ------------------------------------------------------------------ completion task 4.7: LW (2020) nonlinear shrinkage
+def _spread_truth(n: int, seed: int) -> np.ndarray:
+    """Ledoit & Wolf's (2020, section 5) baseline population: 20% of the eigenvalues equal 1, 40% equal 3 and 40%
+    equal 10, in a random orthogonal basis -- a dispersed spectrum, where shrinking each eigenvalue by its own
+    amount should beat one linear intensity."""
+    rng = np.random.default_rng(seed)
+    q, _ = np.linalg.qr(rng.standard_normal((n, n)))
+    k1, k2 = n // 5, 2 * n // 5
+    return (q * np.r_[np.ones(k1), np.full(k2, 3.0), np.full(n - k1 - k2, 10.0)]) @ q.T
+
+
+def test_nonlinear_shrinkage_beats_linear_ledoit_wolf_on_a_simulated_n50_t100_panel():
+    """Ledoit & Wolf (2020): on N = 50, T = 100 Gaussian draws from a known Sigma, the analytical nonlinear
+    shrinkage has a mean squared Frobenius loss ||S_hat - Sigma||_F^2 to the truth (the paper's loss) at least 5%
+    below linear LW (2004)'s over 20 seeded replications, and it wins in at least 18 of the 20 (a margin, not a
+    coin flip; at these seeds it is 14% lower and wins all 20)."""
+    n, t = 50, 100
+    sigma = _spread_truth(n, 7)
+    chol = np.linalg.cholesky(sigma)
+    rng = np.random.default_rng(2020)
+    nl_loss, lw_loss = [], []
+    for _ in range(20):
+        x = rng.standard_normal((t, n)) @ chol.T
+        nl = cv.nonlinear_shrinkage(pd.DataFrame(x)).to_numpy() / cv.TRADING_DAYS   # annualised -> per period
+        lw = LedoitWolf().fit(x).covariance_
+        nl_loss.append(np.linalg.norm(nl - sigma) ** 2)
+        lw_loss.append(np.linalg.norm(lw - sigma) ** 2)
+    nl_loss, lw_loss = np.array(nl_loss), np.array(lw_loss)
+    assert nl_loss.mean() < 0.95 * lw_loss.mean()
+    assert (nl_loss < lw_loss).sum() >= 18
+
+
+def test_nonlinear_shrinkage_keeps_the_eigenvectors_and_the_labels_and_is_positive_definite(rets):
+    r = rets.tail(252)
+    nl = cv.nonlinear_shrinkage(r)
+    assert list(nl.index) == list(r.columns) == list(nl.columns)
+    np.testing.assert_allclose(nl.to_numpy(), nl.to_numpy().T)
+    assert np.linalg.eigvalsh(nl.to_numpy()).min() > 0
+    # same eigenvectors as the (T-1)-normalised sample covariance: S and Sigma_NL commute
+    s = np.cov(r.to_numpy(), rowvar=False) * cv.TRADING_DAYS
+    m = nl.to_numpy()
+    assert np.linalg.norm(s @ m - m @ s) < 1e-8 * np.linalg.norm(s) * np.linalg.norm(m)
+
+
+def test_nonlinear_shrinkage_handles_more_assets_than_observations():
+    """N > T: the sample covariance has N - T + 1 zero eigenvalues (after demeaning); the paper's (C.4)-(C.8) give
+    them one common positive shrunk value, so the estimate is still positive definite."""
+    rng = np.random.default_rng(11)
+    x = rng.standard_normal((40, 60)) * 0.01
+    nl = cv.nonlinear_shrinkage(pd.DataFrame(x)).to_numpy()
+    assert np.isfinite(nl).all() and np.linalg.eigvalsh(nl).min() > 0
+    # the sample covariance's 21-dimensional null space (60 - 39) is an eigenspace of the estimate: one shared value
+    xc = x - x.mean(axis=0)
+    w, u = np.linalg.eigh(xc.T @ xc)
+    u0 = u[:, :21]
+    assert w[20] < 1e-12 * w[-1] < w[21]
+    block = u0.T @ nl @ u0
+    np.testing.assert_allclose(block, block[0, 0] * np.eye(21), atol=1e-10 * abs(block[0, 0]))
+
+
+def test_nonlinear_shrinkage_is_offered_by_the_dispatcher(rets):
+    est = cv.estimate_covariance(rets.tail(252), "nonlinear_shrinkage")
+    assert est.method == "nonlinear_shrinkage" and "Ledoit & Wolf (2020)" in est.reference
+    pd.testing.assert_frame_equal(est.cov, cv.nonlinear_shrinkage(rets.tail(252)))

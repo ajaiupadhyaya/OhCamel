@@ -253,6 +253,24 @@ def test_the_surface_league_runs_weekdays_at_2110_class_m_heavy_after_the_surfac
         assert {(f.hour, f.minute) for f in fires} == {(21, 10)}
 
 
+def test_the_beta_league_runs_saturdays_at_0830_class_m_heavy():
+    """Completion task 4.7: beta.league, Saturday 08:30 New York, class M, heavy, weekly priority and max age."""
+    from zoneinfo import ZoneInfo
+
+    from ohcamel_quant.jobs.cron import fire_times, parse_cron
+
+    ny = ZoneInfo("America/New_York")
+    s = load_schedules(DEFAULT_PATH)
+    (e,) = [x for x in s.entries if x.kind == "beta.league"]
+    assert (e.cron, e.mem_class, e.heavy, e.priority) == ("30 8 * * 6", "M", True, 2)
+    spec = REGISTRY["beta.league"]
+    assert (spec.mem_class, spec.heavy, spec.public) == ("M", True, False)
+    assert s.max_age_s["beta.league"] == 204 * 3600
+    for monday in (datetime(2026, 1, 5).date(), datetime(2026, 7, 6).date()):
+        fires = [t.astimezone(ny) for i in range(7) for t in fire_times(parse_cron(e.cron), monday + timedelta(days=i))]
+        assert [(f.weekday(), f.hour, f.minute) for f in fires] == [(5, 8, 30)]
+
+
 def test_no_warehouse_writer_is_scheduled_inside_the_nightly_export_window():
     """Task 3.3 fix round 1: the warehouse export opens it read-only at the backup timer's time (06:30 UTC) and
     holds the shared lock for up to EXPORT_BUDGET_MIN; a writer that starts then waits 30 s and fails its keys.

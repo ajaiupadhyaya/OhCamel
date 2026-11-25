@@ -11,6 +11,7 @@ LANE_M_KINDS = {
     "risk.mc_intraday": ("S", False),
     "vol.forecast_league": ("M", True),
     "cov.league": ("M", True),
+    "beta.league": ("M", True),
     "farm.sweep": ("L", True),
     "vol.surface_history": ("M", True),
     "vol.surface_league": ("M", True),

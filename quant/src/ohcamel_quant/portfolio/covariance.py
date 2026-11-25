@@ -23,10 +23,17 @@ Estimators
 * ``mp_denoise``  -- Marcenko-Pastur eigenvalue clipping, constant-residual
   method (Lopez de Prado 2020, *Machine Learning for Asset Managers*, ch. 2;
   Laloux, Cizeau, Bouchaud & Potters 1999).
+* ``nonlinear_shrinkage`` -- Ledoit & Wolf (2020), "Analytical nonlinear shrinkage
+  of large-dimensional covariance matrices", *Annals of Statistics* 48(5): each
+  sample eigenvalue gets its own shrunk value from a kernel estimate of the
+  limiting spectral density and its Hilbert transform (completion task 4.7).
+  Offered by :func:`estimate_covariance` and the covariance league; it is not in
+  :data:`ESTIMATORS`, the optimizer's menu, which this task did not extend.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -49,6 +56,8 @@ REFERENCES: dict[str, str] = {
            "estimation', IEEE TSP 58(10)",
     "mp_denoise": "Lopez de Prado (2020), Machine Learning for Asset Managers, ch. 2 "
                   "(constant-residual eigenvalue method); Marcenko & Pastur (1967)",
+    "nonlinear_shrinkage": "Ledoit & Wolf (2020), 'Analytical nonlinear shrinkage of large-dimensional "
+                           "covariance matrices', Annals of Statistics 48(5)",
 }
 
 
@@ -334,6 +343,83 @@ def mp_denoise(returns: pd.DataFrame, bandwidth: float = 0.01) -> CovEstimate:
     return est
 
 
+# ------------------------------------------------------------------ Ledoit-Wolf (2020)
+def _lw2020_shrunk_eigenvalues(lam: np.ndarray, p: int, n: int) -> np.ndarray:
+    """The shrunk eigenvalues ``d~`` of Ledoit & Wolf (2020) for ascending sample eigenvalues ``lam`` (length p)
+    of ``S = X'X / n`` with effective sample size ``n``.
+
+    Only the ``min(p, n)`` largest eigenvalues carry information (when ``p > n`` the rest are zero). With the
+    Epanechnikov kernel ``K(x) = 3/(4 sqrt 5) (1 - x^2/5)^+`` and the locally adaptive bandwidth
+    ``h_j = lam_j h``, ``h = n^(-1/3)`` (eq. 4.9):
+
+    * density ``f~(lam_i) = (1/m) sum_j K((lam_i - lam_j)/h_j) / h_j`` (eq. 4.7);
+    * its Hilbert transform ``Hf~(lam_i) = (1/m) sum_j HK((lam_i - lam_j)/h_j) / h_j`` with
+      ``HK(x) = -3x/(10 pi) + 3/(4 sqrt 5 pi) (1 - x^2/5) log|(sqrt 5 - x)/(sqrt 5 + x)|`` (eq. 4.8);
+    * ``p <= n``: ``d~_i = lam_i / [(pi c lam_i f~)^2 + (1 - c - pi c lam_i Hf~)^2]``, ``c = p/n`` (eq. 4.3);
+    * ``p > n``: the n nonzero eigenvalues get ``d~_i = lam_i / [pi^2 lam_i^2 (f~^2 + Hf~^2)]`` (eq. C.4) and
+      the ``p - n`` null ones share ``d~_0 = 1 / [pi (p - n)/n Hf~(0)]`` (eq. C.5) with
+      ``Hf~(0) = (1/pi) [3/(10 h^2) + 3/(4 sqrt 5 h) (1 - 1/(5 h^2)) log((1 + sqrt 5 h)/(1 - sqrt 5 h))]
+      mean(1/lam)`` (eq. C.8).
+
+    This is the paper's published algorithm (its Matlab code ``analytical_shrinkage.m``) line for line.
+    """
+    m = min(p, n)
+    lam = lam[p - m:]
+    h = n ** (-1.0 / 3.0)                                 # eq. (4.9)
+    big_h = h * lam[None, :]                              # h_j = h lam_j, by column
+    x = (lam[:, None] - lam[None, :]) / big_h
+    r5 = math.sqrt(5.0)
+    ftilde = (3.0 / 4.0 / r5) * np.mean(np.maximum(1.0 - x ** 2 / 5.0, 0.0) / big_h, axis=1)   # eq. (4.7)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hk = (-3.0 / 10.0 / math.pi) * x + (3.0 / 4.0 / r5 / math.pi) * (1.0 - x ** 2 / 5.0) \
+            * np.log(np.abs((r5 - x) / (r5 + x)))
+    edge = np.abs(x) == r5
+    hk[edge] = (-3.0 / 10.0 / math.pi) * x[edge]          # the log term's limit at |x| = sqrt 5 is 0
+    hftilde = np.mean(hk / big_h, axis=1)                 # eq. (4.8)
+    if p <= n:
+        c = p / n
+        return lam / ((math.pi * c * lam * ftilde) ** 2 + (1.0 - c - math.pi * c * lam * hftilde) ** 2)  # (4.3)
+    hf0 = (1.0 / math.pi) * (3.0 / 10.0 / h ** 2 + 3.0 / 4.0 / r5 / h * (1.0 - 1.0 / 5.0 / h ** 2)
+                             * math.log((1.0 + r5 * h) / (1.0 - r5 * h))) * float(np.mean(1.0 / lam))  # (C.8)
+    d0 = 1.0 / (math.pi * (p - n) / n * hf0)              # eq. (C.5)
+    d1 = lam / (math.pi ** 2 * lam ** 2 * (ftilde ** 2 + hftilde ** 2))                  # eq. (C.4)
+    return np.concatenate([np.full(p - n, d0), d1])
+
+
+def nonlinear_shrinkage(returns: pd.DataFrame) -> pd.DataFrame:
+    """Ledoit & Wolf (2020) analytical nonlinear shrinkage, ANNUALIZED (x252) like every estimator here.
+
+    Demean the returns, ``n = T - 1`` (the effective sample size after demeaning, the paper's ``k = 1``), take
+    ``S = X_c' X_c / n = U diag(lam) U'`` and return ``U diag(d~) U' x 252`` with ``d~`` from
+    :func:`_lw2020_shrunk_eigenvalues` (eqs. 4.3, 4.7-4.9; C.4, C.5, C.8 for ``N > n``). The sample eigenvectors
+    are kept: only the eigenvalues are shrunk, each by its own amount. ``N > T`` is allowed (the paper's case
+    ``p > n``): the zero eigenvalues of ``S`` share one positive value, so the estimate is positive definite.
+    The paper's kernel (Epanechnikov) and bandwidth (``h = n^(-1/3)``) are used, not tuned.
+    """
+    if not isinstance(returns, pd.DataFrame):
+        raise TypeError("returns must be a DataFrame (T x N)")
+    x = returns.to_numpy(dtype=float)
+    if not np.isfinite(x).all():
+        raise ValueError("returns contain NaN/inf; drop or align sessions first")
+    t, p = x.shape
+    if p < 2 or t < 3:
+        raise ValueError("nonlinear shrinkage needs at least two assets and three observations")
+    names = [str(c) for c in returns.columns]
+    n = t - 1
+    if p > n and n <= 5 ** 1.5:
+        # eq. (C.8)'s log((1 + sqrt5 h)/(1 - sqrt5 h)) needs sqrt5 h < 1, h = n^(-1/3): n > 5^(3/2) ~ 11.2
+        raise ValueError(f"with more assets than observations nonlinear shrinkage needs T >= 13; have {t}")
+    xc = x - x.mean(axis=0)
+    s = xc.T @ xc / n
+    lam, u = np.linalg.eigh(0.5 * (s + s.T))              # ascending
+    if p > n:
+        lam[: p - n] = 0.0                                # exact zeros of the demeaned sample's null space
+    if lam[max(0, p - n):].min() <= 0:
+        raise ValueError("a nonzero sample eigenvalue is not positive (a constant or duplicated column)")
+    d = _lw2020_shrunk_eigenvalues(lam, p, n)
+    return _frame((u * d) @ u.T * TRADING_DAYS, names)
+
+
 def estimate_covariance(returns: pd.DataFrame, method: str = "lw_constant_corr",
                         ewma_lambda: float = 0.94, mp_bandwidth: float = 0.01) -> CovEstimate:
     """Dispatch to one of :data:`ESTIMATORS`."""
@@ -349,4 +435,9 @@ def estimate_covariance(returns: pd.DataFrame, method: str = "lw_constant_corr",
         return oas(returns)
     if method == "mp_denoise":
         return mp_denoise(returns, mp_bandwidth)
-    raise ValueError(f"unknown covariance estimator {method!r}; choose from {', '.join(ESTIMATORS)}")
+    if method == "nonlinear_shrinkage":
+        _as_array(returns)
+        return CovEstimate("nonlinear_shrinkage", nonlinear_shrinkage(returns),
+                           params={"kernel": "Epanechnikov", "bandwidth": "T^(-1/3)"})
+    raise ValueError(f"unknown covariance estimator {method!r}; choose from "
+                     f"{', '.join((*ESTIMATORS, 'nonlinear_shrinkage'))}")

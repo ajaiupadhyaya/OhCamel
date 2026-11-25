@@ -487,3 +487,19 @@ def test_a_materially_negative_variance_raises():
         overlay.forecast_vol({"A": 1.0, "B": -1.0}, cov, None)
     near = pd.DataFrame([[1.0, 1.0 + 1e-15], [1.0 + 1e-15, 1.0]], index=["A", "B"], columns=["A", "B"])
     assert overlay.forecast_vol({"A": 1.0, "B": -1.0}, near, None) == 0.0
+
+
+def test_p3_entrants_from_task_4_7_are_scored_but_never_drive_the_book(world, db, tmp_path):
+    """Completion task 4.7 added nonlinear shrinkage and DCC to the league. The overlay keeps choosing among the
+    seven estimators it was built on: the best-ranked of those, so a new entrant at rank 1 changes nothing here."""
+    sig = _signals(tmp_path)
+    league = pd.DataFrame([
+        {"universe": "site_etfs", "estimator": "dcc", "realized_vol": 0.10, "rank": 1},
+        {"universe": "site_etfs", "estimator": "nonlinear_shrinkage", "realized_vol": 0.105, "rank": 2},
+        {"universe": "site_etfs", "estimator": "oas", "realized_vol": 0.11, "rank": 3},
+        {"universe": "site_etfs", "estimator": "sample", "realized_vol": 0.12, "rank": 4},
+    ])
+    aid, _ = publish_artifact(db, tmp_path / "artifacts", "cov.league", {"league": league})
+    _run(world, sig)
+    inp = _overlay_doc(sig, 1)["inputs"]
+    assert inp["cov_estimator"] == "oas" and inp["cov_artifact"] == aid

@@ -40,7 +40,8 @@ log = logging.getLogger("ohcamel_quant.machine.graph")
 # kind -> (code, name): every artifact kind the clock publishes (the prototype's list)
 PROD: dict[str, tuple[str, str]] = {
     "risk.mc_atlas": ("P1", "Risk atlas"), "vol.forecast_league": ("P2", "Vol forecast league"),
-    "cov.league": ("P3", "Covariance league"), "farm.sweep": ("P4", "Strategy farm"),
+    "cov.league": ("P3", "Covariance league"), "beta.league": ("P3B", "Beta league"),
+    "farm.sweep": ("P4", "Strategy farm"),
     "models.xs_lgbm": ("P5", "Cross-section model"), "regime.hmm": ("P6", "Regime model"),
     "vol.surface_history": ("P7", "Vol surface history"), "kronos.shadow": ("K", "Kronos shadow"),
     "vol.surface_league": ("P7L", "Vol surface league"),

@@ -43,3 +43,22 @@ def test_variance_test_is_scale_exact_and_antisymmetric(etf_returns):
     v = variance_test(a, etf_returns["TLT"].dropna().tail(500).to_numpy())
     assert u["stat"] == pytest.approx(-v["stat"]) and u["pvalue"] == pytest.approx(v["pvalue"])
     assert set(ESTIMATORS) >= {"sample", "ewma", "lw_constant_corr", "lw_identity", "oas", "mp_denoise", "pca_factor"}
+
+
+def test_the_task_4_7_entrants_are_in_the_league_and_fit_on_the_trailing_window_only(etf_returns):
+    """Completion task 4.7: nonlinear shrinkage (LW 2020) and DCC (Engle 2002) are league estimators; DCC's GMV input
+    is its mean forecast over the holding period, fitted on the trailing window and nothing after it."""
+    from ohcamel_quant.models.cov_league import estimator_cov
+    from ohcamel_quant.portfolio.covariance import nonlinear_shrinkage
+    from ohcamel_quant.risk import dcc
+
+    assert {"nonlinear_shrinkage", "dcc"} <= set(ESTIMATORS)
+    r = etf_returns.dropna().tail(252 + 42)
+    daily, gross = league_returns(r, estimators=("sample", "nonlinear_shrinkage", "dcc"), est_window=252, hold=21,
+                                  eval_sessions=42)
+    assert list(daily.columns) == ["sample", "nonlinear_shrinkage", "dcc"] and len(daily) == 42
+    win = r.iloc[:252]
+    w = gmv_weights(dcc.fit(win).mean_forecast(21))
+    np.testing.assert_allclose(daily["dcc"].iloc[:21].to_numpy(), r.iloc[252:273].to_numpy() @ w, rtol=1e-8)
+    np.testing.assert_allclose(estimator_cov("nonlinear_shrinkage", win), nonlinear_shrinkage(win).to_numpy())
+    assert np.linalg.eigvalsh(estimator_cov("dcc", win)).min() > 0

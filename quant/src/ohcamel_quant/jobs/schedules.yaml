@@ -31,6 +31,7 @@ max_age:
   risk.mc_intraday: 35m
   vol.forecast_league: 78h
   cov.league: 204h
+  beta.league: 204h
   farm.sweep: 78h
   vol.surface_history: 78h
   vol.surface_league: 78h
@@ -217,6 +218,16 @@ schedules:
   - name: cov-league-weekly
     cron: "0 8 * * 6"
     kind: cov.league
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Completion task 4.7: the beta league (sectors against SPY), weekly, half an hour after the covariance league
+  # (heavy jobs run one at a time, so it waits for cov.league to finish).
+  - name: beta-league-weekly
+    cron: "30 8 * * 6"
+    kind: beta.league
     params: {}
     priority: 2
     mem_class: M

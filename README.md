@@ -24,7 +24,7 @@ XBRL.
 
 | | What it is | Where |
 |---|---|---|
-| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->2575<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, thirteen Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
+| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->2602<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, thirteen Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
 | **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental: a tick recomputes only what depends on it. It runs a paper desk behind a password on the live host | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
 
 ---
@@ -58,7 +58,7 @@ gate. Nothing any product computes reaches the desk except as a signal (see *Sig
 |---|---|---|---|---|
 | P1 | **Risk atlas.** 1M-path Monte Carlo VaR/ES per reference book, by FHS (GJR-GARCH-t) and a Student-t copula, at 1D and 10D, with the Euler split of ES. Universe members are measured by FHS alone. Books are re-measured every 15 minutes in session | nightly 20:00; intraday | DESCRIPTIVE ONLY | `/risk`, `/`, `/deck` |
 | P2 | **Volatility forecast league.** GARCH, GJR, EGARCH, HAR-RV (minute bars) and EWMA, scored out of sample by QLIKE and MSE, with Diebold–Mariano tests and a model confidence set | nightly 21:30 | DESCRIPTIVE ONLY | `/options` |
-| P3 | **Covariance league.** Seven estimators, ranked by the realized volatility of their minimum-variance portfolio, with a HAC test against the sample covariance | Sat 08:00 | DESCRIPTIVE ONLY | `/portfolio` |
+| P3 | **Covariance league.** Nine estimators (Ledoit–Wolf nonlinear shrinkage and DCC-GJR-GARCH-t among them), ranked by the realized volatility of their minimum-variance portfolio, with a HAC test against the sample covariance. A companion **beta league** scores rolling OLS betas (60, 120, 250) against a Kalman random-walk beta on the next 21 sessions' realised beta, sectors against SPY, with Diebold–Mariano (Newey–West lag 40) | Sat 08:00; beta Sat 08:30 | DESCRIPTIVE ONLY | `/portfolio`; beta: artifact only |
 | P4 | **Strategy farm.** Every Strategy Lab strategy × universe × a grid of up to 256 parameter sets, selected walk-forward, scored at gross 1 and filled at the next open as the desk trades, with DSR counting every trial the farm has ever run (an append-only trial ledger), PSR, CSCV PBO, SPA, bootstrap, regimes and costs at 0/5/15/30 bps | nightly 23:00, 90-min budget | PASS / FAIL per row | `/research` |
 | P5 | **EXP-Q01.** A LightGBM ETF ranker against a linear composite, with purged walk-forward CV; the 2022→ holdout is evaluated once | monthly, 1st 22:30 | PASS / FAIL, always advisory | `/research` |
 | P6 | **EXP-Q02.** A Gaussian HMM on four weekly features. Does the filtered high-volatility probability beat EWMA for next-month SPY variance? | Sat 09:00 | PASS / FAIL, descriptive | `/macro` |

@@ -174,6 +174,8 @@ register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True, draws_ran
 register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False, draws_random=True))
 register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True, draws_random=True))
 register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True, burstable=True))
+# Completion task 4.7: rolling OLS betas against a Kalman beta, scored on the next 21 sessions' realised beta.
+register(KindSpec("beta.league", f"{_P}.beta_league:run", "M", heavy=True))
 # farm.sweep's budget is products/farm.py's BUDGET_MINUTES (90; this module must not import pandas, so the number
 # is restated and tests/test_jobs_worker.py holds the two equal).
 register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=True, budget_s=5400,

@@ -100,6 +100,7 @@ the next runs):
 | `vol.forecast_league` | weekdays 21:30 | M heavy | P2 |
 | `farm.sweep` | weekdays 23:00, 90-min budget | L heavy | P4 |
 | `cov.league` | Sat 08:00 | M heavy | P3 |
+| `beta.league` | Sat 08:30 | M heavy | P3 companion: rolling OLS vs Kalman beta, sectors vs SPY (artifact only, no page yet) |
 | `regime.hmm` | Sat 09:00 | M heavy | P6 (EXP-Q02) |
 | `models.xs_lgbm` | 1st of the month 22:30 | M heavy | P5 (EXP-Q01) |
 | `ops.data_integrity` | weekdays 19:15 | S | Watch: unadjusted splits, bad prints, stale series, adjustment drift (detects, never repairs) |
@@ -115,7 +116,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2575<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2602<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.

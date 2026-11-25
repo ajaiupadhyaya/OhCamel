@@ -8,6 +8,13 @@ covariance best for this use (Ledoit & Wolf 2004; Engle & Colacito 2006's
 criterion). The PCA factor model keeps the ``k`` principal components of the
 correlation matrix above the Marchenko-Pastur edge (at least one) and puts
 specific variances on the diagonal.
+
+Completion task 4.7 added two entrants: ``nonlinear_shrinkage`` (Ledoit & Wolf
+2020, analytical; portfolio/covariance.py) and ``dcc`` (Engle 2002 DCC(1,1) with
+GJR-GARCH-t marginals; risk/dcc.py). DCC is a conditional model, so its input to
+the GMV portfolio is its average forecast covariance over the holding period,
+``(1/H) sum_{h=1}^{H} H_{T+h}`` with ``H = hold``, fitted on the same trailing
+window as every other estimator.
 """
 
 from __future__ import annotations
@@ -19,9 +26,10 @@ import pandas as pd
 from scipy import stats
 
 from ..factors.hac import newey_west_lrv, nw_lag_rule
-from ..portfolio.covariance import estimate_covariance
+from ..portfolio.covariance import TRADING_DAYS, estimate_covariance
 
-ESTIMATORS = ("sample", "ewma", "lw_constant_corr", "lw_identity", "oas", "mp_denoise", "pca_factor")
+ESTIMATORS = ("sample", "ewma", "lw_constant_corr", "lw_identity", "oas", "mp_denoise", "pca_factor",
+              "nonlinear_shrinkage", "dcc")
 EST_WINDOW = 252
 HOLD = 21
 EVAL_SESSIONS = 2520
@@ -48,9 +56,13 @@ def gmv_weights(cov: np.ndarray) -> np.ndarray:
     return w / w.sum()
 
 
-def estimator_cov(name: str, window: pd.DataFrame) -> np.ndarray:
+def estimator_cov(name: str, window: pd.DataFrame, hold: int = HOLD) -> np.ndarray:
     if name == "pca_factor":
         return pca_factor_cov(window.to_numpy(dtype=float))
+    if name == "dcc":
+        from ..risk import dcc
+
+        return dcc.fit(window).mean_forecast(hold) * TRADING_DAYS
     return estimate_covariance(window, name).cov.to_numpy(dtype=float)
 
 
@@ -66,7 +78,7 @@ def league_returns(returns: pd.DataFrame, *, estimators: tuple[str, ...] = ESTIM
         win, nxt = r.iloc[s - est_window:s], r.iloc[s:s + hold].to_numpy(dtype=float)
         row = {"date": r.index[s]}
         for e in estimators:
-            w = gmv_weights(estimator_cov(e, win))
+            w = gmv_weights(estimator_cov(e, win, hold))
             out[e].append(nxt @ w)
             row[e] = float(np.abs(w).sum())
         gross.append(row)

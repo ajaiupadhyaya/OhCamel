@@ -8,8 +8,8 @@ for the desk, from volatility targeting on the roster's combined targets.
   document (highest ``sequence``), summed by symbol -- the research service's
   slugs included. A malformed file is skipped and named in the notes. No
   documents yet: ``w`` is empty, ``sigma_hat`` 0, the scale 1, with a note.
-* ``Sigma`` (:func:`covariance`): the P3 league's (``cov.league``) rank-1
-  estimator for the ``site_etfs`` universe in its newest artifact, fitted on the
+* ``Sigma`` (:func:`covariance`): the P3 league's (``cov.league``) best-ranked
+  estimator among :data:`OVERLAY_ESTIMATORS` for the ``site_etfs`` universe in its newest artifact, fitted on the
   last 252 sessions of the warehouse's daily returns for ``w``'s names (the
   farm's ``prices(warehouse_first=True)`` path); ``lw_constant_corr``
   (Ledoit-Wolf) when there is no artifact or no such row. ANNUALISED: every
@@ -74,6 +74,10 @@ REGIME_KIND = "regime.hmm"
 MC_KINDS = ("risk.mc_atlas", "risk.mc_intraday")
 COV_UNIVERSE = "site_etfs"
 FALLBACK_ESTIMATOR = "lw_constant_corr"
+#: The league estimators the overlay may use: the seven it was built on. Entrants added to the league later
+#: (completion task 4.7: nonlinear_shrinkage, dcc) are scored there but never drive the book unless the owner
+#: adds them here; the overlay takes the best-ranked of these (the old rank-1 rule, unchanged on these seven).
+OVERLAY_ESTIMATORS = ("sample", "ewma", "lw_constant_corr", "lw_identity", "oas", "mp_denoise", "pca_factor")
 LOOKBACK = 252
 MIN_SESSIONS = 30   # below this the covariance and the EWMA seed are noise: refuse, nothing written
 EWMA_LAMBDA = 0.94
@@ -241,10 +245,17 @@ def _cov_winner(now: datetime, notes: list[str]) -> tuple[str, str]:
         return FALLBACK_ESTIMATOR, "none"
     manifest, path = got
     lg = read_table(path, "league")
-    hit = pd.DataFrame() if lg is None else lg[(lg["universe"] == COV_UNIVERSE) & (lg["rank"] == 1)]
-    if hit.empty:
+    rows = pd.DataFrame() if lg is None else lg[(lg["universe"] == COV_UNIVERSE)
+                                                 & lg["estimator"].isin(OVERLAY_ESTIMATORS)]
+    if rows.empty:
         notes.append(f"{COV_KIND} {manifest['id']} has no rank-1 row for {COV_UNIVERSE}: {FALLBACK_ESTIMATOR}")
         return FALLBACK_ESTIMATOR, str(manifest["id"])
+    hit = rows.sort_values("rank", kind="mergesort")
+    top = lg[(lg["universe"] == COV_UNIVERSE) & (lg["rank"] == 1)]
+    if not top.empty and str(top.iloc[0]["estimator"]) not in OVERLAY_ESTIMATORS:
+        notes.append(f"{COV_KIND} {manifest['id']}: {top.iloc[0]['estimator']} ranks first for {COV_UNIVERSE} but "
+                     f"is a league entrant only; the overlay uses the best of its own estimators, "
+                     f"{hit.iloc[0]['estimator']}")
     return str(hit.iloc[0]["estimator"]), str(manifest["id"])
 
 
