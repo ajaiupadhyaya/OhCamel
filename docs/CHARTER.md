@@ -61,7 +61,8 @@ battery and the gates are applied literally:
 | Regime stress across the 7 regimes of `research/config/regimes.yaml` | positive in ≥ 3; fewer than 3 with out-of-sample data is INSUFFICIENT DATA, not FAIL |
 | Cost sensitivity at 0 / 5 / 15 / 30 bps | reported at every level |
 
-The lines are the owner's ruling R3 (2026-11-23): a strategy must beat its own
+The lines are ruling R3 of the completion spec (2026-11-23), the spec's
+default, which awaits the owner's approval: a strategy must beat its own
 universe held, at 0.95 -- a Sharpe ratio judged against zero passed a
 long-or-flat SPY rule in a bull market. A gate that cannot be computed fails.
 A deflated Sharpe needs at least two trials. Each battery holds these numbers

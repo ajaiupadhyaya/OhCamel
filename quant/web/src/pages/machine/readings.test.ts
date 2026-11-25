@@ -589,6 +589,21 @@ describe("reading: the book, its limits and kill switch", () => {
     expect(refsOf(r)).toEqual(expect.arrayContaining(["lim:aapl-cap", "lim:dd-cap", "kill", "p:signals.overlay"]));
   });
 
+  it("labels a draft roster on the book and on each strategy, and only while the payload says it is one", () => {
+    const fx = clone();
+    nodeOf(fx, "book").m.roster_draft = "INC-02";
+    for (const n of fx.nodes) if (n.k === "strategy") n.m.draft = "INC-02";
+    const book = text(fx, "book");
+    expect(book).toContain("The roster shown is INC-02's draft, awaiting the owner's approval; it is not what the paper book trades.");
+    expect(book).toContain("2 strategies would send it signals");
+    const st = text(fx, "st:exp_a01_spy");
+    expect(st).toContain("One of the 2 strategies of INC-02's draft roster, awaiting the owner's approval and not what the paper book trades; it would have 2.5% of capital.");
+    const allowed = allowedNumbers(fx);
+    for (const t of [book, st]) for (const n of numbersIn(t)) expect(allowed, n).toContain(n);
+    expect(text(FIXTURE, "book")).not.toMatch(/draft/);
+    expect(text(FIXTURE, "st:exp_a01_spy")).toContain("One of the desk's 2 strategies");
+  });
+
   it("says the live book only from a summary's time, and nothing of limits with neither a summary nor its reason", () => {
     const fx = clone();
     delete nodeOf(fx, "book").m.summary_asof;

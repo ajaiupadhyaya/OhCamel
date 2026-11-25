@@ -1,7 +1,9 @@
-# INC-01's roster: the one list every producer reads (signals.daily, signals.overlay,
-# desk.report). It agrees row for row with the signals block of book.example.sexp --
-# slug, capital_fraction and symbols -- and with its incubation_cap and vol_target;
-# research/tests/test_experiments_present.py holds the two to it.
+# INC-01's roster, kept as it traded. INC-01 closed at 2026-11-05 (its Amendment A1); no
+# producer reads this file any more -- signals.daily, signals.overlay and desk.report read
+# research/experiments/INC-02/roster.yaml. While INC-01 ran, this was the one list every
+# producer read, and it agreed row for row with the signals block of book.example.sexp;
+# the example book now follows INC-02's draft roster, and
+# research/tests/test_experiments_present.py holds only this file's 23 rows as they traded.
 #
 # Equal fractions: 23 x 0.025 = 0.575, under incubation_cap 0.60; the other 0.025 is
 # EXP-Q01's long-short quintile portfolio (q01_ls_quintile) when it joins (plan Task 34),

@@ -37,7 +37,7 @@ from ..jobs.artifacts import TABLE_NAME, inside
 from ..jobs.cron import next_due
 from ..jobs.db import connect, iso, parse_iso
 from ..jobs.schedules import Schedules, load_schedules, read_latest
-from ..signals.roster import load_roster
+from ..signals.roster import load_roster, roster_draft
 from ..warehouse.db import WarehouseUnavailable, open_ro
 from ..warehouse.freshness import dataset_freshness
 from .clock import NY, job_clock
@@ -254,4 +254,4 @@ def load_inputs(db: Path, settings: Settings, now: datetime) -> Inputs:
     if jobs_why:
         why = {**why, "jobs": jobs_why}
     return Inputs(world, job_clock(schedules, now.astimezone(NY).date()), load_roster(), products, fresh, readouts,
-                  order, why, tuple(repairs))
+                  order, why, tuple(repairs), roster_draft=roster_draft())

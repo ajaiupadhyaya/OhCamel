@@ -4,15 +4,16 @@ Pre-registration: `hypothesis.md` and `config.yaml`, committed alone in `2c92874
 before any line of `battery/` existed. Evidence: `manifest.exp_a01_spy.json` and
 `manifest.exp_a01_tlt.json`, written by `ohcamel-research battery run` on the battery
 at `38011f6`, seed 42, `ran_at` 2026-09-19T04:12:20Z, Python 3.13.12, and re-derived
-on 2026-11-24 (Python 3.13.18; `ran_at` as in each manifest) under the gates of the
-owner's ruling R3 (completion task 2.5; see "Re-judged under R3" below). Every number
+on 2026-11-24 (Python 3.13.18; `ran_at` as in each manifest) under the gates of
+ruling R3, the completion spec's default, which awaits the owner (completion task 2.5;
+see "Re-judged under R3" below). Every number
 below is read from those two manifests. None is computed by hand, except the
 distribution bound in the Disclosures, which is arithmetic on the pre-registration's
 own figure and is labelled as such.
 
-## Re-judged under R3 (2026-11-23)
+## Re-judged under R3 (2026-11-23; the spec's default, awaiting the owner)
 
-The charter's gates changed (owner ruling R3, `docs/CHARTER.md`): DSR and PSR at 0.95
+The charter's gates changed (spec ruling R3, awaiting the owner; `docs/CHARTER.md`): DSR and PSR at 0.95
 (were 0.30 and 0.70); a new excess gate, Hansen's SPA p-value against the universe's
 equal-weight buy-and-hold at most 0.10; and one regime table for both batteries,
 `research/config/regimes.yaml` (2008, 2011, 2015-16, 2018Q4, 2020, 2022, 2024),
@@ -304,7 +305,7 @@ split differs in either direction. The rule moved neither figure.
 2023 and 2024, are calm bull years. A long-or-flat rule on SPY is expected to be
 positive in them, so a regime pass on SPY would be weak evidence. In the first run SPY
 was positive in exactly those two years and in no other, so its regime gate failed.
-Ruling R3 (2026-11-23) replaced the five with the one regime table both batteries
+Ruling R3 (2026-11-23; the spec's default, awaiting the owner) replaced the five with the one regime table both batteries
 read; on it SPY is positive in 2024 alone and its regime gate still fails.
 
 **PBO with three configurations.** With 3 configurations, a set with no skill at all

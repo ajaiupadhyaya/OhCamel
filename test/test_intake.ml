@@ -1443,7 +1443,7 @@ let test_the_evidence_is_both_manifests_as_committed () =
    ">=" is the gate detail's own -- so that no copy of battery/gates.py's
    THRESHOLDS lives in the JavaScript. That only works if every manifest
    carries every number the page reads, so this pins that it does, at the
-   values docs/CHARTER.md's gates table states (owner ruling R3, completion
+   values docs/CHARTER.md's gates table states (spec ruling R3, awaiting the owner, completion
    task 2.5): DSR 0.95, PSR 0.95, the excess gate's SPA p at most 0.10, the
    bootstrap's lower 5th percentile of 1,000 resamples, 3 regimes, PBO named
    above 0.5, and the sweep at 0 / 5 / 15 / 30 bps with both of its Sharpe

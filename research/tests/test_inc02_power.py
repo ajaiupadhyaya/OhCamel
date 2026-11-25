@@ -65,6 +65,14 @@ def test_the_printed_power_is_what_the_battery_rejects_in_simulation(sharpe: flo
     assert simulated_power(sharpe) == pytest.approx(PRINTED[sharpe], abs=0.02)
 
 
+@pytest.mark.parametrize(("sharpe", "stated"), [(1.0, "40.8%"), (0.5, "17.8%")])
+def test_the_simulated_rates_inc02_states_are_this_simulations(sharpe: float, stated: str) -> None:
+    """INC-02's T5 states the seeded simulation's rejection rates to one decimal; pinned here."""
+    assert f"{simulated_power(sharpe):.1%}" == stated
+    text = (REPO_ROOT / "research" / "experiments" / "INC-02" / "preregistration.md").read_text()
+    assert stated in text
+
+
 def test_the_null_rejects_about_five_percent_of_the_time() -> None:
     """At a true Sharpe of zero the test's size is its stated 5%."""
     assert simulated_power(0.0) == pytest.approx(ALPHA, abs=0.01)

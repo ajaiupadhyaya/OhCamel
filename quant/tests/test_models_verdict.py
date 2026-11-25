@@ -1,4 +1,4 @@
-"""Lane M, M1: the charter's gates applied literally (docs/CHARTER.md); completion task 2.5 (owner ruling R3):
+"""Lane M, M1: the charter's gates applied literally (docs/CHARTER.md); completion task 2.5 (spec ruling R3, awaiting the owner):
 PSR and DSR at 0.95, an excess gate (SPA p <= 0.10 against the universe's equal-weight buy-and-hold), one regime
 table read by both batteries, and fewer than three regimes with out-of-sample data INSUFFICIENT DATA, not FAIL."""
 

@@ -10,7 +10,8 @@ a gap the spec leaves open; the spec does not fix it.
 
 INC-02 tests one hypothesis: that the pooled incubation book's Sharpe ratio is above zero. The statistic is
 the book's daily return, net of costs, over the 500 sessions from its first fill. The null is a Sharpe of zero
-or less, rejected at one-sided 5% when the Probabilistic Sharpe Ratio (PSR) against zero reaches 0.95. Over
+or less, rejected at one-sided 5% when the Probabilistic Sharpe Ratio (PSR) against zero reaches 0.95; T1 proposes
+that the return be an excess return over the risk-free rate on the capital deployed. Over
 500 sessions that test has about 41% power against a true annualised Sharpe of 1.0 and about 17% against a
 true Sharpe of 0.5 (computed, not quoted: `research/tests/test_inc02_power.py`). A non-rejection is the
 expected outcome and is not evidence of anything: not that the book has no edge, and not that any strategy
@@ -34,13 +35,31 @@ formula, the reporting rules, *How it fails*, and the program's kill criteria ot
 
 ## The test
 
-T1. **The statistic.** The pooled incubation book's daily return, net of costs: the day's P&L of every roster
-strategy on its own positions, marked to the official close, net of spreads, fees, borrow and financing, with
-dividends credited (the completion spec's *Desk*: "the record carries dividends and costs and marks to the
-official close"), divided by the account's equity at the prior close, less that day's risk-free rate (the
-rate the farm uses, `Market.risk_free_daily`). *(agent's proposal: the spec does not fix the denominator or
-the risk-free rate; on raw returns, the T-bill carry of the rates cells would count as edge)*
-*(awaiting approval)*
+T1. **The statistic: excess return on deployed capital.** The book's daily return is
+`Σᵢ wᵢ (rᵢ − r_f)`, summed over the roster, where:
+
+- `rᵢ` is strategy i's return that day on its allocated capital: its P&L on its own positions, marked to the
+  official close, net of spreads, fees, borrow and financing, with dividends credited (the completion spec's
+  *Desk*: "the record carries dividends and costs and marks to the official close");
+- `wᵢ` is the share of the account's prior-close equity allocated to it that day (its `capital_fraction` ×
+  the incubation ratio × the overlay × the governor);
+- `r_f` is that day's risk-free rate, the rate the farm uses (`Market.risk_free_daily`).
+
+Idle cash contributes zero. *(agent's proposal: the spec fixes neither the denominator nor the risk-free rate)*
+
+The alternative is the whole account's return less `r_f` on all of its equity. The paper desk credits no
+interest on idle cash (the task 2.1 review), and at most 0.55 of equity is deployed. So that alternative charges
+a full point of return a year for every point of `r_f`, where T1 charges at most 0.55 of a point. Against the
+fixture proxy's volatility of 0.026 to 0.039 a year (*The drawdown cap, on its merits*, below), each point of
+`r_f` is a Sharpe hurdle of:
+
+| Statistic | Hurdle per point of `r_f` | At a 3.5% rate (illustration only) |
+|---|---|---|
+| The alternative (whole account) | 0.26 to 0.38 | 0.9 to 1.35 |
+| T1 (deployed capital) | at most 0.14 to 0.21 | at most 0.49 to 0.74 |
+
+Raw returns with no `r_f` at all would count the rates cells' T-bill carry as edge. The power in T5 is
+against the true Sharpe of whichever statistic the owner approves. *(awaiting approval)*
 
 T2. **The horizon.** 500 NYSE sessions from INC-02's first fill, the canary sessions (R4) included. A session
 in which the desk is halted or tripped, or holds nothing, still counts, with the return it had (zero when
@@ -64,7 +83,8 @@ a year, the test rejects:
 
 Both figures are checked two ways in `research/tests/test_inc02_power.py`: in closed form (the per-session
 Sharpe estimate is asymptotically normal with variance `(1 + SR²/2) / (n − 1)`), and by 10,000 seeded
-500-session paths judged by `psr_gate` itself, which reject 40.8% and 17.8% of the time. Fat tails,
+500-session paths judged by `psr_gate` itself, which reject 40.8% and 17.8% of the time (pinned by the test to
+that precision). Fat tails,
 autocorrelation and the governor's cuts lower the power; the book's size does not enter, because a Sharpe
 ratio does not depend on it. *(awaiting approval)*
 
@@ -220,7 +240,8 @@ the book's gross trips even 0.10, in the 2020 crash. It cannot show what the ros
 the fixtures hold 9 of the roster's 42 ETFs, seven rows are cash and the rest run on cut universes at default
 parameters, the overlay is not simulated, and the proxy's volatility (0.026 to 0.039) is far below the live
 book's. That last point is the strongest evidence there is, and it is not from the fixtures: INC-01's live
-book tripped the 0.02 cap in its sixth session of full-roster trading.
+book tripped the 0.02 cap in its sixth session of full-roster trading (the completion spec, *Where things
+stand*: "The paper record is six sessions of full-roster trading").
 
 *The proposal.* 0.10: one year's 1σ at the vol target, so the cap binds on losses the book was not sized to
 take, not on ordinary weeks; on the proxy it never trips and seldom cuts, and it still trips a book that

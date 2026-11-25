@@ -570,6 +570,8 @@ def test_the_inputs_are_the_repos_own_config(store):
     inp = load_inputs(store.db, store.settings, NOW)
     assert len(inp.roster.cells) == 22 and "farm.sweep" in inp.clock and inp.world.equities
     assert set(inp.products) == set(PROD)
+    # INC-02 records no owner's approval yet, so the roster the page draws is labelled its draft
+    assert inp.roster_draft == "INC-02"
 
 
 # ------------------------------------------------------------------ the cache

@@ -15,9 +15,9 @@ from __future__ import annotations
 # (``Manifest.gates_version``) and every signal's validation block carries it
 # (``contract.py`` imports it from here), so there is one copy, and it lives
 # where the manifest's hash can see it. This module imports nothing heavy, so
-# reading the constant costs the signal path nothing. 2026-11-23: the owner's
-# ruling R3 (completion task 2.5) -- PSR and DSR at 0.95, the excess gate, one
-# regime table.
+# reading the constant costs the signal path nothing. 2026-11-23: ruling
+# R3, the completion spec's default, which awaits the owner (completion task
+# 2.5) -- PSR and DSR at 0.95, the excess gate, one regime table.
 GATES_VERSION = "2026-11-23"
 
 

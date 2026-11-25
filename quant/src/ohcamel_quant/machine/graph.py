@@ -130,6 +130,9 @@ class Inputs:
     order: Sequence[str]
     why: Mapping[str, str]
     repairs: Sequence[str] = ()
+    #: The experiment whose roster this is when its pre-registration records no owner's approval (``INC-02`` while
+    #: it is a draft); the book and every strategy are then labelled a draft, not what the paper book trades.
+    roster_draft: str | None = None
 
 
 def _provenance(manifest: Any) -> list[dict]:
@@ -530,12 +533,15 @@ def _desk(g: _Graph, inp: Inputs) -> None:
     else:
         book |= {"positions": summary["positions"], "kill": summary["kill"], "limits": len(summary["limits"]),
                  "summary_asof": summary["as_of"]}
+    if inp.roster_draft:
+        book["roster_draft"] = inp.roster_draft
     g.node("book", "book", "THE BOOK", "The paper book at Alpaca", "book", {}, book)
 
     for i, c in enumerate(r.cells):
         g.node(f"st:{c.slug}", "strategy", c.slug.replace("farm_", "").replace("_", " "), c.slug, "strategies",
                {"i": i, "n": len(r.cells)}, {"producer": c.producer, "strategy": c.strategy, "universe": c.universe,
-                                             "symbols": list(c.symbols), "capital": c.capital_fraction})
+                                             "symbols": list(c.symbols), "capital": c.capital_fraction,
+                                             **({"draft": inp.roster_draft} if inp.roster_draft else {})})
         if c.producer == DAILY:
             g.edge(f"c:{c.strategy}@{c.universe}", f"st:{c.slug}", "roster")
         g.edge(_signal_source(c), f"st:{c.slug}", "signal")

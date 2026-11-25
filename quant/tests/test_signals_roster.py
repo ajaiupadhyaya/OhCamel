@@ -11,7 +11,13 @@ import pytest
 
 from ohcamel_quant.config import REPO_ROOT
 from ohcamel_quant.models.farm import farm_cells
-from ohcamel_quant.signals.roster import ROSTER_PATH, Cell, load_roster
+from ohcamel_quant.signals.roster import (
+    ROSTER_PATH,
+    Cell,
+    load_roster,
+    recorded_approval,
+    roster_draft,
+)
 
 BOOK = REPO_ROOT / "book.example.sexp"
 
@@ -38,6 +44,20 @@ def test_the_rosters_farm_rows_are_the_farms_cells():
     """INC-02's roster is the farm's cells that can run (spec, Research, *Roster*), in the farm's order."""
     rows = [(c.strategy, c.universe) for c in load_roster().cells if c.producer == "signals.daily"]
     assert rows == farm_cells()
+
+
+def test_the_roster_is_a_draft_until_its_preregistration_records_the_owners_approval(tmp_path):
+    """The label keys off the pre-registration's own ``Approved-by:`` line, so it goes by itself on approval."""
+    assert roster_draft() == "INC-02"
+    exp = tmp_path / "INC-09"
+    exp.mkdir()
+    roster = exp / "roster.yaml"
+    assert roster_draft(roster) == "INC-09"                                  # no pre-registration: no approval
+    (exp / "preregistration.md").write_text("# INC-09\n\n**Status: DRAFT.**\n\n## Approval\n\nApproved-by:\n")
+    assert roster_draft(roster) == "INC-09"                                  # an empty Approved-by: approves nothing
+    (exp / "preregistration.md").write_text("# INC-09\n\n## Approval\n\nApproved-by: owner, 2026-12-01\n")
+    assert roster_draft(roster) is None
+    assert recorded_approval("**Status: APPROVED 2026-10-11 as written.**") == "2026-10-11"
 
 
 def test_roster_slugs_are_registered_in_book_example_sexp():

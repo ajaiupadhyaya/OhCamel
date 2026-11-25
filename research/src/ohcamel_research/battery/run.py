@@ -176,7 +176,7 @@ PBO_NOTE = (
     "how many splits each alone calls overfit"
 )
 
-# Completion task 2.5 (owner ruling R3): the charter's excess gate is
+# Completion task 2.5 (spec ruling R3, awaiting the owner): the charter's excess gate is
 # Hansen's SPA p-value against the universe's equal-weight buy-and-hold. fdq
 # ships no SPA test and this battery holds none of its own, so it cannot
 # compute the gate; a charter gate that cannot be computed fails, and says so.
@@ -924,10 +924,11 @@ def describe_measure(value: float | None, fmt: str = "{:,.2f}") -> str:
 def judged_by_note(hashes: Mapping[str, str]) -> str:
     """The gates a run was judged by, in its own manifest (completion task 2.5,
     fix round 1): the charter's date, every threshold, and the regime file's
-    hash. Pre-registrations written before the owner's ruling R3 (EXP-I01 to
-    I03, which quote DSR 0.30, PSR 0.70 and five regimes) are not amended by
-    the code; whichever gates judged a run are stated beside its verdict, so
-    the owner's amendment decision can be checked against the evidence."""
+    hash. Pre-registrations written before ruling R3 (the completion spec's
+    default, which awaits the owner; EXP-I01 to I03, which quote DSR 0.30,
+    PSR 0.70 and five regimes) are not amended by the code; whichever gates
+    judged a run are stated beside its verdict, so the owner's amendment
+    decision can be checked against the evidence."""
     t = THRESHOLDS
     levels = "/".join(f"{b:g}" for b in t.cost_sweep_bps_round_trip)
     regimes = REGIMES_REL.as_posix()

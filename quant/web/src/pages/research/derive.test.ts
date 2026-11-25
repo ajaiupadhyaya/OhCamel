@@ -9,7 +9,7 @@ const run = (psr: number | null, probLe0: number | null, audit = true) =>
     look_ahead_audit: { passed: audit, checked: [], max_abs_diff: 0, points: 3 },
   }) as unknown as RunOut;
 
-describe("CHARTER (docs/CHARTER.md, owner ruling R3)", () => {
+describe("CHARTER (docs/CHARTER.md, spec ruling R3, awaiting the owner)", () => {
   it("states the gates models/verdict.py applies", () => {
     expect(CHARTER).toMatchObject({ dsr: 0.95, psr: 0.95, spa: 0.1, regimes: 3, regimesOf: 7 });
   });

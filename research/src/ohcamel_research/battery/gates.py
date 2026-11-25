@@ -24,7 +24,7 @@ one. `capacity` reports what 1% headroom looks like, not whatever a book
 currently sets. The manifest hashes the cost file (`manifest.COSTS_REL`), so
 editing it stales the evidence like editing this module.
 
-Completion task 2.5 (owner ruling R3): PSR and DSR at 0.95; the excess gate
+Completion task 2.5 (spec ruling R3, awaiting the owner): PSR and DSR at 0.95; the excess gate
 (`excess_gate`: Hansen's SPA p-value against the universe's equal-weight
 buy-and-hold at most 0.10) -- this battery has no SPA test yet (fdq ships
 none), so the runner fails it, saying so, rather than leave a charter gate
@@ -260,7 +260,7 @@ def regime_gate(
 
 
 def excess_gate(spa_p: float | None, reason: str | None = None) -> GateResult:
-    """The charter's excess gate (completion task 2.5, owner ruling R3):
+    """The charter's excess gate (completion task 2.5, spec ruling R3, awaiting the owner):
     Hansen's SPA consistent p-value of the strategy's trials against the
     universe's equal-weight buy-and-hold, filled and costed as the strategy
     is, at or below `THRESHOLDS.spa_max_p` passes. `None` -- a p-value that

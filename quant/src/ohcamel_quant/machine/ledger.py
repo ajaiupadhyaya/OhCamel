@@ -51,6 +51,7 @@ from ..jobs.artifacts import TABLE_NAME, inside
 from ..jobs.db import connect, parse_iso
 from ..jobs.paths import jobs_db_path
 from ..jobs.schedules import load_schedules, read_latest
+from ..signals.roster import recorded_approval
 from .clock import NY
 from .load import missed_fire
 
@@ -441,16 +442,9 @@ def limits_row(desk: Desk) -> Row:
 
 # ------------------------------------------------------------------ pre-registrations
 def approval(text: str) -> str | None:
-    """The approval date a pre-registration gives: its ``Approved-by:`` line, else its ``**Status: APPROVED``
-    line, the first date on that line; None when it records no approval."""
-    for line in text.splitlines():
-        if re.match(r"^`?Approved-by:`?", line.strip()) and (m := _DATE.search(line)):
-            return m.group(1)
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("**Status:") and "APPROVED" in s and (m := _DATE.search(s[s.index("APPROVED"):])):
-            return m.group(1)
-    return None
+    """The approval date a pre-registration gives (``signals.roster.recorded_approval``, which the machine graph's
+    draft-roster label reads too); None when it records no approval."""
+    return recorded_approval(text)
 
 
 def preregistrations_row(root: Path) -> Row:

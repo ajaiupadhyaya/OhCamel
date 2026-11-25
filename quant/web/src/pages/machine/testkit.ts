@@ -51,7 +51,7 @@ const ROWS: Record<string, (Fmt[] | "q" | null)[]> = {
 /** The timestamps and dates a reading prints, as `nyDay` and `nyTime` write them. */
 const TIMES = new Set(["asof", "ok", "finished", "summary_asof", "date"]);
 /** The strings a reading quotes whole: a reason, a verdict's detail, a scope, a name; never a note (those are caveats). */
-const QUOTED = new Set(["why", "detail", "reason", "scope", "summary_why", "lens_why", "verdict", "symbols", "trips_on", "underlying", "when", "producer", "state", "kill"]);
+const QUOTED = new Set(["why", "detail", "reason", "scope", "summary_why", "lens_why", "verdict", "symbols", "trips_on", "underlying", "when", "producer", "state", "kill", "roster_draft", "draft"]);
 const FINAL = ["done", "failed", "cancelled"];
 
 /**

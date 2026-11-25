@@ -1678,7 +1678,7 @@ its verdict, quoted rather than paraphrased:
 > Both strategies fail. The pre-registration's kill criterion is "any charter
 > gate failing is a fail", and each strategy fails at least one gate.
 
-(Re-derived on 2026-11-24 under the owner's ruling R3: DSR and PSR at 0.95, the
+(Re-derived on 2026-11-24 under ruling R3, the completion spec's default, which awaits the owner: DSR and PSR at 0.95, the
 excess gate -- not computed by the research battery, so failed -- and the one
 regime table; no return or Sharpe moved, and both verdicts stayed fail.)
 
@@ -1738,7 +1738,7 @@ loaded. Figure 1 draws a signals band into the orders band only where an
 intake actually runs, so the demo's own figure, which has none, stays
 byte-identical to the one before this phase.
 
-`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->448<!-- /count --> Python
+`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->454<!-- /count --> Python
 tests, hermetic, offline, seeded, checked with `ruff`. `lib/verified.ml`
 and this file's counts cover only the OCaml suites; the Python count is
 reported here and in `docs/status.md`, never folded into either.

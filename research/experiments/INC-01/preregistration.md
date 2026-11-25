@@ -1,6 +1,7 @@
 # INC-01 — Paper incubation of the repository's strategies, scored live
 
-**Status: APPROVED 2026-10-11 for the design §5/§6 as written; the points
+**Status: CLOSED at 2026-11-05 (see *Amendment A1* and *Closed* at the end): the record
+ends there and is not continued. APPROVED 2026-10-11 for the design §5/§6 as written; the points
 marked *not fixed by §5* below await the owner's confirmation, and nothing is
 sized until it is recorded here.** Drafted by the agent 2026-10-11 for the
 owner. Under `docs/CHARTER.md` the owner owns hypotheses and kill decisions;

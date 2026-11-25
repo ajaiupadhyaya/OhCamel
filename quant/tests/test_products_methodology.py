@@ -64,7 +64,7 @@ def _charter_gates() -> dict[str, str]:
 
 
 def test_the_charters_gates_table_is_the_verdicts_constants():
-    """Completion task 2.5 (owner ruling R3): docs/CHARTER.md's gates table states exactly the lines
+    """Completion task 2.5 (spec ruling R3, awaiting the owner): docs/CHARTER.md's gates table states exactly the lines
     models/verdict.py gates by -- a constant moved without the charter, or the charter without the constant, fails."""
     from ohcamel_quant.models import verdict as V
 

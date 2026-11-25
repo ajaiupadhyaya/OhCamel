@@ -501,7 +501,7 @@ def compute_verdict(gates: Iterable[Mapping[str, Any]], pbo: float) -> str:
     - ``"insufficient data"`` if the ``regimes_positive`` gate's record
       reaches fewer than ``battery.gates.THRESHOLDS.regime_min_positive``
       regimes (its ``detail["covered"]``, or its ``insufficient_data`` flag):
-      completion task 2.5, owner ruling R3 -- such a record cannot be judged
+      completion task 2.5, spec ruling R3, awaiting the owner -- such a record cannot be judged
       across regimes at all, so it is INSUFFICIENT DATA, not FAIL, whatever
       else failed (never a pass);
     - ``"fail"`` if any gate whose ``passed`` is not ``None`` has

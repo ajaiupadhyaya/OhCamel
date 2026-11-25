@@ -661,7 +661,7 @@ def test_dsr_gate_refuses_no_trials():
 
 
 # ---------------------------------------------------------------------------
-# Completion task 2.5 (owner ruling R3): one regime table, in one file, read by
+# Completion task 2.5 (spec ruling R3, awaiting the owner): one regime table, in one file, read by
 # both batteries; the excess gate; the charter's table held to THRESHOLDS.
 # ---------------------------------------------------------------------------
 

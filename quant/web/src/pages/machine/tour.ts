@@ -309,9 +309,13 @@ const book: TourStep = {
     const cap = fin(m.incubation_cap);
     // a share of capital only when every strategy has one; "each" only when they are all the same
     const each = k > 0 && caps.length === k && [" at ", shares(caps), " of capital", k > 1 && new Set(caps).size === 1 && " each"];
-    const first = k > 0
-      ? S`Everything ends here: ${B(plural(k, "strategy", "strategies"))}${each}${cap !== null && S`, under a ${B(share(cap))} incubation cap`}.`
-      : segs("Everything ends here, though no strategy sends it signals yet.");
+    const draft = str(m.roster_draft);
+    const first = segs(
+      k > 0
+        ? S`Everything ends here: ${B(plural(k, "strategy", "strategies"))}${each}${cap !== null && S`, under a ${B(share(cap))} incubation cap`}.`
+        : "Everything ends here, though no strategy sends it signals yet.",
+      draft && S` That roster is ${B(draft)}'s draft, awaiting the owner's approval; it is not what the paper book trades.`,
+    );
 
     // the live book (spec §7 Q1) only from a book summary, as of its time: counts and states, never thresholds, names of positions or sizes
     let live: Seg[] | false = false;

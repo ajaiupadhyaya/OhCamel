@@ -511,6 +511,17 @@ def test_the_wire_shape():
     assert len({tuple(e) for e in g["edges"]}) == len(g["edges"])   # no edge twice
 
 
+def test_a_draft_roster_is_labelled_on_the_book_and_every_strategy():
+    """INC-02 is a draft until the owner approves it: the graph says so instead of drawing it as what trades."""
+    g = build_graph(_inputs(roster_draft="INC-02"))
+    assert _node(g, "book")["m"]["roster_draft"] == "INC-02"
+    st = [n for n in g["nodes"] if n["k"] == "strategy"]
+    assert st and all(n["m"]["draft"] == "INC-02" for n in st)
+    approved = build_graph(_inputs(roster_draft=None))
+    assert "roster_draft" not in _node(approved, "book")["m"]
+    assert not any("draft" in n["m"] for n in approved["nodes"] if n["k"] == "strategy")
+
+
 def test_the_book_and_its_limits_read_from_the_summary():
     g = build_graph(_inputs())
     _, _, roster = _static()

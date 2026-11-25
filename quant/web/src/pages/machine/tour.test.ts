@@ -421,6 +421,16 @@ describe("the tour: 7, the book", () => {
     expect(t).toContain("As of 4:30 PM on 28 Oct, the desk report's book summary shows 14 positions, 2 limits and the kill switch armed. If dd-cap breaks, the kill switch halts the book.");
   });
 
+  it("says a draft roster is a draft awaiting the owner, not what the paper book trades, and carries no number of its own", () => {
+    const fx = clone();
+    nodeOf(fx, "book").m.roster_draft = "INC-02";
+    const t = body(fx, "book");
+    expect(t).toContain("That roster is INC-02's draft, awaiting the owner's approval; it is not what the paper book trades.");
+    const allowed = allowedNumbers(fx);
+    for (const n of numbersIn(t)) expect(allowed, n).toContain(n);
+    expect(body(FIXTURE, "book")).not.toMatch(/draft/);
+  });
+
   it("gives the range of capital when the strategies' shares differ", () => {
     const fx = clone();
     nodeOf(fx, "st:exp_a01_spy").m.capital = 0.01;

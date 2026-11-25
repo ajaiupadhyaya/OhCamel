@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2482<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2484<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -125,11 +125,17 @@ Rust crate, the web app and the deploy scripts have their own suites. CI runs al
 Three tiers decide what a signal may do: the book's `sizing` word sets a strategy's tier; the validation block
 decides only whether a `live` strategy may be sized (R6); an incubation strategy is sized whatever its status, under
 the cap, and labelled. **ADVISORY**: shown with its rule and never sized. **INCUBATION**: the charter's amended sentence is the whole licence, *On the paper venue, and only there, the owner may register a strategy as `incubation`: it is sized under the book's incubation caps whatever its status, its validation block is carried unchanged, every order, page and report it touches says INCUBATION, its realised record is scored with this charter's statistics and stop rules the owner wrote before it traded, and promotion to `live` never follows from that record by itself.* **LIVE**: only `status: pass`
-is sized as live, and nothing promotes a strategy to it but the owner. The pre-registration is
-[INC-01](../research/experiments/INC-01/preregistration.md), which is binding.
+is sized as live, and nothing promotes a strategy to it but the owner. The first pre-registration,
+[INC-01](../research/experiments/INC-01/preregistration.md), closed at 2026-11-05, the day its drawdown cap was
+changed after it tripped (its *Amendment A1*); nothing binds the incubation book now. Its successor,
+[INC-02](../research/experiments/INC-02/preregistration.md), is a draft awaiting the owner's approval line by line,
+and the kill switch stays halted until the owner approves it.
 
-**The roster.** 23 strategies at 0.025 of equity each under `incubation_cap 0.60`, with the canary sessions at
-`incubation_cap 0.10`. The list is `research/experiments/INC-01/roster.yaml`.
+**The roster.** INC-01 traded 23 strategies at 0.025 of equity each under `incubation_cap 0.60`
+(`research/experiments/INC-01/roster.yaml`, kept as it traded). INC-02's draft roster, which the producers now
+read, is 22 strategies at 0.025 under `incubation_cap 0.55`, with canary sessions at `incubation_cap 0.10`:
+`research/experiments/INC-02/roster.yaml`. The front page labels it a draft until INC-02 records the owner's
+approval.
 
 | Producer | When (New York) | What it writes |
 |---|---|---|
@@ -563,7 +569,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->448<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
+  <!-- count:research-tests -->454<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
   here rather than folded into `lib/verified.ml`, which counts the OCaml
   suites only.
 - **Production smoke suite** after every deploy: the dashboard renders,
@@ -737,6 +743,10 @@ reference; the two commands a release uses are:
 deploy/deploy.sh --sha <sha> --live          # the public and live hosts together
 deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant, ohcamel-worker, signals-init and ohcamel-hostd only; any time of day
 ```
+
+**Hold: INC-02.** Deploy no sha at or after `594df16` (completion task 2.1) with `--live` until the owner has
+approved INC-02 and regenerated the live `book.sexp` from `book.example.sexp`. The same applies to `--public-only`,
+which also moves `ohcamel-worker`, whose producers would then read INC-02's draft roster.
 
 `--sha` defaults to `origin/main`, resolved after `git fetch origin`. A run, in
 order: the market guard; `git fetch origin`; a detached checkout of the sha

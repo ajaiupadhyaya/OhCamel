@@ -11,7 +11,7 @@ import type { VerdictValue } from "../../design";
 import { fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import type { CostsOut, FarmBoardRow, FarmCellRow, RunOut, SweepOut, WalkForwardOut } from "./types";
 
-/** docs/CHARTER.md "The gates" (and quant/src/ohcamel_quant/models/verdict.py; owner ruling R3, 2026-11-23). */
+/** docs/CHARTER.md "The gates" (and quant/src/ohcamel_quant/models/verdict.py; spec ruling R3 of 2026-11-23, awaiting the owner). */
 export const CHARTER = {
   dsr: 0.95,
   psr: 0.95,

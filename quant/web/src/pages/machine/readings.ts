@@ -173,7 +173,9 @@ function strategy(gi: GraphIndex, i: number, n: MNode): Reading {
   return {
     title: n.l || n.n,
     paras: paras(segs(
-      S`One of the desk's ${B(num(strategyCount(gi)))} strategies${cap !== null && S`, with ${B(share(cap))} of capital`}.`,
+      str(m.draft)
+        ? S`One of the ${B(num(strategyCount(gi)))} strategies of ${B(str(m.draft)!)}'s draft roster, awaiting the owner's approval and not what the paper book trades${cap !== null && S`; it would have ${B(share(cap))} of capital`}.`
+        : S`One of the desk's ${B(num(strategyCount(gi)))} strategies${cap !== null && S`, with ${B(share(cap))} of capital`}.`,
       symbols.length > 0 && S` It trades ${list(symbols.map((s) => ref(gi, `d:${s}`, s)))}.`,
       from && [" ", from],
     )),
@@ -193,8 +195,11 @@ function book(gi: GraphIndex, i: number, n: MNode): Reading {
   for (const s of st) for (const p of ups(gi, s, "product")) sources.set(p, (sources.get(p) ?? 0) + 1);
   const capital = fin(m.capital), cap = fin(m.incubation_cap), target = fin(m.vol_target);
   const overlay = ups(gi, i, "product").find((j) => node(gi, j).id === "p:signals.overlay");
+  // a roster whose pre-registration records no owner's approval is a draft, never shown as what the book trades
+  const draft = str(m.roster_draft);
   const first = segs(
-    S`${B(plural(k, "strategy", "strategies"))} send${k === 1 ? "s" : ""} it signals${
+    draft && S`The roster shown is ${B(draft)}'s draft, awaiting the owner's approval; it is not what the paper book trades. `,
+    S`${B(plural(k, "strategy", "strategies"))} ${draft ? "would send" : k === 1 ? "sends" : "send"} it signals${
       sources.size > 0 && [", ", list([...sources].map(([p, c]) => S`${B(num(c))} from ${refAt(gi, p, SOURCE[node(gi, p).id])}`))]}.`,
     capital !== null && S` Their allocations add up to ${B(share(capital))} of capital${cap !== null && S`, under a ${B(share(cap))} incubation cap`}.`,
     overlay !== undefined && S` The ${refAt(gi, overlay, "exposure overlay")} scales its exposure${target !== null && S` toward a ${B(share(target))} volatility target`}.`,

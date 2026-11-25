@@ -1,5 +1,5 @@
 """The one regime table, ``research/config/regimes.yaml`` (completion task 2.5,
-owner ruling R3): the stress windows the charter's regime gate reads, written
+spec ruling R3, awaiting the owner): the stress windows the charter's regime gate reads, written
 once and read by both batteries -- this module for the research battery
 (``gates.regime_gate``), ``ohcamel_quant.models.regimes`` for the quant
 battery. The two loaders apply the same rules and each package's tests load

@@ -8,7 +8,7 @@ regimes; PBO and the cost sweep are reported (PBO named when high), not gated.
 The cost sweep is read from the cost table itself: every 0/5/15/30 bps row must
 be there with at least one finite number, or the gate fails and names the gaps.
 
-Completion task 2.5 (owner ruling R3; spec, "Gates (R3)"): PSR and DSR at 0.95;
+Completion task 2.5 (spec ruling R3, awaiting the owner; spec, "Gates (R3)"): PSR and DSR at 0.95;
 the excess gate, Hansen's SPA p-value against the universe's equal-weight
 buy-and-hold at most 0.10 (Sharpe against zero passed long-or-flat SPY in a
 bull market); and one regime table, ``research/config/regimes.yaml``, read here

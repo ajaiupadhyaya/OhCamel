@@ -17,13 +17,15 @@ import yaml
 
 from ohcamel_quant.config import REPO_ROOT
 
-__all__ = ["PRODUCERS", "ROSTER_PATH", "Cell", "Roster", "load_roster", "targets_gross_scaled"]
+__all__ = ["PRODUCERS", "ROSTER_PATH", "Cell", "Roster", "load_roster", "recorded_approval", "roster_draft",
+           "targets_gross_scaled"]
 
 ROSTER_PATH = REPO_ROOT / "research" / "experiments" / "INC-02" / "roster.yaml"
 PRODUCERS = frozenset({"research-service", "signals.daily", "signals.intraday", "signals.q01"})
 _SLUG = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _TOP_KEYS = frozenset({"version", "incubation_cap", "canary_cap", "vol_target", "strategies"})
 _ROW_KEYS = frozenset({"slug", "producer", "strategy", "universe", "symbols", "capital_fraction"})
+_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,30 @@ def load_roster(path: Path = ROSTER_PATH) -> Roster:
         vol_target=_positive(doc.get("vol_target"), "vol_target"),
         cells=cells,
     )
+
+
+def recorded_approval(text: str) -> str | None:
+    """The approval date a pre-registration gives: its ``Approved-by:`` line, else its ``**Status: APPROVED``
+    line, the first date on that line; None when it records no approval (the ledger reads the same)."""
+    for line in text.splitlines():
+        if re.match(r"^`?Approved-by:`?", line.strip()) and (m := _DATE.search(line)):
+            return m.group(1)
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("**Status:") and "APPROVED" in s and (m := _DATE.search(s[s.index("APPROVED"):])):
+            return m.group(1)
+    return None
+
+
+def roster_draft(path: Path = ROSTER_PATH) -> str | None:
+    """The experiment whose roster ``path`` is, when its pre-registration beside it records no approval (an
+    unreadable one records none); None once the owner's approval is recorded there. A page that draws the roster
+    says it is a draft while this names one, so the label goes when the ``Approved-by:`` line is written."""
+    try:
+        text = (Path(path).parent / "preregistration.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return Path(path).parent.name
+    return None if recorded_approval(text) else Path(path).parent.name
 
 
 def targets_gross_scaled(w: dict[str, float]) -> tuple[dict[str, float], bool]:
