@@ -140,6 +140,21 @@ def test_surface_and_density(chain_client):
     np.testing.assert_allclose(np.array(d["lognormal_density"], dtype=float)[i], pdf[i], rtol=1e-3)
 
 
+def test_surface_carries_the_ssvi_surface_on_the_same_grid(chain_client):
+    """Completion task 4.5: the SSVI surface beside the per-slice one -- same (T, k) grid, its parameters inside the
+    no-arbitrage conditions, its in-sample RMSE and its violations counted as the league counts them."""
+    j = _ok(chain_client.get("/api/options/surface/TESTX"))
+    s = j["ssvi"]
+    assert s["error"] is None
+    iv = np.array(s["grid_iv"], dtype=float)
+    assert iv.shape == np.array(j["grid"]["iv"], dtype=float).shape and np.isfinite(iv).all()
+    p = s["fit"]["params"]
+    assert p["eta"] * (1 + abs(p["rho"])) <= 2.0 and 0 < p["gamma"] <= 0.5 and len(p["T"]) == len(j["smiles"])
+    assert s["violations"]["butterfly_violations"] == 0 == s["violations"]["calendar_violations"]
+    assert s["fit"]["rmse_vol_pts"] >= 0 and "Gatheral" in s["fit"]["conditions"]["reference"]
+    assert set(j["svi_violations"]) >= {"butterfly_violations", "calendar_violations", "calendar_pairs"}
+
+
 def test_strategy_endpoint(chain_client):
     body = {"ticker": "TESTX", "legs": [
         {"qty": 1, "expiry": "2026-10-30", "strike": 480, "type": "P"},

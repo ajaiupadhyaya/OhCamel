@@ -20,11 +20,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import metrics
+from . import metrics, ssvi
 from .chain import ChainAnalytics
 from .svi import (
+    K_MAX,
     SVIFit,
     SVIParams,
+    butterfly_check,
     calendar_check,
     fit_svi,
     implied_vol_surface,
@@ -79,6 +81,45 @@ def svi_weights(T: float, iv_bid: np.ndarray, iv_ask: np.ndarray) -> np.ndarray:
     return np.where(ok, 1.0 / np.maximum(dw, floor), 1.0 / float(np.median(dw[ok])))
 
 
+def smile_inputs(ca: ChainAnalytics, sid: str) -> tuple[float, np.ndarray, np.ndarray, np.ndarray]:
+    """``(T, k, iv, weights)`` of one expiry: the quotes a smile is fitted to (``use_smile``: OTM, with an
+    identified IV -- an American quote at its intrinsic value or below the model forward has none) and their
+    inverse-spread weights (:func:`svi_weights`). The per-slice SVI fit and the SSVI fit read the same set."""
+    q = ca.slice_quotes(str(sid))
+    sm = q[q["use_smile"]]
+    T = float(ca.slices.loc[sid, "T"])
+    return (T, sm["k"].to_numpy(float), sm["iv"].to_numpy(float),
+            svi_weights(T, sm["iv_bid"].to_numpy(), sm["iv_ask"].to_numpy()))
+
+
+def fit_ssvi_surface(ca: ChainAnalytics, vs: VolSurface) -> ssvi.SSVIFit:
+    """SSVI (power law, :mod:`.ssvi`) on exactly the expiries the per-slice SVI fitted in ``vs``, to the same
+    quotes and weights (:func:`smile_inputs`)."""
+    return ssvi.fit([smile_inputs(ca, sid) for sid in vs.fits])
+
+
+def ssvi_grid(p: ssvi.SSVIParams, grid_k: np.ndarray, grid_T: np.ndarray) -> np.ndarray:
+    """SSVI implied vols on the (T, k) grid of a :class:`VolSurface` (rows = T)."""
+    return np.vstack([ssvi.implied_vol(p, grid_k, float(t)) for t in np.atleast_1d(grid_T)])
+
+
+#: The k grid the calendar check of :func:`count_violations` runs on: 1201 points over [-K_MAX, K_MAX], the range
+#: every fitted smile is held butterfly-free on and the densities integrate over.
+ARB_K_GRID = np.linspace(-K_MAX, K_MAX, 1201)
+
+
+def count_violations(slices: list[tuple[float, SVIParams]]) -> dict[str, int]:
+    """Butterfly and calendar violations of SVI-form slices ``[(T, params), ...]``, by the code the per-slice fits
+    are checked with: slices failing :func:`.svi.butterfly_check` (the refined g scan on [-K_MAX, K_MAX], tolerance
+    G_TOL), and adjacent pairs failing :func:`.svi.calendar_check` on :data:`ARB_K_GRID`. One code for every model
+    whose slices are SVI (per-slice SVI, SSVI), so their counts compare like with like."""
+    ss = sorted(slices, key=lambda s: s[0])
+    cal = calendar_check(ss, ARB_K_GRID) if len(ss) > 1 else []
+    return {"butterfly_violations": int(sum(not butterfly_check(p)["arbitrage_free"] for _, p in ss)),
+            "calendar_violations": int(sum(c["violation"] for c in cal)), "calendar_pairs": len(cal),
+            "n_slices": len(ss)}
+
+
 def build_surface(
     ca: ChainAnalytics, min_dte: float = 1.0, max_slices: int = 40, n_k: int = 41, n_T: int = 30,
     rr_deltas: tuple[float, ...] = (0.25, 0.10), use_kernels: bool = False,
@@ -104,12 +145,10 @@ def build_surface(
         row: dict[str, Any] = {"slice": sid, "expiry": s["expiry"], "T": T, "dte": s["dte"], "forward": F,
                                "discount": D, "rate": s["rate"], "div_yield": s["div_yield"],
                                "settlement": s["settlement"], "n_smile": int(s["n_smile"])}
-        sm = q[q["use_smile"]]
-        row["atm_iv_market"] = metrics.atm_vol_market(sm["k"].to_numpy(), sm["iv"].to_numpy())
+        _, sk, siv, swt = smile_inputs(ca, str(sid))
+        row["atm_iv_market"] = metrics.atm_vol_market(sk, siv)
         try:
-            fit = fit_svi(sm["k"].to_numpy(), sm["iv"].to_numpy(), T,
-                          weights=svi_weights(T, sm["iv_bid"].to_numpy(), sm["iv_ask"].to_numpy()),
-                          use_kernels=use_kernels)
+            fit = fit_svi(sk, siv, T, weights=swt, use_kernels=use_kernels)
             fits[str(sid)] = fit
             p = fit.params
             row.update({"atm_iv": metrics.atm_vol(p, T), "skew_slope": metrics.skew_slope(p, T),

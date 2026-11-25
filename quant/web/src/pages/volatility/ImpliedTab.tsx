@@ -4,19 +4,43 @@
  *    (GET /api/options/chain/{t}?expiry=);
  *  - across expiries (GET /api/options/surface/{t}): ATM and model-free term structure,
  *    25Δ / 10Δ risk reversals and butterflies, the 3-D surface (the app's one Plotly view,
- *    lazy), static-arbitrage checks, and the parity-implied forward / rate / yield per expiry.
+ *    lazy), static-arbitrage checks, and the parity-implied forward / rate / yield per expiry;
+ *  - beside the per-slice SVI surface, the SSVI one on the same grid (completion task 4.5) and the nightly
+ *    vol.surface_league's three scores for both (./SurfaceLeague).
  */
 import { lazy, Suspense, useMemo, useState } from "react";
 import { ChartSkeleton, DataTable, Panel, Section, SegmentedControl, StatGrid, StatTile, Toggle, type Column } from "../../components";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Note } from "../../design";
+import { Absent, Note } from "../../design";
 import { fmtNum, fmtPct, fmtSci, fmtSignedPct } from "../../lib/format";
 import { dayTicks } from "./derive";
 import { INFO } from "./info";
+import { SurfaceLeagueView, SurfaceModelLine } from "./SurfaceLeague";
 import { Check, KV, Readline, expiryLabel, fmtDays, fmtVolPts, type useChain, type useSurface } from "./shared";
 import type { CalendarCheck, Chain, SliceSummary, Surface, TermRow } from "./types";
 
 const SurfaceView = lazy(() => import("./SurfaceView"));
+
+/** The per-slice SVI surface and the SSVI one on the same grid (completion task 4.5), one at a time. */
+function SurfacePair({ d }: { d: Surface }) {
+  const [model, setModel] = useState<"svi" | "ssvi">("svi");
+  const ssviGrid = d.ssvi?.grid_iv;
+  return (
+    <>
+      <div className="vx-toolbar">
+        <SegmentedControl size="sm" ariaLabel="Surface model" options={[{ value: "svi", label: "SVI · PER SLICE" }, { value: "ssvi", label: "SSVI · ARBITRAGE-FREE" }]} value={model} onChange={setModel} />
+      </div>
+      {d.ssvi && d.svi_violations && <SurfaceModelLine ssvi={d.ssvi} sviViolations={d.svi_violations} />}
+      {model === "ssvi" && !ssviGrid ? (
+        <Absent reason={`SSVI NOT FITTED · ${d.ssvi?.error ?? "unknown"}`} source="options/surface · ssvi" />
+      ) : (
+        <Suspense fallback={<ChartSkeleton height={520} />}>
+          <SurfaceView k={d.grid.k} days={d.grid.days} iv={model === "ssvi" && ssviGrid ? ssviGrid : d.grid.iv} height={520} />
+        </Suspense>
+      )}
+    </>
+  );
+}
 
 export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typeof useSurface>; chain: ReturnType<typeof useChain>; expiry: string | undefined }) {
   const s = surface.data;
@@ -77,12 +101,9 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
           </Panel>
         </div>
         <Panel<Surface> title="Surface · IV over k × days" info={INFO.svi} query={surface} notes={[]} skeletonHeight={520} asOf={asOf}>
-          {(d) => (
-            <Suspense fallback={<ChartSkeleton height={520} />}>
-              <SurfaceView k={d.grid.k} days={d.grid.days} iv={d.grid.iv} height={520} />
-            </Suspense>
-          )}
+          {(d) => <SurfacePair d={d} />}
         </Panel>
+        {s && <SurfaceLeagueView ticker={s.underlying} />}
       </Section>
 
       <Section

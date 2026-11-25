@@ -37,9 +37,17 @@ from ...data.base import DataUnavailable
 from ...data.market import MarketData, get_market
 from ...macro.curve import zero_curve_on
 from ...options import bsm, density, realized, strategy, svi
+from ...options import ssvi as ssvi_mod
 from ...options.chain import CONTRACT_MULTIPLIER, ChainAnalytics, analyze_chain
 from ...options.parity import InsufficientQuotes, exercise_style
-from ...options.surface import VolSurface, build_surface, svi_weights
+from ...options.surface import (
+    VolSurface,
+    build_surface,
+    count_violations,
+    fit_ssvi_surface,
+    ssvi_grid,
+    svi_weights,
+)
 from ...options.svi import fit_svi
 from ..serialize import clean, frame, records, series
 
@@ -78,6 +86,8 @@ class _Bundle:
     created: float
     surface: VolSurface | None = None
     surface_error: str | None = None
+    ssvi: ssvi_mod.SSVIFit | None = None
+    ssvi_error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -153,6 +163,17 @@ def _surface(b: _Bundle) -> VolSurface:
     if b.surface is None:
         raise DataUnavailable(f"{b.ca.underlying}: no volatility surface ({b.surface_error})")
     return b.surface
+
+
+def _ssvi(b: _Bundle, vs: VolSurface) -> ssvi_mod.SSVIFit | None:
+    """SSVI on the expiries the per-slice surface fitted (completion task 4.5), once per cached chain."""
+    with b.lock:
+        if b.ssvi is None and b.ssvi_error is None:
+            try:
+                b.ssvi = fit_ssvi_surface(b.ca, vs)
+            except (ValueError, np.linalg.LinAlgError) as e:
+                b.ssvi_error = str(e)
+    return b.ssvi
 
 
 def _header(ca: ChainAnalytics) -> dict[str, Any]:
@@ -268,6 +289,9 @@ def surface(ticker: str, market: Market) -> dict[str, Any]:
         "grid": {"k": vs.grid_k, "moneyness": np.exp(vs.grid_k), "T": vs.grid_T, "days": vs.grid_T * 365.0,
                  "iv": vs.grid_iv},
         "calendar": vs.calendar,
+        # completion task 4.5: the SSVI surface on the same grid, and both models' violations counted one way
+        "svi_violations": count_violations(vs.slices()),
+        "ssvi": _ssvi_block(b, vs),
         "vix_style_30d": vs.vix_style,
         "atm_30d": vs.atm_30d,
         "expiries": _slice_summary(ca),
@@ -284,6 +308,18 @@ def surface(ticker: str, market: Market) -> dict[str, Any]:
         "errors": {**ca.errors, **vs.errors},
         "provenance": b.provenance,
     })
+
+
+def _ssvi_block(b: _Bundle, vs: VolSurface) -> dict[str, Any]:
+    f = _ssvi(b, vs)
+    if f is None:
+        return {"error": b.ssvi_error, "fit": None, "grid_iv": None, "violations": None}
+    p = f.params
+    return {"error": None, "fit": f.to_dict(), "grid_iv": ssvi_grid(p, vs.grid_k, vs.grid_T),
+            "violations": count_violations([(float(t), ssvi_mod.slice_svi(p, float(t))) for t in p.T]),
+            "method": "SSVI, power-law phi, one (rho, eta, gamma) for the surface and theta per expiry, fitted in "
+                      "implied vol to the per-slice fit's quotes and weights; eta (1 + |rho|) <= 2, gamma in (0, 1/2], "
+                      "theta non-decreasing: free of calendar and butterfly arbitrage (Gatheral & Jacquier 2014)"}
 
 
 #: Move sizes (fractions of spot) shared by ``prob_below`` (at 1 -/+ x) and ``prob_move``.

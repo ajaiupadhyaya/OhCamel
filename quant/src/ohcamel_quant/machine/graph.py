@@ -43,6 +43,7 @@ PROD: dict[str, tuple[str, str]] = {
     "cov.league": ("P3", "Covariance league"), "farm.sweep": ("P4", "Strategy farm"),
     "models.xs_lgbm": ("P5", "Cross-section model"), "regime.hmm": ("P6", "Regime model"),
     "vol.surface_history": ("P7", "Vol surface history"), "kronos.shadow": ("K", "Kronos shadow"),
+    "vol.surface_league": ("P7L", "Vol surface league"),
     "ops.data_integrity": ("DI", "Data integrity"), "risk.mc_intraday": ("P1i", "Intraday risk"),
     "factors.screen": ("FS", "Factor screen"), "signals.daily": ("SD", "Daily signals"),
     "signals.overlay": ("SO", "Exposure overlay"), "desk.report": ("DR", "Desk report"),
@@ -363,7 +364,7 @@ def _series_reads(kind: str, p: Product | None, inp: Inputs, tracks: dict[str, l
         return [f"d:{s}" for s in sorted({s for c in inp.roster.cells if c.producer == DAILY for s in c.symbols})]
     if kind == "regime.hmm":
         return ["d:SPY", "f:VIXCLS"]
-    if kind == "vol.surface_history":
+    if kind in ("vol.surface_history", "vol.surface_league"):
         return tracks["options"]
     if kind == "ops.data_integrity":
         return tracks["daily"]

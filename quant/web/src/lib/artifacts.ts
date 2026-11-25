@@ -20,6 +20,7 @@ export const KINDS = {
   models: "models.xs_lgbm",
   regimes: "regime.hmm",
   surface: "vol.surface_history",
+  surfaceLeague: "vol.surface_league",
   shadow: "kronos.shadow",
   screen: "factors.screen",
   integrity: "ops.data_integrity",

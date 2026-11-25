@@ -179,6 +179,8 @@ register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True, burstab
 register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=True, budget_s=5400,
                   burstable=True))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
+# Completion task 4.5: per-slice SVI against SSVI (and Heston from task 4.6), scored on the same snapshots.
+register(KindSpec("vol.surface_league", f"{_P}.surface_league:run", "M", heavy=True))
 register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True, draws_random=True, burstable=True))
 register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True, draws_random=True))
 # 2026-10-19 (docs/superpowers/plans/2026-10-19-kronos-qlib-rdagent.md): Kronos in prospective shadow (EXP-K01's

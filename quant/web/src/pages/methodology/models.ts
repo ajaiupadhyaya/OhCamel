@@ -488,6 +488,20 @@ export const MODELS: Model[] = [
     keywords: "svi smile surface butterfly calendar arbitrage",
   },
   {
+    id: "ssvi-surface-league",
+    name: "SSVI surface & the surface league",
+    section: "options",
+    summary: "One surface for every expiry at once: an ATM total variance per expiry and three shared parameters (ρ, η, γ), held inside the conditions under which it has no calendar or butterfly arbitrage at any strike or maturity. Each weekday night the per-slice SVI and SSVI are fitted to the same quotes of every snapshot underlying and scored three ways: in-sample RMSE, the count of butterfly and calendar violations (one check for both), and the RMSE of the previous day's fit on the latest day's quotes.",
+    formulas: [
+      { tex: T`w(k,\theta_T) = \tfrac{\theta_T}{2}\left(1 + \rho\varphi k + \sqrt{(\varphi k + \rho)^2 + 1 - \rho^2}\right),\quad \varphi(\theta) = \eta\,\theta^{-\gamma}(1+\theta)^{\gamma-1}` },
+      { tex: T`\eta(1+|\rho|) \le 2,\quad 0 < \gamma \le \tfrac12,\quad \partial_T \theta_T \ge 0`, caption: "Gatheral & Jacquier (2014), Theorems 4.1 and 4.2, Corollary 4.1" },
+    ],
+    assumptions: ["Fitted in implied vol to the per-slice fit's quotes and weights; the conditions are the optimiser's bounds, so nothing outside them is evaluated.", "Violations are measured, not assumed: Durrleman's g on k in [-3, 3] by the refined scan, and total variance non-decreasing in T on a 1201-point grid over the same range.", "Next-day RMSE uses each expiry's smile as fitted the day before at the quote's new log-moneyness; blank with its reason when there is no earlier snapshot day within four calendar days.", "A measurement, not a strategy: verdict DESCRIPTIVE ONLY."],
+    appears: [VOL_SURF],
+    refs: ["gatheral_jacquier_2014"],
+    keywords: "ssvi surface svi arbitrage-free calendar butterfly league power law",
+  },
+  {
     id: "smile-metrics",
     name: "Smile metrics & model-free implied variance",
     section: "options",

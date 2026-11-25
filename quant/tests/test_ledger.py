@@ -582,7 +582,7 @@ def test_the_prose_file_ties_each_product_to_its_kind_and_methodology(tmp_path):
     static = [r for r in build(tmp_path).rows if r.state == "static"]
     products = [r for r in static if re.match(r"^(P[1-7]|WATCH) ", r.item)]
     kinds = set(re.findall(r'^\s+\w+: "([a-z_.]+)",$', (WEB / "lib" / "artifacts.ts").read_text().split("} as const")[0], re.M))
-    assert len(products) == 10 and {r.kind for r in products} == kinds
+    assert len(products) == 11 and {r.kind for r in products} == kinds
     assert all(r.kind is None for r in static if r not in products)
     models = (WEB / "pages" / "methodology" / "models.ts").read_text()
     for r in products:

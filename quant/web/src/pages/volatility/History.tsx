@@ -4,6 +4,8 @@
  * extrapolation), the term slope, RR / BF 25Δ at 30D, 30D model-free variance, and the VRP
  * against the P2 league's HAR 22-day forecast (Lane M, plan M8). The history only grows; the
  * cell says how many days it holds. Before Lane M's first run: INSUFFICIENT DATA · NOT YET RUN.
+ * Beside it, vol.surface_league (completion task 4.5): per-slice SVI against SSVI on the same snapshots, readable
+ * here when the live chain is offline (the Surface tab shows it too).
  */
 import { ArtifactCell, DataTable, Section, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
@@ -14,6 +16,7 @@ import { useTable } from "../research/products";
 import { historyFor, type HistoryErrorRow, type HistoryPoint, type HistoryRow, type HistorySummaryRow } from "./derive";
 import { INFO } from "./info";
 import { Readline, fmtVolPts } from "./shared";
+import { SurfaceLeagueView } from "./SurfaceLeague";
 
 export function HistoryView({ ticker }: { ticker: string }) {
   return (
@@ -28,6 +31,7 @@ export function HistoryView({ ticker }: { ticker: string }) {
       <ArtifactCell title="Daily · SVI · ATM · skew · VRP" kind={KINDS.surface} span="all">
         {(m) => <History m={m} ticker={ticker} />}
       </ArtifactCell>
+      <SurfaceLeagueView ticker={ticker} />
     </Section>
   );
 }

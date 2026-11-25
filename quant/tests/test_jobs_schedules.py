@@ -233,6 +233,26 @@ def test_option_chains_are_pulled_at_1545_and_1620_new_york_in_both_offsets():
     assert {n for n, hm in at if hm == (15, 42)} == {pre.name}
 
 
+def test_the_surface_league_runs_weekdays_at_2110_class_m_heavy_after_the_surface_history():
+    """Completion task 4.5: vol.surface_league, weekdays 21:10 New York, class M, heavy, nightly priority -- ten
+    minutes after vol.surface_history (21:00), which reads the same snapshots."""
+    from zoneinfo import ZoneInfo
+
+    from ohcamel_quant.jobs.cron import fire_times, parse_cron
+
+    ny = ZoneInfo("America/New_York")
+    s = load_schedules(DEFAULT_PATH)
+    (e,) = [x for x in s.entries if x.kind == "vol.surface_league"]
+    assert (e.cron, e.mem_class, e.heavy, e.priority) == ("10 21 * * 1-5", "M", True, 2)
+    spec = REGISTRY["vol.surface_league"]
+    assert (spec.mem_class, spec.heavy, spec.public) == ("M", True, False)
+    assert s.max_age_s["vol.surface_league"] == 78 * 3600
+    for monday in (datetime(2026, 1, 5).date(), datetime(2026, 7, 6).date()):
+        fires = [t.astimezone(ny) for i in range(7) for t in fire_times(parse_cron(e.cron), monday + timedelta(days=i))]
+        assert sorted(f.weekday() for f in fires) == [0, 1, 2, 3, 4]
+        assert {(f.hour, f.minute) for f in fires} == {(21, 10)}
+
+
 def test_no_warehouse_writer_is_scheduled_inside_the_nightly_export_window():
     """Task 3.3 fix round 1: the warehouse export opens it read-only at the backup timer's time (06:30 UTC) and
     holds the shared lock for up to EXPORT_BUDGET_MIN; a writer that starts then waits 30 s and fails its keys.

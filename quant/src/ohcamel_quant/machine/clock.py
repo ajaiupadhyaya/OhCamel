@@ -25,6 +25,7 @@ PRETTY = {
     "ingest.bars_minute": "Minute bars", "ingest.fred_warehouse": "Macro series", "ingest.factors": "Factors", "ingest.sec_facts": "SEC filings",
     "ingest.holdings_13f": "13F holdings", "ingest.option_snapshots": "Option chains", "risk.mc_atlas": "Risk atlas", "risk.mc_intraday": "Intraday risk",
     "vol.forecast_league": "Vol forecast league", "cov.league": "Covariance league", "farm.sweep": "Strategy farm", "vol.surface_history": "Vol surface",
+    "vol.surface_league": "Vol surface league",
     "models.xs_lgbm": "Cross-section model", "regime.hmm": "Regime model", "ops.data_integrity": "Data integrity", "kronos.shadow": "Kronos shadow",
     "factors.screen": "Factor screen", "signals.daily": "Daily signals", "signals.overlay": "Exposure overlay", "desk.report": "Desk report",
     "ingest.corp_actions": "Corporate actions",

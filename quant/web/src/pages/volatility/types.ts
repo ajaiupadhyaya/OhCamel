@@ -245,11 +245,61 @@ export interface CalendarCheck {
   violation_k: number[];
 }
 
+/** Butterfly / calendar violation counts of SVI-form slices (options.surface.count_violations). */
+export interface Violations {
+  butterfly_violations: number;
+  calendar_violations: number;
+  calendar_pairs: number;
+  n_slices: number;
+}
+
+/** The SSVI surface beside the per-slice one (completion task 4.5; options.ssvi). */
+export interface SSVIBlock {
+  error: string | null;
+  fit: {
+    params: { rho: number; eta: number; gamma: number; theta: number[]; T: number[]; eta_one_plus_abs_rho: number };
+    n: number;
+    rmse_vol_pts: number;
+    max_abs_err_vol_pts: number;
+    slice_rmse_vol_pts: number[];
+    slice_n: number[];
+    cost: number;
+    nfev: number;
+    status: number;
+    conditions: Record<string, string>;
+  } | null;
+  grid_iv: (number | null)[][] | null;
+  violations: Violations | null;
+  method?: string;
+}
+
+/** vol.surface_league `league`: one row per model per underlying. */
+export interface SurfaceLeagueRow {
+  underlying: string;
+  model: string;
+  asof: string;
+  n_slices: number | null;
+  n_quotes: number | null;
+  rmse_vol_pts: number | null;
+  butterfly_violations: number | null;
+  calendar_violations: number | null;
+  calendar_pairs: number | null;
+  next_day_rmse_vol_pts: number | null;
+  next_day_n: number | null;
+  next_day_unscored: number | null;
+  next_day_fit_asof: string | null;
+  next_day_note: string | null;
+  params: string | null;
+  fit_note: string | null;
+}
+
 export interface Surface extends ChainHeader {
   term_structure: TermRow[];
   smiles: SmileSlice[];
   grid: { k: number[]; moneyness: number[]; T: number[]; days: number[]; iv: (number | null)[][] };
   calendar: CalendarCheck[];
+  svi_violations: Violations;
+  ssvi: SSVIBlock;
   vix_style_30d: { sigma2: number; index: number; T1: number; T2: number; extrapolated: boolean; target_days: number } | null;
   atm_30d: { iv: number; extrapolated: boolean; method: string } | null;
   expiries: SliceSummary[];

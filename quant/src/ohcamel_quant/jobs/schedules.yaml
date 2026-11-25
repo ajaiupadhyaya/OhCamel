@@ -33,6 +33,7 @@ max_age:
   cov.league: 204h
   farm.sweep: 78h
   vol.surface_history: 78h
+  vol.surface_league: 78h
   models.xs_lgbm: 816h   # monthly (1st, 22:30) plus 2 days
   regime.hmm: 204h       # weekly (Saturday 09:00), like the weekly ingest kinds
   # 2026-10-19: Kronos shadow and the data-integrity sweep nightly (78h), the factor screen weekly (204h).
@@ -234,6 +235,16 @@ schedules:
   - name: vol-surface-history
     cron: "0 21 * * 1-5"
     kind: vol.surface_history
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Completion task 4.5: per-slice SVI against SSVI on three scores (in-sample RMSE, butterfly and calendar
+  # violations, next-day RMSE), ten minutes after vol.surface_history reads the same snapshots.
+  - name: vol-surface-league
+    cron: "10 21 * * 1-5"
+    kind: vol.surface_league
     params: {}
     priority: 2
     mem_class: M

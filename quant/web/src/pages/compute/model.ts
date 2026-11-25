@@ -76,6 +76,7 @@ const PRODUCT_PAGES: Record<string, { to: string; code: string }> = {
   "risk.mc_intraday": { to: "/risk", code: "RISK" },
   "vol.forecast_league": { to: "/options?tab=forecasts", code: "VOL" },
   "vol.surface_history": { to: "/options?tab=history", code: "VOL" },
+  "vol.surface_league": { to: "/options?tab=history", code: "VOL" },
   "cov.league": { to: "/portfolio?tab=cov", code: "PORT" },
   "farm.sweep": { to: "/research?view=farm", code: "RSCH" },
   "models.xs_lgbm": { to: "/research?view=models", code: "RSCH" },
