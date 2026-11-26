@@ -33,6 +33,10 @@ class KindSpec:
     draws_random: bool = False
     #: Completion task 3.6: an L kind's compute budget in seconds (its wall limit is this plus WALL_MARGIN_S).
     budget_s: int | None = None
+    #: 2026-11-26: an M or S kind whose measured runs on the droplet exceed its class's wall limit holds its own
+    #: limit here (seconds); the memory class, and so admission, is unchanged. Measured by `jobs wall-times` on the
+    #: droplet over the 30 days before the deploy that brought the limits.
+    wall_s: int | None = None
     #: Completion task 3.7 (spec R6): the kind may run on a burst machine against the nightly warehouse export and
     #: have its artifact uploaded through the burst door (jobs/burst_door.py). Only the four heavy research kinds.
     burstable: bool = False
@@ -51,6 +55,8 @@ class KindSpec:
         if self.mem_class == "L":
             assert self.budget_s is not None
             return int(self.budget_s) + WALL_MARGIN_S
+        if self.wall_s is not None:
+            return int(self.wall_s)
         return WALL_LIMIT_S[self.mem_class]
 
 
@@ -172,7 +178,9 @@ _P = "ohcamel_quant.products"
 # sampling -- each records the seed it already used (none was changed).
 register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True, draws_random=True, burstable=True))
 register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False, draws_random=True))
-register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True, draws_random=True))
+# vol.forecast_league and regime.hmm: the droplet's slowest runs in the 30 days to 2026-11-26 were 4,284 s and
+# 3,255 s, past the M limit (2,700 s), so each holds its own limit, about 1.5 times its slowest run.
+register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True, draws_random=True, wall_s=6600))
 register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True, burstable=True))
 # farm.sweep's budget is products/farm.py's BUDGET_MINUTES (90; this module must not import pandas, so the number
 # is restated and tests/test_jobs_worker.py holds the two equal).
@@ -180,7 +188,7 @@ register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=
                   burstable=True))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
 register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True, draws_random=True, burstable=True))
-register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True, draws_random=True))
+register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True, draws_random=True, wall_s=5400))
 # 2026-10-19 (docs/superpowers/plans/2026-10-19-kronos-qlib-rdagent.md): Kronos in prospective shadow (EXP-K01's
 # design; torch runs in research/kronos's own venv, a subprocess), the owner's factor ledger re-screened on the
 # warehouse universe, and the nightly data-integrity sweep. Private: scheduled only.

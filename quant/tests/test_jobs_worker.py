@@ -211,6 +211,12 @@ def test_wall_limits_follow_the_class_and_an_l_kind_s_budget():
 
     assert get_kind("ops.selftest").wall_limit_s == 600
     assert get_kind("cov.league").wall_limit_s == 2700
+    # 2026-11-26: two M kinds measured past 2,700 s on the droplet hold their own limit; their class is unchanged
+    assert get_kind("vol.forecast_league").wall_limit_s == 6600
+    assert get_kind("vol.forecast_league").mem_class == "M"
+    assert get_kind("regime.hmm").wall_limit_s == 5400
+    assert get_kind("regime.hmm").mem_class == "M"
+    assert all(k.wall_s is None for k in REGISTRY.values() if k.mem_class == "L")   # an L kind's limit is its budget
     assert get_kind("farm.sweep").budget_s == farm.BUDGET_MINUTES * 60
     assert get_kind("farm.sweep").wall_limit_s == farm.BUDGET_MINUTES * 60 + 600
     # the schedule's own budget wins for the run it starts (farm.sweep takes budget_minutes)
