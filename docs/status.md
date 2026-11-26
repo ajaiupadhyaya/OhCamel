@@ -128,12 +128,11 @@ None of these is the agent's to do. The order is the order of dependence.
    three regimes). R2 (reduce through a trip) and R4 and R6 are defaults too. No file may call a ruling the owner's
    before the spec records it (`research/tests/test_rulings_attributed.py` fails if one does).
 3. **The deploy hold.** Deploy no sha at or after `594df16`, with `--live` or `--public-only`, until INC-02 is approved
-   and `book.sexp` is regenerated (*Deploy, by sha*; *Deploying the desk (completion Task 1.12)*). `main` is at
-   `d788e86` (the owner pushed it 2026-11-24); the completion branch beyond it is not pushed to `main`.
+   and `book.sexp` is regenerated (*Deploy, by sha*; *Deploying the desk (completion Task 1.12)*). `main` is at `c1ae5ea`, the completion merged and pushed on 2026-11-26; the hosts are not.
    **Deploys still owed**, per the ledger: the hosts stand at `db54ce8` (`4cd3848 --public-only` and `db54ce8 --live`, both
    2026-11-16 23:07Z). Day 3's `a14005b --live` and Day 4's `d788e86` (`--public-only`, with `--live` after) are OWNER-PENDING,
    and both are before the hold, so they may go any time; nothing at or after `594df16` may. **Pass the sha
-   explicitly** (`deploy/deploy.sh --sha d788e86`): once the completion branch is merged, a deploy with the default
+   explicitly** (`deploy/deploy.sh --sha d788e86`): now that the completion is merged, a deploy with the default
    sha (`origin/main`) targets a sha past the `594df16` hold, and its `check-book` step refuses the droplet's INC-01 book.
 4. **Regenerate `book.sexp`** from `book.example.sexp` by the recipe in *Changing the book* (every word the live book
    changes is listed there: `trading`, `kill_switch_enabled`, `kill_switch_trips_on`, `reduce_through_trip`,
