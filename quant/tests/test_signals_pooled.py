@@ -270,6 +270,7 @@ def test_the_served_record_shape_is_read_end_to_end(tmp_path, monkeypatch):
         *RESEARCH["strategies"][1:]]}
     routes = {**_full(), "/api/research": _ok(served), "/api/desk/sessions": _ok(closes)}
     monkeypatch.setattr(report, "recorded_approval", lambda text: "2026-11-09")
+    monkeypatch.setattr(report, "recorded_flatten", lambda text: (True, "2026-11-09"))   # Roster-6(a) done the day before
     with _Engine(routes) as eng:
         spec = report.run({}, _ctx(tmp_path, eng.url))
     r = spec.tables["pooled_test"].iloc[0]
@@ -299,3 +300,28 @@ def test_an_approval_line_without_a_date_is_not_started_and_says_so(tmp_path):
     row = _row(_bodies(40), path=tmp_path / "roster.yaml")
     assert row["verdict"] == "NOT STARTED" and row["sessions_done"] == 0
     assert row["reason"] == "INC-02's approval line carries no date"
+
+
+def test_an_approval_with_an_empty_flatten_line_waits_for_the_flatten(tmp_path):
+    """2026-11-27, Roster-6(a): a pre-registration with the flatten line and no date reads NOT STARTED, however many
+    fills there are -- the flatten's own fills are not INC-02's first fill."""
+    path = _experiment(tmp_path, "Approved-by: the owner, 2027-01-02\n\nRoster-6(a) flatten completed:\n")
+    row = _row(_bodies(120), path=path)
+    assert row["verdict"] == "NOT STARTED" and row["sessions_done"] == 0
+    assert row["reason"] == "INC-02 waits for Roster-6(a)'s flatten of INC-01's carried positions"
+
+
+def test_the_series_starts_at_the_first_fill_after_the_recorded_flatten(tmp_path):
+    """The flatten's session (a fill, positive turnover) and every session up to it are excluded; the series starts
+    at the first fill the day after it, never on the flatten itself."""
+    research, closes, rf, last = _bodies(120)
+    rec = research["strategies"][0]["record"]["sessions"]
+    flatten_day = rec[9]["date"]                       # the tenth session: INC-01's flatten, a fill
+    path = _experiment(tmp_path, f"Approved-by: the owner, 2027-01-02\n\nRoster-6(a) flatten completed: {flatten_day}\n")
+    row = _row((research, closes, rf, last), path=path)
+    assert row["sessions_done"] == 110
+    from ohcamel_quant.signals.roster import recorded_flatten
+
+    assert recorded_flatten("Roster-6(a) flatten completed:\n") == (True, None)
+    assert recorded_flatten("no such line\n") == (False, None)
+    assert recorded_flatten(f"`Roster-6(a) flatten completed: {flatten_day}`") == (True, flatten_day)

@@ -73,7 +73,7 @@ import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
 from .pooled import SESSIONS, analytic_power, psr_and_se, verdict_at
-from .roster import ROSTER_PATH, load_roster, preregistration_text, recorded_approval
+from .roster import ROSTER_PATH, load_roster, preregistration_text, recorded_approval, recorded_flatten
 
 __all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "PAPER_SENTENCE", "ROUTES", "TCA_COLUMNS", "TIMEOUT_S",
            "VAR_SCORE_COLUMNS", "POOLED_COLUMNS", "run"]
@@ -569,12 +569,20 @@ def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf
         dateless = any(re.match(r"^`?Approved-by:`?\s*\S", line.strip()) for line in text.splitlines())
         return [{**head, **idle, "reason": "INC-02's approval line carries no date" if dateless
                  else "INC-02 awaits the owner's approval"}]
+    # Roster-6(a): INC-01's carried positions are flattened first, and that flatten's fills are not INC-02's
+    # first fill, so the series starts after the recorded flatten date; a file with the line and no date waits.
+    has_flatten_line, flattened_on = recorded_flatten(text)
+    if has_flatten_line and flattened_on is None:
+        return [{**head, **idle, "reason": "INC-02 waits for Roster-6(a)'s flatten of INC-01's carried positions"}]
+    since = approved_on
+    if flattened_on is not None:
+        since = max(approved_on, (date.fromisoformat(flattened_on) + timedelta(days=1)).isoformat())
     try:
         slugs = frozenset(c.slug for c in load_roster(roster_path).cells)
     except (OSError, ValueError) as e:
         notes.append(f"pooled_test: INC-02's roster could not be read ({type(e).__name__}): nothing is counted")
         return [{**head, **idle, "reason": "INC-02's roster could not be read"}]
-    daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes, since=approved_on, slugs=slugs)
+    daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes, since=since, slugs=slugs)
     if recorded == 0:
         return [{**head, **idle, "reason": "no INC-02 fill yet" if cause is None else cause}]
     done = min(recorded, SESSIONS)

@@ -120,9 +120,12 @@ The same steps are in [`runbooks/desk.md`](runbooks/desk.md).
 
 None of these is the agent's to do. The order is the order of dependence.
 
-1. **Read and approve INC-02**, line by line (`research/experiments/INC-02/preregistration.md`, ending in an
-   `Approved-by:` line). Check 4 fails until it names a date; the pooled test's series starts at INC-02's first
-   fill dated on or after that date (never on or before INC-01's close, 2026-11-05).
+1. **INC-02: APPROVED by the owner on 2026-11-27**, every numbered line as drafted, Roster-6 by option (a)
+   (`research/experiments/INC-02/preregistration.md`, *Approval*). The pooled test now also reads the file's
+   `Roster-6(a) flatten completed:` line: until it names a date the test reads NOT STARTED, and then the series starts
+   at the first fill AFTER that date, so the flatten's own fills are never INC-02's first fill (the final review's
+   parked item 3). **Owner's, still:** flatten INC-01's carried positions in the roster's strategies, write that
+   line's date (the last session of the flatten), then lift the halt.
 2. **R3, the farm's gates** (spec ruling R3): the default stands until the owner answers; two questions ride with it
    (whether it applies to EXP-I01–I03 and Q01's unspent holdout, and the cells whose out-of-sample record cannot reach
    three regimes). R2 (reduce through a trip) and R4 and R6 are defaults too. No file may call a ruling the owner's
@@ -140,7 +143,14 @@ None of these is the agent's to do. The order is the order of dependence.
    `deploy/deploy.sh --sha f7366fe --public-only --build`. Until it is deployed both kinds fail at 45 minutes.
    **Pass the sha explicitly**: a deploy with the default sha (`origin/main`) targets a sha past the `594df16` hold, and
    its `check-book` step refuses the droplet's INC-01 book.
-4. **Regenerate `book.sexp`** from `book.example.sexp` by the recipe in *Changing the book* (every word the live book
+4. **The INC-02 book, generated 2026-11-27 by the agent** (`~/book.sexp.inc02-candidate` on the droplet, passes
+   `check-book` with main's engine): the six words below set, `book_vols` run on the droplet with main's code and image
+   (the deployed image's kernels are API 3, main's 5), 18 farm rows measured from the 2026-11 freeze. Two rows are LEFT
+   OUT: `farm_low_beta_sectors` and `farm_pairs_distance_sectors` have never had parameters, so under F1 they are never
+   emitted and never trade, and `tools/book_ex_ante_vol.py` refuses a book that keeps a farm row it cannot measure; the
+   desk refuses a document for a strategy its book does not name, so they fail closed. Re-add them, measured, when a
+   freeze first carries them. The incubation total is then 0.50 of the 0.55 cap. The recipe it followed:
+   **Regenerate `book.sexp`** from `book.example.sexp` by the recipe in *Changing the book* (every word the live book
    changes is listed there: `trading`, `kill_switch_enabled`, `kill_switch_trips_on`, `reduce_through_trip`,
    `var_window`, and each strategy's `ex_ante_vol`): run `book_vols` on the droplet, write the vols with
    `tools/book_ex_ante_vol.py --vols` (*Getting the book's ex-ante volatilities*). A book with no `(ex_ante_vol F)`
@@ -303,7 +313,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2682<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2684<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.

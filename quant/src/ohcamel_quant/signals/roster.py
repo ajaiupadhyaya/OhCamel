@@ -17,7 +17,7 @@ import yaml
 
 from ohcamel_quant.config import REPO_ROOT
 
-__all__ = ["PRODUCERS", "ROSTER_PATH", "Cell", "Roster", "load_roster", "preregistration_text", "recorded_approval", "roster_draft",
+__all__ = ["PRODUCERS", "ROSTER_PATH", "Cell", "Roster", "load_roster", "preregistration_text", "recorded_approval", "recorded_flatten", "roster_draft",
            "targets_gross_scaled"]
 
 ROSTER_PATH = REPO_ROOT / "research" / "experiments" / "INC-02" / "roster.yaml"
@@ -123,6 +123,22 @@ def recorded_approval(text: str) -> str | None:
         if s.startswith("**Status:") and "APPROVED" in s and (m := _DATE.search(s[s.index("APPROVED"):])):
             return m.group(1)
     return None
+
+
+FLATTEN_LINE = "Roster-6(a) flatten completed:"
+
+
+def recorded_flatten(text: str) -> tuple[bool, str | None]:
+    """INC-02's Roster-6(a) record (2026-11-27): ``(has_line, date)``. The pre-registration's
+    ``Roster-6(a) flatten completed:`` line names the last session on which INC-01's carried positions were
+    flattened; the pooled test starts at the first fill after it. ``(True, None)``: the line is there and names no
+    date yet (the flatten is not done); ``(False, None)``: the file has no such line."""
+    for line in text.splitlines():
+        s = line.strip().strip("`")
+        if s.startswith(FLATTEN_LINE):
+            m = _DATE.search(s)
+            return True, (m.group(1) if m else None)
+    return False, None
 
 
 def preregistration_text(path: Path = ROSTER_PATH) -> str:

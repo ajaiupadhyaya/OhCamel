@@ -15,6 +15,7 @@ from ohcamel_quant.signals.roster import (
     ROSTER_PATH,
     Cell,
     load_roster,
+    preregistration_text,
     recorded_approval,
     roster_draft,
 )
@@ -48,7 +49,9 @@ def test_the_rosters_farm_rows_are_the_farms_cells():
 
 def test_the_roster_is_a_draft_until_its_preregistration_records_the_owners_approval(tmp_path):
     """The label keys off the pre-registration's own ``Approved-by:`` line, so it goes by itself on approval."""
-    assert roster_draft() == "INC-02"
+    # 2026-11-27: the owner approved INC-02, so its roster carries no draft label
+    assert roster_draft() is None
+    assert recorded_approval(preregistration_text()) == "2026-11-27"
     exp = tmp_path / "INC-09"
     exp.mkdir()
     roster = exp / "roster.yaml"

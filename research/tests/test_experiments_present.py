@@ -57,19 +57,19 @@ def test_inc01_roster_stays_as_it_traded() -> None:
     assert roster["incubation_cap"] == 0.60
 
 
-# ------------------------------------------------------------------ INC-02 is a draft
-def test_inc02_is_a_draft_no_one_has_approved() -> None:
-    """``Approved-by:`` is empty and no status line says APPROVED: the agent drafts, the owner
-    approves."""
+# ------------------------------------------------------------------ INC-02 is approved
+def test_inc02_is_approved_by_the_owner_and_waits_for_the_flatten() -> None:
+    """2026-11-27: the owner approved INC-02 as drafted, in chat. The ``Approved-by:`` line names the owner, the
+    date and their words; the status line says APPROVED with the same date; and the Roster-6(a) flatten line is
+    there for the date the pooled test starts after (empty until the flatten is done)."""
     text = (INC02 / "preregistration.md").read_text()
     approval = text[text.rindex("## Approval") :]
-    lines = [ln.strip() for ln in approval.splitlines() if "Approved-by:" in ln]
-    assert lines, "INC-02's Approval section has no Approved-by: line"
-    for ln in lines:
-        after = ln.split("Approved-by:", 1)[1].strip(" `")
-        assert after == "", f"INC-02's Approved-by: line is not empty: {ln!r}"
+    lines = [ln.strip() for ln in approval.splitlines() if ln.strip().startswith("Approved-by:")]
+    assert len(lines) == 1, "INC-02's Approval section has not exactly one Approved-by: line"
+    assert lines[0].startswith("Approved-by: the owner, 2026-11-27, in chat:") and "approve as drafted" in lines[0]
     status = [ln for ln in text.splitlines() if ln.startswith("**Status:")]
-    assert status and "DRAFT" in status[0] and "APPROVED" not in status[0]
+    assert status and "APPROVED by the owner on 2026-11-27" in status[0] and "DRAFT" not in status[0]
+    assert any(ln.strip().startswith("Roster-6(a) flatten completed:") for ln in approval.splitlines())
 
 
 def test_inc02_first_paragraph_states_the_test_and_its_power() -> None:

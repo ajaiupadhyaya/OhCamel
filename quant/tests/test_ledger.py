@@ -418,8 +418,8 @@ def test_a_desk_read_raising_unexpectedly_leaves_the_rest_served(tmp_path, monke
         assert item(led, name).state == "unknown"
     assert item(led, "BOOK LIMITS").state == "unknown"
     assert item(led, "BACKUPS NIGHTLY").state == "ok" and item(led, "ONE BUILD ON BOTH HOSTS").state == "ok"
-    r = item(led, "PRE-REGISTRATIONS")   # served: computed from the repo, where INC-02 awaits the owner
-    assert r.state == "attention" and "Awaiting the owner: INC-02" in r.detail
+    r = item(led, "PRE-REGISTRATIONS")   # served: computed from the repo, where INC-02 is approved since 2026-11-27
+    assert r.state == "ok" and "INC-02 2026-11-27" in r.detail and "Awaiting" not in r.detail
 
 
 def test_missing_values_in_the_report_do_not_break_the_rows(tmp_path):
@@ -496,15 +496,14 @@ def test_no_preregistration_in_the_build_is_unknown(tmp_path, make):
     assert r.state == "unknown" and r.detail.startswith("Unknown:")
 
 
-def test_the_repositorys_preregistrations_read_as_approved_but_inc02(tmp_path):
-    """INC-02 is the agent's draft (completion ruling R4): the ledger says it awaits the owner until the owner's
-    approval is recorded in it."""
+def test_the_repositorys_preregistrations_all_read_as_approved(tmp_path):
+    """INC-02 was the agent's draft (completion ruling R4) until the owner approved it on 2026-11-27; every
+    pre-registration in the repository now records the owner's approval, so the row is ok and names INC-02's date."""
     r = item(build(tmp_path), "PRE-REGISTRATIONS")
-    assert r.state == "attention"
-    approved, _, waiting = r.detail.partition("Awaiting the owner:")
-    for name in ("EXP-Q01", "EXP-Q02", "EXP-K01", "INC-01"):
-        assert name in approved
-    assert waiting.split(".")[0].strip() == "INC-02"
+    assert r.state == "ok" and "Awaiting the owner" not in r.detail
+    for name in ("EXP-Q01", "EXP-Q02", "EXP-K01", "INC-01", "INC-02"):
+        assert name in r.detail
+    assert "INC-02 2026-11-27" in r.detail
 
 
 # ------------------------------------------------------------------ what may not appear

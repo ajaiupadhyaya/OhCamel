@@ -1,8 +1,9 @@
 # INC-02 — The pooled incubation book: one test that can be wrong
 
-**Status: DRAFT, awaiting the owner's approval line by line. Nothing in this file is approved.** No INC-02
-session trades, and the kill switch is not reset, until the owner's approval is recorded under *Approval* at
-the bottom. Drafted by the agent on 2026-11-24 from `docs/superpowers/specs/2026-11-15-the-completion.md`
+**Status: APPROVED by the owner on 2026-11-27, every numbered line as drafted, Roster-6 by option (a)** (the
+record is under *Approval* at the bottom; the *(awaiting approval)* marks below are the draft's, kept so the text
+the owner approved is the text that stands). No INC-02 session trades until Roster-6(a)'s flatten is recorded
+there too, and only the owner lifts the desk's halt. Drafted by the agent on 2026-11-24 from `docs/superpowers/specs/2026-11-15-the-completion.md`
 (*Research*; rulings R1 and R4). Under `docs/CHARTER.md` the owner owns hypotheses and kill decisions, and
 ruling R4 says INC-02 is written by the owner from this draft: every numbered line below is the owner's to approve,
 change or strike, and each is marked *(awaiting approval)* until then. A line marked *agent's proposal* fills
@@ -409,4 +410,11 @@ market-on-close order (Alpaca `cls`) sent when the producer's 15:45 zero-target 
 
 ## Approval
 
-Approved-by:
+Approved-by: the owner, 2026-11-27, in chat: "Yes, approve as drafted" -- every numbered line of this file as
+written on that date, Roster-6 by option (a), flatten first.
+
+Roster-6(a) flatten completed:
+
+*The flatten line is a record, not a rule: the date of the last session on which INC-01's carried positions in the
+roster's strategies were flattened. INC-02's pooled test (T1, T2) starts at the first fill AFTER that date, so the
+flatten's own fills are never INC-02's first fill; until the line names a date the test reads NOT STARTED.*
