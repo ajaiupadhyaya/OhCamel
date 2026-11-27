@@ -28,7 +28,7 @@ def test_tiers_are_read_from_the_one_file():
     m = costs.load()
     assert costs.COSTS_PATH == REPO_ROOT / "research" / "config" / "costs.yaml"
     assert (m.half_spread_bps("SPY"), m.tier("SPY")) == (1.0, 1)
-    assert (m.half_spread_bps("LQD"), m.tier("LQD")) == (3.0, 2)
+    assert (m.half_spread_bps("GLD"), m.tier("GLD")) == (3.0, 2)
     assert (m.half_spread_bps("UNG"), m.tier("UNG")) == (8.0, 3)
     assert m.half_spread_bps("spy") == 1.0
     assert m.borrow_bps == 50.0 and m.financing_spread_bps == 50.0
@@ -49,6 +49,18 @@ def test_every_site_etf_has_a_tier_and_a_stated_source():
     assert len(etfs) == 42
     assert sorted(m.tickers) == etfs
     assert {m.source(t) for t in etfs} <= {"measured", "provisional"}
+    # 2026-11-26: a measured row is the measurement's tier, and the measurement's own rounding; a name the
+    # measurement could not tier keeps a provisional row
+    import csv
+
+    rows = {r["ticker"]: r for r in csv.DictReader((costs.COSTS_PATH.parent / "costs_measured.csv").open())}
+    assert sorted(rows) == etfs
+    for t, r in rows.items():
+        if r["tier"] == "none":
+            assert m.source(t) == "provisional" and float(r["median_half_spread_bps"]) > max(m.tiers_bps.values()), t
+        else:
+            assert m.source(t) == "measured" and m.tier(t) == int(r["tier"]), t
+            assert costs.tier_for(float(r["median_half_spread_bps"])) == int(r["tier"]), t
 
 
 def test_a_measured_half_spread_rounds_up_to_its_tier():
@@ -66,7 +78,7 @@ def test_scaled_multiplies_the_half_spread_and_nothing_else():
     assert s.scaled(2.0).half_spread_bps("SPY") == 6.0
     assert m.scaled(0.0).half_spread_bps("UNG") == 0.0
     assert (s.borrow_bps, s.financing_spread_bps) == (m.borrow_bps, m.financing_spread_bps)
-    np.testing.assert_allclose(s.half_spreads(["SPY", "LQD"]), [3.0, 9.0])
+    np.testing.assert_allclose(s.half_spreads(["SPY", "GLD"]), [3.0, 9.0])
     with pytest.raises(ValueError):
         m.scaled(-1.0)
 

@@ -63,14 +63,16 @@ def test_the_public_costs_default_to_the_one_cost_file(bt_client):
     assert d["cost_bps"] is None and d["borrow_bps"] == m.borrow_bps and d["financing_bps"] == m.financing_spread_bps
     assert d["costs_file"] == "research/config/costs.yaml" and d["ticker_tiers"]["UNG"] == 3
     assert d["tiers_bps"] == {"1": 1.0, "2": 3.0, "3": 8.0}
-    body = {"strategy": "buy_and_hold", "tickers": ["SPY", "TLT"], "bootstrap_reps": 100}
+    # two names on different tiers (2026-11-26: measured, SPY tier 1 and GLD tier 2), so a constant cannot pass
+    body = {"strategy": "buy_and_hold", "tickers": ["SPY", "GLD"], "bootstrap_reps": 100}
     eng = bt_client.post("/api/backtest/run", json=body).json()["method"]["engine"]
-    assert eng["half_spread_bps"] == {"SPY": 1.0, "TLT": 3.0}
+    assert (m.tier("SPY"), m.tier("GLD")) == (1, 2)
+    assert eng["half_spread_bps"] == {"SPY": 1.0, "GLD": 3.0}
     assert eng["borrow_bps_per_year"] == 50.0 and eng["financing_bps_per_year_over_rf_on_gross_above_1"] == 50.0
     assert eng["cost_source"]["half_spread"].startswith("research/config/costs.yaml")
     mine = bt_client.post("/api/backtest/run", json={**body, "cost_bps": 7.0, "borrow_bps": 10.0,
                                                      "financing_bps": 0.0}).json()["method"]["engine"]
-    assert mine["half_spread_bps"] == {"SPY": 7.0, "TLT": 7.0} and mine["borrow_bps_per_year"] == 10.0
+    assert mine["half_spread_bps"] == {"SPY": 7.0, "GLD": 7.0} and mine["borrow_bps_per_year"] == 10.0
     assert mine["financing_bps_per_year_over_rf_on_gross_above_1"] == 0.0
     assert mine["cost_source"]["half_spread"] == "cost_bps (yours)"
 

@@ -129,11 +129,17 @@ None of these is the agent's to do. The order is the order of dependence.
    before the spec records it (`research/tests/test_rulings_attributed.py` fails if one does).
 3. **The deploy hold.** Deploy no sha at or after `594df16`, with `--live` or `--public-only`, until INC-02 is approved
    and `book.sexp` is regenerated (*Deploy, by sha*; *Deploying the desk (completion Task 1.12)*). `main` is at `c1ae5ea`, the completion merged and pushed on 2026-11-26; the hosts are not.
-   **Deploys still owed**, per the ledger: the hosts stand at `db54ce8` (`4cd3848 --public-only` and `db54ce8 --live`, both
-   2026-11-16 23:07Z). Day 3's `a14005b --live` and Day 4's `d788e86` (`--public-only`, with `--live` after) are OWNER-PENDING,
-   and both are before the hold, so they may go any time; nothing at or after `594df16` may. **Pass the sha
-   explicitly** (`deploy/deploy.sh --sha d788e86`): now that the completion is merged, a deploy with the default
-   sha (`origin/main`) targets a sha past the `594df16` hold, and its `check-book` step refuses the droplet's INC-01 book.
+   **Deployed 2026-11-26 (Thanksgiving, market shut):** the owner ran `deploy/deploy.sh --sha d788e86 --live
+   --during-market`, so both hosts stand at `d788e86` (Day 3 and Day 4 together). Its smoke failed 8 page checks with no
+   response because caddy had been recreated 3 s before; the re-run passed 52 of 52, but `~/deploys.log` keeps that
+   deploy's `failed` line, so a rollback by "newest ok" still means `db54ce8`. The halt held through the restart.
+   **One deploy still owed, before the hold:** `f7366fe` (branch `auto/hotfix-wall`, cut from `d788e86`): the wall
+   limits that `d788e86` brought kill `vol.forecast_league` (slowest droplet run 4,284 s) and `regime.hmm` (3,255 s) at
+   M's 2,700 s; the fix gives each its own limit (6,600 s and 5,400 s) and is on `main` too (`b006624`). Images publish
+   only from `main`, so it builds on the droplet, off-hours (four images on 4 GB):
+   `deploy/deploy.sh --sha f7366fe --public-only --build`. Until it is deployed both kinds fail at 45 minutes.
+   **Pass the sha explicitly**: a deploy with the default sha (`origin/main`) targets a sha past the `594df16` hold, and
+   its `check-book` step refuses the droplet's INC-01 book.
 4. **Regenerate `book.sexp`** from `book.example.sexp` by the recipe in *Changing the book* (every word the live book
    changes is listed there: `trading`, `kill_switch_enabled`, `kill_switch_trips_on`, `reduce_through_trip`,
    `var_window`, and each strategy's `ex_ante_vol`): run `book_vols` on the droplet, write the vols with
@@ -143,17 +149,25 @@ None of these is the agent's to do. The order is the order of dependence.
 5. **`OHCAMEL_ALERT_URL`** in `/etc/ohcamel/ops.env` on the droplet; until then pages are logged only.
 6. **The VaR window**: the book's `(risk ((var_window ...)))` defaults to 250; to keep the old 60, write
    `(risk ((var_window 60)))`. Decide, and record the decision here.
-7. **After the Day 4 deploy:** `python -m ohcamel_quant.warehouse migrate` off-hours (003 option move, 005 calendar, 006
-   side tables; a short writer lock), then `python -m ohcamel_quant.jobs wall-times` while the worker is up and before
-   the first nightly (S 600 s and M 2,700 s are the limits), and the two backfill commands in `runbooks/compute.md`
-   outside 18:20–18:50 ET. Expect the integrity lamp red until the shut-market ex-dates are added to `DRIFT_EXCEPTIONS`.
-8. **The backup cron line** on the live host (`*/15 * * * * .../deploy/backup.sh --catch-up`, or install the units), and
-   optionally `warehouse calendar`.
-9. **Spread measurement:** every tier in `research/config/costs.yaml` is provisional until
-   `tools/measure_spreads.py --warehouse <warehouse.duckdb> --sessions 20 --out research/config/costs_measured.csv` runs with
-   Alpaca keys; then re-derive the EXP-A01 manifests in the same commit.
+7. **After the Day 4 deploy: DONE 2026-11-26 by the agent.** `warehouse migrate` printed version 6 with nothing to
+   move (the first ingest after the deploy had applied it on opening the writer); `jobs wall-times` flagged
+   `vol.forecast_league` and `regime.hmm` (item 3's hotfix); both raw-bar backfills ran from 15:08 ET and finished
+   `done` (corp actions 372 cpu-s, bars 127 cpu-s). Expect the integrity lamp red until the shut-market ex-dates are
+   added to `DRIFT_EXCEPTIONS`. `exchange_calendar` fills on the next weekday 18:30 bars run (the worker's entrypoint
+   maps `ALPACA_*` to `APCA_*`; a `docker exec` does not, so pass the keys by hand there).
+   **Seen that day:** `ingest.option_snapshots` fails on every name with Cboe HTTP 403 from the droplet too, as in CI:
+   the option history has no new day until Cboe answers again.
+8. **The backup catch-up: DONE 2026-11-26 by the agent**, as two lines in the `ohcamel` crontab (`@reboot` and
+   `*/15`, `runbooks/compute.md`); its first checks logged the session-window hold, which does not know holidays.
+9. **Spread measurement: DONE 2026-11-26 by the agent**, on the droplet over the 20 sessions 2026-10-29 .. 2026-11-25
+   (IEX quotes; `research/config/costs_measured.csv` and its sidecar, code `b006624`). 41 of 42 rows are measured, most a
+   tier below their provisional guess (MDY and SIZE went up to tier 3). The EXP-A01 manifests were re-derived in the
+   same commit: only the cost file's hash changed, no number or verdict. **Owner's:** USO measured 151.4 bp, above the
+   widest tier (8 bp), so it keeps its provisional tier 3; decide between a fourth tier, a consolidated-quote
+   measurement (IEX's own book overstates a name it quotes thinly), or leaving it. USO is on INC-02's roster.
 10. **The droplet kernel bench** (`runbooks/compute.md`): commit the droplet row, rebuild and redeploy. Until then the
-    laptop row stands and says so.
+    laptop row stands and says so. Run it on the image of the post-hold deploy, not `d788e86`'s: that image's bench
+    has no `--sha` and its wheel has no `heston_price`, so its row would not fit the table `main` dispatches from.
 11. **The surface league's first droplet runtime** (`vol.surface_league`, class M's 45 minutes; the worst case is
     40–60 minutes if every name were SPY-sized, and a wall-clock kill loses the night). Record it.
 12. **The EODHD decision** (about $20 a month): the delisted-name build is switched off; if bought, run
@@ -214,7 +228,7 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 
 ## Where it runs
 
-*(As of 2026-11-02. Since then the ledger records the owner deploying `4cd3848 --public-only` and `db54ce8 --live` on 2026-11-16 (23:07Z), so the hosts stand at `db54ce8`; Day 3's and Day 4's deploys are OWNER-PENDING. Read the droplet's `/api/health` sha before trusting this table.)*
+*(As of 2026-11-02. Since then the ledger records the owner deploying `4cd3848 --public-only` and `db54ce8 --live` on 2026-11-16 (23:07Z), and `d788e86 --live` on 2026-11-26, so the hosts stand at `d788e86`. Read the droplet's `/api/health` sha before trusting this table.)*
 
 | | |
 |---|---|

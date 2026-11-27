@@ -4,7 +4,8 @@ Pre-registration: `hypothesis.md` and `config.yaml`, committed alone in `2c92874
 before any line of `battery/` existed. Evidence: `manifest.exp_a01_spy.json` and
 `manifest.exp_a01_tlt.json`, written by `ohcamel-research battery run` on the battery
 at `38011f6`, seed 42, `ran_at` 2026-09-19T04:12:20Z, Python 3.13.12, and re-derived
-on 2026-11-24 (Python 3.13.18; `ran_at` as in each manifest) under the gates of
+on 2026-11-24 (Python 3.13.18; `ran_at` as in each manifest; re-derived again on 2026-11-26 when
+the cost file's tiers were measured, which changed only its hash in each manifest, no number) under the gates of
 ruling R3, the completion spec's default, which awaits the owner (completion task 2.5;
 see "Re-judged under R3" below). Every number
 below is read from those two manifests. None is computed by hand, except the

@@ -65,57 +65,61 @@ capacity:
 #   tier 3: everything else -- the two newest sectors (XLRE, XLC), the style
 #           factors, EM debt (EMB), single regions and countries (VGK, EWJ,
 #           FXI, INDA), silver and the commodity futures funds.
-# Owner-pending: run the measurement on the droplet (the command is in the
-# script's docstring) and replace each row's tier and source with what it
-# prints. The engine does not distinguish the two sources; a page that shows a
-# cost says which it is.
+# MEASURED (2026-11-26): the script ran on the droplet over the 20 sessions
+# 2026-10-29 .. 2026-11-25 (costs_measured.csv and its .meta.json beside this
+# file, code b006624) and 41 of the 42 rows below are its tiers. IEX's own
+# quotes, not the consolidated NBBO, so a measured tier is if anything wide.
+# USO measured 151.4 bp, above the widest tier, so the script assigns it none;
+# its row keeps the provisional tier 3 until the owner decides (a fourth tier,
+# a consolidated-quote measurement, or leaving it). The engine does not
+# distinguish the two sources; a page that shows a cost says which it is.
 tickers:
   # us_equity_indices
-  SPY:  {tier: 1, source: provisional}
-  QQQ:  {tier: 1, source: provisional}
-  IWM:  {tier: 1, source: provisional}
-  DIA:  {tier: 2, source: provisional}
-  MDY:  {tier: 2, source: provisional}
+  SPY:  {tier: 1, source: measured}
+  QQQ:  {tier: 1, source: measured}
+  IWM:  {tier: 1, source: measured}
+  DIA:  {tier: 1, source: measured}
+  MDY:  {tier: 3, source: measured}
   # sectors
-  XLK:  {tier: 2, source: provisional}
-  XLF:  {tier: 2, source: provisional}
-  XLE:  {tier: 2, source: provisional}
-  XLV:  {tier: 2, source: provisional}
-  XLI:  {tier: 2, source: provisional}
-  XLY:  {tier: 2, source: provisional}
-  XLP:  {tier: 2, source: provisional}
-  XLU:  {tier: 2, source: provisional}
-  XLB:  {tier: 2, source: provisional}
-  XLRE: {tier: 3, source: provisional}
-  XLC:  {tier: 3, source: provisional}
+  XLK:  {tier: 1, source: measured}
+  XLF:  {tier: 1, source: measured}
+  XLE:  {tier: 1, source: measured}
+  XLV:  {tier: 1, source: measured}
+  XLI:  {tier: 1, source: measured}
+  XLY:  {tier: 1, source: measured}
+  XLP:  {tier: 1, source: measured}
+  XLU:  {tier: 2, source: measured}
+  XLB:  {tier: 1, source: measured}
+  XLRE: {tier: 2, source: measured}
+  XLC:  {tier: 1, source: measured}
   # style_factors
-  MTUM: {tier: 3, source: provisional}
-  QUAL: {tier: 3, source: provisional}
-  VLUE: {tier: 3, source: provisional}
-  USMV: {tier: 3, source: provisional}
-  SIZE: {tier: 3, source: provisional}
+  MTUM: {tier: 2, source: measured}
+  QUAL: {tier: 1, source: measured}
+  VLUE: {tier: 2, source: measured}
+  USMV: {tier: 1, source: measured}
+  SIZE: {tier: 3, source: measured}
   # rates
-  BIL:  {tier: 2, source: provisional}
-  SHY:  {tier: 2, source: provisional}
-  IEI:  {tier: 2, source: provisional}
-  IEF:  {tier: 2, source: provisional}
-  TLT:  {tier: 2, source: provisional}
-  TIP:  {tier: 2, source: provisional}
+  BIL:  {tier: 1, source: measured}
+  SHY:  {tier: 1, source: measured}
+  IEI:  {tier: 1, source: measured}
+  IEF:  {tier: 1, source: measured}
+  TLT:  {tier: 1, source: measured}
+  TIP:  {tier: 1, source: measured}
   # credit
-  LQD:  {tier: 2, source: provisional}
-  HYG:  {tier: 2, source: provisional}
-  EMB:  {tier: 3, source: provisional}
+  LQD:  {tier: 1, source: measured}
+  HYG:  {tier: 1, source: measured}
+  EMB:  {tier: 1, source: measured}
   # international
-  EFA:  {tier: 2, source: provisional}
-  EEM:  {tier: 2, source: provisional}
-  VGK:  {tier: 3, source: provisional}
-  EWJ:  {tier: 3, source: provisional}
-  FXI:  {tier: 3, source: provisional}
-  INDA: {tier: 3, source: provisional}
+  EFA:  {tier: 1, source: measured}
+  EEM:  {tier: 1, source: measured}
+  VGK:  {tier: 1, source: measured}
+  EWJ:  {tier: 2, source: measured}
+  FXI:  {tier: 2, source: measured}
+  INDA: {tier: 1, source: measured}
   # commodities
-  GLD:  {tier: 2, source: provisional}
-  SLV:  {tier: 3, source: provisional}
-  USO:  {tier: 3, source: provisional}
-  UNG:  {tier: 3, source: provisional}
-  DBA:  {tier: 3, source: provisional}
-  DBC:  {tier: 3, source: provisional}
+  GLD:  {tier: 2, source: measured}
+  SLV:  {tier: 2, source: measured}
+  USO:  {tier: 3, source: provisional}   # measured 151.4 bp on IEX (2026-10-29..11-25), wider than every tier: kept provisional, the owner decides
+  UNG:  {tier: 3, source: measured}
+  DBA:  {tier: 2, source: measured}
+  DBC:  {tier: 2, source: measured}

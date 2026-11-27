@@ -1,0 +1,42 @@
+{
+  "source": "alpaca-market-data",
+  "synthetic": false,
+  "feed": "iex",
+  "endpoint": "https://data.alpaca.markets/v2/stocks/{symbol}/quotes",
+  "windows_new_york": [
+    "10:00-10:01",
+    "11:30-11:31",
+    "13:00-13:01",
+    "14:30-14:31",
+    "15:30-15:31"
+  ],
+  "sessions": [
+    "2026-10-29",
+    "2026-10-30",
+    "2026-11-02",
+    "2026-11-03",
+    "2026-11-04",
+    "2026-11-05",
+    "2026-11-06",
+    "2026-11-09",
+    "2026-11-10",
+    "2026-11-11",
+    "2026-11-12",
+    "2026-11-13",
+    "2026-11-16",
+    "2026-11-17",
+    "2026-11-18",
+    "2026-11-19",
+    "2026-11-20",
+    "2026-11-23",
+    "2026-11-24",
+    "2026-11-25"
+  ],
+  "names": 42,
+  "cost_file_version": "1.0.0",
+  "code_sha": "b006624412c6df89ba1239614758d0be083b756d",
+  "run_started_utc": "2026-11-26T23:15:39Z",
+  "run_finished_utc": "2026-11-26T23:42:06Z",
+  "method": "median over sessions of the median within a session of (ask - bid) / 2 / mid in bp, two-sided quotes only (0 < bid < ask); tier rounded up (costs.tier_for)",
+  "produced_by": "tools/measure_spreads.py"
+}
