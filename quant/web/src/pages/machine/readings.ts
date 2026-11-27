@@ -208,6 +208,12 @@ export function pooledLine(m: Record<string, unknown>): string | null {
   const head = `session ${num(done)} of ${num(need)} · ${detects}`;
   if (verdict === "REJECTED NULL") return `${head} · result: the null of no edge is rejected · ${from}`;
   if (verdict === "NOT REJECTED") return `${head} · result: the null of no edge is not rejected · ${from}`;
+  if (verdict === "INSUFFICIENT DATA") {
+    // decided at session 500 with fewer than 475 sessions scorable: no statistic is stated, the count says why
+    const gap = /(\d+) of (\d+) sessions unscorable/.exec(str(m.pooled_why) ?? "");
+    const counted = gap ? `, ${gap[1]} of ${gap[2]} sessions could not be scored` : "";
+    return `${head} · result: insufficient data, no test decided${counted} · ${from}`;
+  }
   return `${head} · no result before session ${num(need)} · ${from}`;
 }
 

@@ -128,17 +128,22 @@ DESK_HELD = {**DESK, "positions": [{"symbol": "AAPL", "graph_qty": 400.0}, {"sym
 
 
 class _Engine:
-    """routes: path -> (status, body bytes, delay seconds)."""
+    """routes: path -> (status, body bytes, delay seconds), or a callable of the full target giving one. A route is matched by its path, the query ignored, as
+    lib/server.ml dispatches; ``seen`` lists the paths asked for and ``asked`` each request's full target."""
 
     def __init__(self, routes: dict[str, tuple[int, bytes, float]]):
         self.routes = routes
         self.seen: list[str] = []
+        self.asked: list[str] = []
         engine = self
 
         class H(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 (http.server's name)
-                engine.seen.append(self.path)
-                status, body, delay = engine.routes.get(self.path, (404, b'{"error":"not found"}', 0.0))
+                path = self.path.split("?", 1)[0]
+                engine.seen.append(path)
+                engine.asked.append(self.path)
+                entry = engine.routes.get(path, (404, b'{"error":"not found"}', 0.0))
+                status, body, delay = entry(self.path) if callable(entry) else entry
                 if delay:
                     time.sleep(delay)
                 self.send_response(status)

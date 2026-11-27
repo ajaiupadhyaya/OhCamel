@@ -123,6 +123,10 @@ val session_count : t -> int
 val recent_sessions : t -> limit:int -> Session.t list
 (** The newest [limit], oldest first. *)
 
+val sessions_since : t -> since:Date.t -> limit:int -> Session.t list
+(** Every session on or after [since], oldest first, at most [limit] (the oldest [limit]
+    when there are more). *)
+
 val session : t -> Date.t -> Session.t option
 
 val session_dates : t -> Date.t list

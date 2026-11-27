@@ -12,7 +12,9 @@ GET per route with a :data:`TIMEOUT_S` timeout each:
   per-fill rows: those ride on ``/api/desk``'s fills), into the notes;
 * ``/api/research`` -- each registered strategy with its latest judgement
   and the overlay with its document's ``inputs`` and ``reported``;
-* ``/api/desk/sessions`` -- the session closes, the day's into the notes;
+* ``/api/desk/sessions`` -- the session closes, the day's into the notes; once INC-02 has a floor, asked with
+  ``?since=`` a month before it (:func:`_sessions_since`), so the pooled test reads every one of its 500
+  sessions rather than the route's newest 250;
 * ``/api/graph`` -- each node's ``limit`` (``{name, kind, scope}``, lib/server.ml);
 * ``/api/ops`` -- ``alerts``: whether the kill switch is enabled, its state and
   the limits it trips on (lib/server.ml ``json_of_alerts``).
@@ -61,10 +63,14 @@ whatever the other routes gave -- empty tables when the engine is down.
 from __future__ import annotations
 
 import bisect
+import contextlib
 import json
 import math
+import os
 import re
+import tempfile
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -72,7 +78,7 @@ import httpx
 import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
-from .pooled import SESSIONS, analytic_power, psr_and_se, verdict_at
+from .pooled import DECIDED, SESSIONS, analytic_power, psr_and_se, verdict_at
 from .roster import (
     ROSTER_PATH,
     load_roster,
@@ -475,25 +481,10 @@ def _rate_on_or_before(rf: dict[str, float], keys: list[str], d: str, close_date
     return rf[k] if carried <= RF_CARRY_SESSIONS else None
 
 
-def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any,
-                  notes: list[str], since: str | None = None,
-                  slugs: frozenset[str] | None = None) -> tuple[list[float | None] | None, int, str | None]:
-    """INC-02's T1, the proposed statistic: per session ``sum_i (pnl_i - allocated_i * r_f) / prior-close equity``,
-    i.e. ``sum_i w_i (r_i - r_f)`` with ``w_i`` the share of the account allocated. Each strategy's ``record`` is
-    ``{"sessions": [{date, allocated, pnl, turnover}]}`` (desk/record.ml's session, from the strategy's first
-    fill); only strategies whose name is in ``slugs`` (INC-02's roster) are read, when given.
-
-    T2: "500 NYSE sessions from INC-02's first fill". ``since`` (an ISO date, INC-02's approval date) is clamped
-    to after :data:`INC01_CLOSE`; the first session is the first record row on or after it whose ``turnover`` is
-    positive -- a FILL, not a row INC-01's carried inventory marks -- and the series runs from there over the
-    session closes, cut to the first :data:`SESSIONS` BEFORE any equity or rate is looked up, so a gap after
-    session 500 never touches the test. A session in which no strategy has a row counts as zero (a flat or
-    halted session still counts). Within the window a session with no prior-close equity, or no risk-free rate
-    published on or before it within :data:`RF_CARRY_SESSIONS` sessions, is None (unscorable) and counted in a
-    note; it never voids the series. Returns ``(series, recorded, cause)``: ``recorded`` counts every session
-    close from the first fill; ``(None, 0, None)`` when there is no fill at all and ``(None, 0, cause)`` when
-    there is one but no close to place it. ``rf_for()`` is called only once there is a window to score. The
-    served record stays full history."""
+def _record_rows(research: dict[str, Any] | None, since: str | None,
+                 slugs: frozenset[str] | None) -> tuple[str, dict[str, list[tuple[float, float]]], set[str]]:
+    """``(floor, rows, traded)``: the roster strategies' record rows after the floor (``since`` clamped after
+    :data:`INC01_CLOSE`), ``(allocated, pnl)`` by date, and the dates with a fill (positive turnover)."""
     floor = max(since or INC01_CLOSE, INC01_CLOSE)
     after = (lambda d: d > floor) if floor == INC01_CLOSE else (lambda d: d >= floor)
     rows: dict[str, list[tuple[float, float]]] = {}
@@ -513,6 +504,29 @@ def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, r
             turnover = _num(r.get("turnover"))
             if turnover is not None and turnover > 0:
                 traded.add(r["date"])
+    return floor, rows, traded
+
+
+def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any,
+                  notes: list[str], since: str | None = None,
+                  slugs: frozenset[str] | None = None) -> tuple[list[float | None] | None, int, str | None]:
+    """INC-02's T1, the proposed statistic: per session ``sum_i (pnl_i - allocated_i * r_f) / prior-close equity``,
+    i.e. ``sum_i w_i (r_i - r_f)`` with ``w_i`` the share of the account allocated. Each strategy's ``record`` is
+    ``{"sessions": [{date, allocated, pnl, turnover}]}`` (desk/record.ml's session, from the strategy's first
+    fill); only strategies whose name is in ``slugs`` (INC-02's roster) are read, when given.
+
+    T2: "500 NYSE sessions from INC-02's first fill". ``since`` (an ISO date, INC-02's approval date) is clamped
+    to after :data:`INC01_CLOSE`; the first session is the first record row on or after it whose ``turnover`` is
+    positive -- a FILL, not a row INC-01's carried inventory marks -- and the series runs from there over the
+    session closes, cut to the first :data:`SESSIONS` BEFORE any equity or rate is looked up, so a gap after
+    session 500 never touches the test. A session in which no strategy has a row counts as zero (a flat or
+    halted session still counts). Within the window a session with no prior-close equity, or no risk-free rate
+    published on or before it within :data:`RF_CARRY_SESSIONS` sessions, is None (unscorable) and counted in a
+    note; it never voids the series. Returns ``(series, recorded, cause)``: ``recorded`` counts every session
+    close from the first fill; ``(None, 0, None)`` when there is no fill at all and ``(None, 0, cause)`` when
+    there is one but no close to place it. ``rf_for()`` is called only once there is a window to score. The
+    served record stays full history."""
+    floor, rows, traded = _record_rows(research, since, slugs)
     if not traded:
         if rows:
             notes.append(f"pooled_test: {len(rows)} record dates after {floor} carry no fill (no positive "
@@ -558,36 +572,152 @@ def _pooled_daily(research: dict[str, Any] | None, sessions: list[Any] | None, r
     return out, recorded, None
 
 
-def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any, session: date,
-                 notes: list[str], *, roster_path: Any = ROSTER_PATH) -> list[dict[str, Any]]:
-    """The desk's whole public record: one row, INC-02's test with its horizon and its power. ``NOT STARTED``
-    until the pre-registration records the owner's approval (the reading the roster's draft label uses), then
-    until INC-02's first fill; ``IN PROGRESS`` to session 500; then the one evaluation."""
-    head = {"experiment": "INC-02", "sessions_required": SESSIONS, "power_at_1": round(analytic_power(1.0), 2),
-            "power_at_half": round(analytic_power(0.5), 2), "as_of": session.isoformat(), "source": POOLED_SOURCE}
-    text = preregistration_text(roster_path)
+def _series_start(text: str) -> tuple[str | None, str | None]:
+    """``(since, None)``: the pooled series' floor the pre-registration ``text`` gives -- its approval date, or the
+    day after the recorded Roster-6(a) flatten, whichever is later (``_pooled_daily`` clamps it after INC-01's
+    close); ``(None, reason)`` while the file alone says INC-02 has not started."""
     approved_on = recorded_approval(text)
-    unapproved = approved_on is None
-    label = "excess return on deployed capital" + (" (proposed, awaiting approval)" if unapproved else "")
-    idle = {"sessions_done": 0, "psr": None, "sharpe_se": None, "verdict": "NOT STARTED", "statistic": label}
-    if unapproved:
+    if approved_on is None:
         # an empty ``Approved-by:`` is the template's blank, still awaiting; one with words but no date is dateless
         dateless = any(re.match(r"^`?Approved-by:`?\s*\S", line.strip()) for line in text.splitlines())
-        return [{**head, **idle, "reason": "INC-02's approval line carries no date" if dateless
-                 else "INC-02 awaits the owner's approval"}]
+        return None, ("INC-02's approval line carries no date" if dateless else "INC-02 awaits the owner's approval")
     # Roster-6(a): INC-01's carried positions are flattened first, and that flatten's fills are not INC-02's
     # first fill, so the series starts after the recorded flatten date; a file with the line and no date waits.
     has_flatten_line, flattened_on = recorded_flatten(text)
     if has_flatten_line and flattened_on is None:
-        return [{**head, **idle, "reason": "INC-02 waits for Roster-6(a)'s flatten of INC-01's carried positions"}]
-    since = approved_on
+        return None, "INC-02 waits for Roster-6(a)'s flatten of INC-01's carried positions"
     if flattened_on is not None:
-        since = max(approved_on, (date.fromisoformat(flattened_on) + timedelta(days=1)).isoformat())
+        return max(approved_on, (date.fromisoformat(flattened_on) + timedelta(days=1)).isoformat()), None
+    return approved_on, None
+
+
+#: ``/api/desk/sessions?since=`` reaches this many calendar days before the pooled series' floor: the first
+#: session's return is over the PRIOR close, which lies before the floor, and the risk-free carry counts the
+#: closes after a rate's date, so a month of closes before the floor keeps both exact.
+SESSIONS_LOOKBACK_DAYS = 31
+
+
+def _sessions_since(roster_path: Any = ROSTER_PATH) -> str | None:
+    """The ``since`` ``desk.report`` asks ``/api/desk/sessions`` for: :data:`SESSIONS_LOOKBACK_DAYS` before the
+    pooled series' floor, so every one of the 500 sessions -- not the route's newest 250 -- is served; None while
+    INC-02 has no floor (the route's default answer then)."""
+    since, _ = _series_start(preregistration_text(roster_path))
+    if since is None:
+        return None
+    floor = date.fromisoformat(max(since, INC01_CLOSE))
+    return (floor - timedelta(days=SESSIONS_LOOKBACK_DAYS)).isoformat()
+
+
+#: INC-02's decision, once made, on the worker's data volume (``Settings.data_dir``): every later run serves it.
+VERDICT_FILE = "inc02_verdict.json"
+
+
+def _store_decision(store: Path, row: dict[str, Any], first_fill: str, decided_on: str, notes: list[str]) -> None:
+    """Write the decided row to ``store`` atomically -- a temp file in the same directory, fsynced, then renamed
+    over -- so a reader sees no file or the whole decision, never a part. A failure is a note, and the next run
+    then evaluates again (the only way the decision is not yet durable)."""
+    payload = {"experiment": "INC-02", "verdict": row["verdict"], "psr": row["psr"], "sharpe_se": row["sharpe_se"],
+               "sessions_done": row["sessions_done"], "decided_on": decided_on, "first_fill": first_fill,
+               "code_sha": (os.environ.get("OHCAMEL_GIT_SHA") or "").strip() or None,
+               "written_at": _now().strftime("%Y-%m-%dT%H:%M:%SZ"), "row": row}
+    tmp: str | None = None
     try:
-        slugs = frozenset(c.slug for c in load_roster(roster_path).cells)
-    except (OSError, ValueError) as e:
-        notes.append(f"pooled_test: INC-02's roster could not be read ({type(e).__name__}): nothing is counted")
-        return [{**head, **idle, "reason": "INC-02's roster could not be read"}]
+        store.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=f".{store.name}.", suffix=".tmp", dir=store.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, store)
+    except OSError as e:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+        notes.append(f"pooled_test: INC-02's decision ({row['verdict']}) could not be stored ({type(e).__name__}): "
+                     "it is served this run and evaluated again on the next")
+        return
+    notes.append(f"pooled_test: INC-02 decided {row['verdict']} on {decided_on} (first fill {first_fill}); the "
+                 f"decision is stored ({VERDICT_FILE}) and every later run serves it, never recomputed")
+
+
+def _read_decision(store: Path) -> dict[str, Any]:
+    """The stored decision, checked whole; raises ``ValueError`` (or ``OSError``) naming what is wrong."""
+    rec = json.loads(store.read_text(encoding="utf-8"))
+    row = rec.get("row") if isinstance(rec, dict) else None
+    if not isinstance(row, dict) or sorted(row) != sorted(POOLED_COLUMNS):
+        raise ValueError("its row is not the pooled_test table's columns")
+    if rec.get("verdict") not in DECIDED or row["verdict"] != rec["verdict"]:
+        raise ValueError("its verdict is not one decided at session 500")
+    if any(rec.get(k) != row[k] for k in ("psr", "sharpe_se", "sessions_done")) or row["sessions_done"] != SESSIONS:
+        raise ValueError("its fields disagree with its row")
+    for k in ("first_fill", "decided_on"):
+        if not isinstance(rec.get(k), str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rec[k]):
+            raise ValueError(f"its {k} is not a date")
+        date.fromisoformat(rec[k])
+    return rec
+
+
+def _stored_row(store: Path, head: dict[str, Any], research: dict[str, Any] | None, since: str | None,
+                slugs: frozenset[str] | None, notes: list[str]) -> dict[str, Any]:
+    """The stored decision's row, unchanged but for its reason, which says it is the stored decision. A stored file
+    that cannot be read, or whose first fill is not the record's, is an error the row states: no verdict is
+    published (the page then states no test) and the file is left as it is for the owner -- never overwritten, and
+    never silently replaced by a fresh evaluation."""
+    def refused(why: str) -> dict[str, Any]:
+        notes.append(f"pooled_test: {why}")
+        return {**head, "sessions_done": None, "psr": None, "sharpe_se": None, "verdict": None, "reason": why,
+                "statistic": None}
+
+    try:
+        rec = _read_decision(store)
+    except (OSError, ValueError) as e:   # UnicodeDecodeError and JSONDecodeError are ValueErrors
+        return refused(f"INC-02's stored decision ({VERDICT_FILE}) cannot be read ({type(e).__name__}: "
+                       f"{str(e)[:120]}): no verdict is published until the owner resolves it")
+    current = None
+    if since is not None:
+        _, _, traded = _record_rows(research, since, slugs)
+        current = min(traded) if traded else None
+    if current is not None and current != rec["first_fill"]:
+        return refused(f"INC-02's stored decision ({rec['verdict']}, decided {rec['decided_on']}) is for a first "
+                       f"fill on {rec['first_fill']}, but the record's first fill is {current}: no verdict is "
+                       "published until the owner resolves it")
+    if current is None:
+        notes.append("pooled_test: the record's first fill could not be read this run; the stored decision is "
+                     "served as stored")
+    row = rec["row"]
+    said = f"the stored decision of {rec['decided_on']} (first fill {rec['first_fill']}), not recomputed"
+    return {**row, "reason": said + (f"; {row['reason']}" if row.get("reason") else "")}
+
+
+def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf_for: Any, session: date,
+                 notes: list[str], *, roster_path: Any = ROSTER_PATH,
+                 store: Path | None = None) -> list[dict[str, Any]]:
+    """The desk's whole public record: one row, INC-02's test with its horizon and its power. ``NOT STARTED``
+    until the pre-registration records the owner's approval (the reading the roster's draft label uses), then
+    until INC-02's first fill; ``IN PROGRESS`` to session 500; then the one evaluation -- ``INSUFFICIENT DATA``
+    when fewer than ``pooled.MIN_SCORED`` (475) of the 500 sessions are scorable, else the PSR's verdict.
+
+    ``store`` (``desk.report`` passes ``{data_dir}/inc02_verdict.json``): the evaluation, once made, is written
+    there, and every later run serves that stored row and evaluates nothing -- so a night whose rate fetch or
+    equity read fails can never change a decided verdict. None: nothing is stored (the pure tests)."""
+    head = {"experiment": "INC-02", "sessions_required": SESSIONS, "power_at_1": round(analytic_power(1.0), 2),
+            "power_at_half": round(analytic_power(0.5), 2), "as_of": session.isoformat(), "source": POOLED_SOURCE}
+    text = preregistration_text(roster_path)
+    unapproved = recorded_approval(text) is None
+    label = "excess return on deployed capital" + (" (proposed, awaiting approval)" if unapproved else "")
+    idle = {"sessions_done": 0, "psr": None, "sharpe_se": None, "verdict": "NOT STARTED", "statistic": label}
+    since, why = _series_start(text)
+    slugs: frozenset[str] | None = None
+    if since is not None:
+        try:
+            slugs = frozenset(c.slug for c in load_roster(roster_path).cells)
+        except (OSError, ValueError) as e:
+            notes.append(f"pooled_test: INC-02's roster could not be read ({type(e).__name__}): nothing is counted")
+            since, why = None, "INC-02's roster could not be read"
+    if store is not None and store.exists():
+        return [_stored_row(store, head, research, since, slugs, notes)]
+    if since is None:
+        return [{**head, **idle, "reason": why}]
     daily, recorded, cause = _pooled_daily(research, sessions, rf_for, notes, since=since, slugs=slugs)
     if recorded == 0:
         return [{**head, **idle, "reason": "no INC-02 fill yet" if cause is None else cause}]
@@ -595,16 +725,24 @@ def _pooled_test(research: dict[str, Any] | None, sessions: list[Any] | None, rf
     scored = [x for x in daily or [] if x is not None]
     unscorable = len(daily or []) - len(scored)
     psr, se = psr_and_se(scored)
-    verdict = verdict_at(done, psr)     # decided at 500 on the first 500 sessions; a later gap is never read
+    # decided at 500 on the first 500 sessions; a later gap is never read
+    verdict = verdict_at(done, psr, scored=len(scored))
     gap = f"{unscorable} of {len(daily or [])} sessions unscorable (no prior-close equity or rate)" if unscorable else None
-    if psr is None and verdict == "IN PROGRESS":
+    if verdict == "INSUFFICIENT DATA":
+        psr = se = None     # no statistic is stated over far fewer than 500 sessions
+        reason = gap
+    elif psr is None and verdict == "IN PROGRESS":
         reason = "statistic not computable this session" + (f": {gap}" if gap else ": too few scored sessions")
     elif verdict == "IN PROGRESS":
         reason = RUNNING_NOTE + (f"; {gap}" if gap else "")
     else:
         reason = gap
-    return [{**head, "sessions_done": done, "psr": psr, "sharpe_se": se, "verdict": verdict, "reason": reason,
-             "statistic": f"{label}; {RF_NOTE}"}]
+    row = {**head, "sessions_done": done, "psr": psr, "sharpe_se": se, "verdict": verdict, "reason": reason,
+           "statistic": f"{label}; {RF_NOTE}"}
+    if store is not None and verdict in DECIDED:
+        _, _, traded = _record_rows(research, since, slugs)
+        _store_decision(store, row, min(traded), session.isoformat(), notes)
+    return [row]
 
 
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],
@@ -647,10 +785,13 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     bodies: dict[str, Any] = {}
     want = {"/api/desk": dict, "/api/desk/tca": dict, "/api/research": dict, "/api/desk/sessions": list,
             "/api/graph": dict, "/api/ops": dict}
+    # INC-02's pooled test needs every close from its floor, not the route's newest 250 (2026-11-27)
+    since = _sessions_since(ROSTER_PATH)
+    asked = {p: p for p in ROUTES} | ({"/api/desk/sessions": f"/api/desk/sessions?since={since}"} if since else {})
     try:
         with httpx.Client(timeout=TIMEOUT_S) as client:
             for path in ROUTES:
-                bodies[path] = _get(client, base, path, want[path], notes)
+                bodies[path] = _get(client, base, asked[path], want[path], notes)
     except _Unreachable as e:
         notes.append(f"the live engine at {base} did not answer ({e}): the live profile is not running, or the "
                      "engine is down; the report is empty")
@@ -684,6 +825,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             notes.append(f"pooled_test: the risk-free rate could not be read ({type(e).__name__})")
             return {}
 
-    pooled = _pooled_test(research, sessions, rf_for, session, notes)
+    pooled = _pooled_test(research, sessions, rf_for, session, notes, roster_path=ROSTER_PATH,
+                          store=Path(ctx.market.settings.data_dir) / VERDICT_FILE)
     return _spec(session, fills, pnl, refusals, overlay, provenance, notes, book=book, var=var,
                  tca=_tca_rows(tca, notes), pooled=pooled)

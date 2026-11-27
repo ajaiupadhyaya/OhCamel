@@ -1127,6 +1127,7 @@ let with_server ~extensions ~f =
              {
                Server.Request.meth = `GET;
                path = "/api/research";
+               query = [];
                headers = Cohttp.Header.init ();
                body = "";
              })
@@ -1364,6 +1365,7 @@ let with_evidence ~f =
              {
                Server.Request.meth = `GET;
                path = "/api/research/evidence";
+               query = [];
                headers = Cohttp.Header.init ();
                body = "";
              })

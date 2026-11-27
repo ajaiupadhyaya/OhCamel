@@ -5,6 +5,7 @@ approved pre-registration is a temp directory whose ``preregistration.md`` has a
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -325,3 +326,203 @@ def test_the_series_starts_at_the_first_fill_after_the_recorded_flatten(tmp_path
     assert recorded_flatten("Roster-6(a) flatten completed:\n") == (True, None)
     assert recorded_flatten("no such line\n") == (False, None)
     assert recorded_flatten(f"`Roster-6(a) flatten completed: {flatten_day}`") == (True, flatten_day)
+
+
+# ------------------------------------------- 2026-11-27: every one of the 500 sessions is asked for
+def _engine_parts():
+    from test_signals_report import (  # noqa: PLC0415  (tests/ is on sys.path)
+        _ctx,
+        _Engine,
+        _full,
+        _ok,
+    )
+
+    return _ctx, _Engine, _full, _ok
+
+
+def _route_like_the_desk(closes):
+    """/api/desk/sessions as desk/desk_routes.ml answers it: the newest 250 without a parameter, every close on or
+    after ``since`` with one."""
+    from urllib.parse import parse_qs, urlsplit  # noqa: PLC0415
+
+    def answer(target: str):
+        q = parse_qs(urlsplit(target).query)
+        rows = [c for c in closes if c["date"] >= q["since"][0]] if "since" in q else closes[-250:]
+        return (200, json.dumps(rows).encode(), 0.0)
+
+    return answer
+
+
+def test_the_report_asks_the_sessions_route_since_the_series_floor(tmp_path, monkeypatch):
+    _ctx, _Engine, _full, _ok = _engine_parts()
+    monkeypatch.setattr(report, "recorded_approval", lambda text: "2026-11-27")
+    monkeypatch.setattr(report, "recorded_flatten", lambda text: (True, "2026-12-01"))
+    with _Engine(_full()) as eng:
+        report.run({}, _ctx(tmp_path, eng.url))
+    # the floor is the day after the flatten, 2026-12-02; the request reaches 31 days before it for the prior close
+    assert "/api/desk/sessions?since=2026-11-01" in eng.asked
+    assert report._sessions_since(report.ROSTER_PATH) == "2026-11-01"
+    # approved after the flatten: the approval date is the floor
+    monkeypatch.setattr(report, "recorded_approval", lambda text: "2026-12-10")
+    assert report._sessions_since(report.ROSTER_PATH) == "2026-11-09"
+    # no floor yet (the flatten line names no date; or no approval): the route's default, no parameter
+    for approval, flatten in (("2026-11-27", (True, None)), (None, (False, None))):
+        monkeypatch.setattr(report, "recorded_approval", lambda text, a=approval: a)
+        monkeypatch.setattr(report, "recorded_flatten", lambda text, f=flatten: f)
+        with _Engine(_full()) as eng:
+            report.run({}, _ctx(tmp_path, eng.url))
+        assert "/api/desk/sessions" in eng.asked and not any("since" in a for a in eng.asked)
+
+
+def test_a_500_session_window_counts_500_through_the_served_route(tmp_path, monkeypatch):
+    """The route serves the newest 250 by default; the report asks with since=, so all 520 recorded closes arrive
+    and the test counts its 500 (the offline rate is unavailable, so the evaluation is INSUFFICIENT DATA)."""
+    _ctx, _Engine, _full, _ok = _engine_parts()
+    (tmp_path / "inc02").mkdir()
+    path = _experiment(tmp_path / "inc02", "Approved-by: the owner, 2027-01-02\n")
+    monkeypatch.setattr(report, "ROSTER_PATH", path)
+    research, closes, _, last = _bodies(520)
+    routes = {**_full(), "/api/research": _ok(research), "/api/desk/sessions": _route_like_the_desk(closes)}
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    assert "/api/desk/sessions?since=2026-12-02" in eng.asked
+    r = spec.tables["pooled_test"].iloc[0]
+    assert r["sessions_done"] == 500 and r["verdict"] == "INSUFFICIENT DATA"
+    assert r["reason"] == "500 of 500 sessions unscorable (no prior-close equity or rate)"
+    assert (tmp_path / report.VERDICT_FILE).exists()             # run() stores on the job's data volume
+    # the defect this replaces: without since= the same engine serves 250, and the count stalls there
+    monkeypatch.setattr(report, "_sessions_since", lambda roster_path: None)
+    (tmp_path / report.VERDICT_FILE).unlink()
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    assert spec.tables["pooled_test"].iloc[0]["sessions_done"] == 250
+
+
+# ------------------------------------------- 2026-11-27: a decided verdict is stored once and never flips
+def _decide(approved, monkeypatch, store, *, psr=0.96, n=500, body=None):
+    monkeypatch.setattr(report, "psr_and_se", lambda x: (psr, 0.9))
+    research, closes, rf, last = body or _bodies(n)
+    notes: list[str] = []
+    [row] = report._pooled_test(research, closes, rf, date.fromisoformat(last), notes, roster_path=approved,
+                                store=store)
+    return row, notes
+
+
+def test_a_decision_is_stored_once_and_served_unchanged_when_the_inputs_change(approved, monkeypatch, tmp_path):
+    store = tmp_path / "data" / report.VERDICT_FILE
+    monkeypatch.setenv("OHCAMEL_GIT_SHA", "abc1234")
+    first, notes = _decide(approved, monkeypatch, store)
+    assert (first["verdict"], first["psr"], first["sessions_done"]) == ("REJECTED NULL", 0.96, 500)
+    rec = json.loads(store.read_text())
+    days = _days(501)
+    assert (rec["verdict"], rec["psr"], rec["sharpe_se"], rec["sessions_done"]) == ("REJECTED NULL", 0.96, 0.9, 500)
+    assert (rec["first_fill"], rec["decided_on"], rec["code_sha"]) == (days[1], days[-1], "abc1234")
+    assert rec["row"] == first and any("stored" in n for n in notes)
+
+    # the next night: the rate fetch fails and the PSR would now read 0.5 -- nothing is recomputed
+    def no_rate():
+        raise AssertionError("a stored decision must not look up a rate")
+
+    research, closes, _, last = _bodies(560)
+    closes[200] = {**closes[200], "equity_close": None}
+    again, notes = _decide(approved, monkeypatch, store, psr=0.5, body=(research, closes, no_rate, last))
+    assert {k: again[k] for k in again if k != "reason"} == {k: first[k] for k in first if k != "reason"}
+    assert again["reason"] == f"the stored decision of {days[-1]} (first fill {days[1]}), not recomputed"
+    assert json.loads(store.read_text()) == rec                  # the file is never rewritten
+    # the research body unreadable that night: still the stored row, with a note that it was not cross-checked
+    notes = []
+    [unread] = report._pooled_test(None, None, no_rate, date(2029, 1, 1), notes, roster_path=approved, store=store)
+    assert unread["verdict"] == "REJECTED NULL" and any("served as stored" in n for n in notes)
+
+
+def test_nothing_is_stored_while_the_test_is_in_progress_or_not_started(approved, monkeypatch, tmp_path):
+    store = tmp_path / report.VERDICT_FILE
+    row, _ = _decide(approved, monkeypatch, store, n=499)
+    assert row["verdict"] == "IN PROGRESS" and not store.exists()
+    (tmp_path / "x").mkdir()
+    unapproved = _experiment(tmp_path / "x", "no approval\n")
+    row, _ = _decide(unapproved, monkeypatch, store, n=520)
+    assert row["verdict"] == "NOT STARTED" and not store.exists()
+    assert list(tmp_path.glob(f".{report.VERDICT_FILE}.*")) == []
+
+
+def test_the_decision_is_written_atomically(approved, monkeypatch, tmp_path):
+    store = tmp_path / report.VERDICT_FILE
+    real_replace = report.os.replace
+    renamed: list[tuple[str, str]] = []
+
+    def spy(src, dst):
+        renamed.append((str(src), str(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(report.os, "replace", spy)
+    _decide(approved, monkeypatch, store)
+    [(src, dst)] = renamed
+    assert dst == str(store) and Path(src).parent == tmp_path and src != dst    # a temp beside it, renamed over
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name != "roster.yaml" and p.suffix != ".md") == [
+        report.VERDICT_FILE]
+    # a rename that fails leaves no decision file and no temp file, serves the row and says it was not stored
+    store.unlink()
+
+    def broken(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(report.os, "replace", broken)
+    row, notes = _decide(approved, monkeypatch, store)
+    assert row["verdict"] == "REJECTED NULL" and not store.exists()
+    assert list(tmp_path.glob(f".{report.VERDICT_FILE}.*")) == []
+    assert any("could not be stored" in n for n in notes)
+
+
+def test_a_stored_decision_for_another_first_fill_is_refused_and_left_alone(approved, monkeypatch, tmp_path):
+    store = tmp_path / report.VERDICT_FILE
+    _decide(approved, monkeypatch, store)
+    before = store.read_bytes()
+    research, closes, rf, last = _bodies(520)
+    for r in research["strategies"][0]["record"]["sessions"][:3]:
+        r["turnover"] = 0.0                                       # the record's first fill is now the fourth session
+    row, notes = _decide(approved, monkeypatch, store, body=(research, closes, rf, last))
+    days = _days(521)
+    assert row["verdict"] is None and row["psr"] is None and row["sharpe_se"] is None
+    assert f"first fill on {days[1]}" in row["reason"] and f"first fill is {days[4]}" in row["reason"]
+    assert "no verdict is published" in row["reason"] and any("stored decision" in n for n in notes)
+    assert store.read_bytes() == before                           # never overwritten by a fresh evaluation
+
+
+def test_an_unreadable_stored_decision_is_an_error_not_a_fresh_evaluation(approved, monkeypatch, tmp_path):
+    store = tmp_path / report.VERDICT_FILE
+    _decide(approved, monkeypatch, store)
+    good = json.loads(store.read_text())
+    for bad in ("{not json", json.dumps({**good, "verdict": "IN PROGRESS"}),
+                json.dumps({**good, "psr": 0.2}), json.dumps({**good, "first_fill": "soon"}),
+                json.dumps({**good, "row": {"verdict": good["verdict"]}})):
+        store.write_text(bad)
+        row, _ = _decide(approved, monkeypatch, store)
+        assert row["verdict"] is None and "cannot be read" in row["reason"], bad
+        assert store.read_text() == bad
+
+
+@pytest.mark.parametrize(("scorable", "verdict"), [(474, "INSUFFICIENT DATA"), (475, "REJECTED NULL"),
+                                                    (476, "REJECTED NULL")])
+def test_at_500_fewer_than_475_scorable_sessions_is_insufficient_data(approved, monkeypatch, tmp_path, scorable,
+                                                                      verdict):
+    research, closes, rf, last = _bodies(500)
+    for c in closes[:500 - scorable]:                             # no prior close: sessions 1..k unscorable
+        c["equity_close"] = None
+    store = tmp_path / report.VERDICT_FILE
+    row, _ = _decide(approved, monkeypatch, store, body=(research, closes, rf, last))
+    gap = f"{500 - scorable} of 500 sessions unscorable (no prior-close equity or rate)"
+    assert (row["sessions_done"], row["verdict"], row["reason"]) == (500, verdict, gap)
+    if verdict == "INSUFFICIENT DATA":
+        assert row["psr"] is None and row["sharpe_se"] is None   # no statistic over far fewer than 500 sessions
+    else:
+        assert row["psr"] == 0.96
+    assert json.loads(store.read_text())["verdict"] == verdict    # stored like any other decision
+
+
+def test_the_verdict_rule_reads_the_scored_count():
+    assert pooled.MIN_SCORED == 475 and pooled.DECIDED == ("REJECTED NULL", "NOT REJECTED", "INSUFFICIENT DATA")
+    assert pooled.verdict_at(499, 0.99, scored=10) == "IN PROGRESS"
+    assert pooled.verdict_at(500, 0.99, scored=474) == "INSUFFICIENT DATA"
+    assert pooled.verdict_at(500, 0.99, scored=475) == "REJECTED NULL"
+    assert pooled.verdict_at(500, 0.94, scored=500) == "NOT REJECTED"

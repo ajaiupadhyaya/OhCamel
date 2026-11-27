@@ -1083,7 +1083,7 @@ let dispatched server ?(meth = `GET) ?(body = "") path =
   match
     Async.Deferred.peek
       (Server.dispatch server
-         { Server.Request.meth; path; headers = Cohttp.Header.init (); body })
+         { Server.Request.meth; path; query = []; headers = Cohttp.Header.init (); body })
   with
   | None -> Alcotest.failf "%s did not answer without the scheduler" path
   | Some (response, b) ->

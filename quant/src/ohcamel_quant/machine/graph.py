@@ -517,7 +517,7 @@ def _book_summary(p: Product | None) -> tuple[dict | None, str | None]:
     }, None
 
 
-POOLED_VERDICTS = ("NOT STARTED", "IN PROGRESS", "REJECTED NULL", "NOT REJECTED")
+POOLED_VERDICTS = ("NOT STARTED", "IN PROGRESS", "REJECTED NULL", "NOT REJECTED", "INSUFFICIENT DATA")
 
 
 def _pooled(p: Product | None) -> dict:

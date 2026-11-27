@@ -13,7 +13,7 @@ module D = Ohcamel_desk
 let aapl = Symbol.of_string "AAPL"
 
 let request ?(meth = `POST) ?(headers = []) ?(body = "") path =
-  { Server.Request.meth; path; headers = Cohttp.Header.of_list headers; body }
+  { Server.Request.meth; path; query = []; headers = Cohttp.Header.of_list headers; body }
 
 let from_this_site = [ ("X-OhCamel-Desk", "1"); ("Sec-Fetch-Site", "same-origin") ]
 
@@ -450,6 +450,125 @@ let test_a_reset_is_409_while_the_engine_has_stopped_the_desk () =
         "never a hand's" false
         (String.is_substring why ~substring:"by hand"))
 
+(* 2026-11-27, INC-02's pooled test: [?since=YYYY-MM-DD] serves every close
+   on or after the date -- past the default's 250 -- and nothing before it;
+   no parameter is the route exactly as it was; a malformed date is a 400
+   with the sentence, never a silent default. 600 sessions, day i = first + i,
+   written newest first so the order checked is the query's. *)
+let test_sessions_since_serves_every_close_from_the_date () =
+  with_routes ~host:`Demo ~on_event:ignore ~f:(fun server oms ->
+      let first = Date.of_string "2025-01-01" in
+      let at = Time_ns.now () in
+      List.iter
+        (List.rev (List.init 600 ~f:Fn.id))
+        ~f:(fun i ->
+          D.Journal.record_session (D.Oms.journal oms)
+            {
+              D.Journal.Session.date = Date.add_days first i;
+              equity_close = 100_000.0 +. Float.of_int i;
+              cash_close = 0.0;
+              gross_close = 0.0;
+              net_close = 0.0;
+              recorded_at = at;
+            });
+      let get query =
+        dispatched server
+          { (request ~meth:`GET "/api/desk/sessions") with Server.Request.query }
+      in
+      let date_of s = Yojson.Safe.Util.(to_string (member "date" s)) in
+      let dates text =
+        List.map ~f:date_of (Yojson.Safe.Util.to_list (Yojson.Safe.from_string text))
+      in
+      (* day 50 onwards: 550 closes, past the default's 250 *)
+      let since = Date.to_string (Date.add_days first 50) in
+      let code, text = get [ ("since", [ since ]) ] in
+      Alcotest.(check int) "since: 200" 200 code;
+      let got = dates text in
+      Alcotest.(check int) "every close on or after the date: 550, not 250" 550
+        (List.length got);
+      Alcotest.(check string) "the first served is the date itself" since (List.hd_exn got);
+      Alcotest.(check string)
+        "the last is the newest, day 599"
+        (Date.to_string (Date.add_days first 599))
+        (List.last_exn got);
+      Alcotest.(check (list string))
+        "oldest first" (List.sort got ~compare:String.compare) got;
+      (* a date between closes starts at the next close; one past the newest is [] *)
+      let _, text = get [ ("since", [ "2026-08-23" ]) ] in
+      Alcotest.(check int)
+        "from 2026-08-23 (day 599 is 2026-08-23)" 1
+        (List.length (dates text));
+      let _, text = get [ ("since", [ "2030-01-01" ]) ] in
+      Alcotest.(check (list string)) "after the newest close: none" [] (dates text);
+      (* no parameter: exactly the newest 250, oldest first, as before *)
+      let code, text = get [] in
+      Alcotest.(check int) "default: 200" 200 code;
+      let got = dates text in
+      Alcotest.(check int) "the default is still the newest 250" 250 (List.length got);
+      Alcotest.(check string)
+        "the default's oldest is day 350"
+        (Date.to_string (Date.add_days first 350))
+        (List.hd_exn got);
+      (* an unrelated parameter changes nothing *)
+      let _, text' = get [ ("other", [ "x" ]) ] in
+      Alcotest.(check string) "another parameter is ignored" text text';
+      (* malformed: a 400 with the sentence *)
+      let sentence = {|{"error":"since: one date, as YYYY-MM-DD (for example 2026-11-27)"}|} in
+      List.iter
+        [
+          [ ("since", [ "20250201" ]) ];
+          [ ("since", [ "2025-2-01" ]) ];
+          [ ("since", [ "2025-02-30" ]) ];
+          [ ("since", [ "2025-13-01" ]) ];
+          [ ("since", [ "Feb 1 2025" ]) ];
+          [ ("since", [ "" ]) ];
+          [ ("since", []) ];
+          [ ("since", [ "2025-02-01"; "2025-03-01" ]) ];
+          [ ("since", [ "2025-02-01" ]); ("since", [ "2025-03-01" ]) ];
+        ]
+        ~f:(fun q ->
+          let code, text = get q in
+          let shown =
+            String.concat ~sep:"&"
+              (List.map q ~f:(fun (k, vs) -> k ^ "=" ^ String.concat ~sep:"," vs))
+          in
+          Alcotest.(check int) (shown ^ ": 400") 400 code;
+          Alcotest.(check string) (shown ^ ": the sentence") sentence text))
+
+(* The bound on ?since=: past [sessions_since_cap] closes, the oldest that
+   many on or after the date are served -- the route never answers a public
+   caller with the demo host's whole five-minute history. *)
+let test_sessions_since_is_bounded () =
+  with_routes ~host:`Demo ~on_event:ignore ~f:(fun server oms ->
+      let cap = D.Desk_routes.sessions_since_cap in
+      let first = Date.of_string "2000-01-01" in
+      let at = Time_ns.now () in
+      List.iter
+        (List.init (cap + 10) ~f:Fn.id)
+        ~f:(fun i ->
+          D.Journal.record_session (D.Oms.journal oms)
+            {
+              D.Journal.Session.date = Date.add_days first i;
+              equity_close = 1.0;
+              cash_close = 0.0;
+              gross_close = 0.0;
+              net_close = 0.0;
+              recorded_at = at;
+            });
+      let code, text =
+        dispatched server
+          {
+            (request ~meth:`GET "/api/desk/sessions") with
+            Server.Request.query = [ ("since", [ "2000-01-01" ]) ];
+          }
+      in
+      Alcotest.(check int) "200" 200 code;
+      let shown = Yojson.Safe.Util.to_list (Yojson.Safe.from_string text) in
+      Alcotest.(check int) "cut at the cap" cap (List.length shown);
+      Alcotest.(check string)
+        "the oldest on or after the date are the ones kept" "2000-01-01"
+        Yojson.Safe.Util.(to_string (member "date" (List.hd_exn shown))))
+
 let suite =
   ( "desk_routes",
     [
@@ -461,4 +580,7 @@ let suite =
       Alcotest.test_case "a reset must say so" `Quick test_a_reset_must_say_so;
       Alcotest.test_case "a reset is 409 while the engine has stopped the desk" `Quick
         test_a_reset_is_409_while_the_engine_has_stopped_the_desk;
+      Alcotest.test_case "?since= serves every session close from the date" `Quick
+        test_sessions_since_serves_every_close_from_the_date;
+      Alcotest.test_case "?since= is bounded" `Quick test_sessions_since_is_bounded;
     ] )

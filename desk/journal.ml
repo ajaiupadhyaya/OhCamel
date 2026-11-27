@@ -835,6 +835,16 @@ let recent_sessions t ~limit =
        [ Data.INT (Int64.of_int limit) ]
        ~row:session_of_row)
 
+(* Every close on or after [since], oldest first, at most [limit] of them:
+   /api/desk/sessions?since= (2026-11-27), so INC-02's pooled test reads all
+   500 of its sessions rather than the newest 250. Oldest first from SQLite,
+   so a LIMIT keeps the ones nearest [since]. *)
+let sessions_since t ~since ~limit =
+  query t ~what:"sessions since"
+    ("SELECT " ^ session_columns ^ " FROM sessions WHERE date >= ? ORDER BY date LIMIT ?")
+    [ date since; Data.INT (Int64.of_int limit) ]
+    ~row:session_of_row
+
 let session t d =
   List.hd
     (query t ~what:"session"
