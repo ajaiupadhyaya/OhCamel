@@ -11,13 +11,26 @@ runs on whichever engine its row says is faster (`ohcamel_quant.kernels`).
 
 | kernel | size | Python ms | Rust 1T ms | Rust 2T ms | 1T speed-up | 2T / 1T | host | measured on | sha |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
+| fhs_paths | 100,000 paths x 10 days, 9 assets (GJR-t fits on the fixture ETFs) | 534.166 | 137.122 | 103.929 | 3.9x | 1.32x | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | fhs_paths | 100,000 paths x 10 days, 9 assets (GJR-t fits on the fixture ETFs) | 61.748 | 42.293 | 22.955 | 1.5x | 1.84x | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| copula_t_paths | 100,000 paths x 10 days, 9 fixture ETFs, nu = 6 | 6,556.168 | 5,931.876 | 3,302.927 | 1.1x | 1.80x | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | copula_t_paths | 100,000 paths x 10 days, 9 fixture ETFs, nu = 6 | 1,373.457 | 1,306.863 | 675.130 | 1.1x | 1.94x | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| var_es_from_pnl | 1,000,000 P&L draws, alpha = 0.99 | 37.870 | 8.963 | n/a | 4.2x | n/a | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | var_es_from_pnl | 1,000,000 P&L draws, alpha = 0.99 | 7.531 | 3.045 | n/a | 2.5x | n/a | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| stationary_bootstrap_means | 10,000 replications of SPY's fixture returns as (x, x^2), mean block 10 | 3,611.515 | 1,032.565 | 1,096.301 | 3.5x | 0.94x | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | stationary_bootstrap_means | 10,000 replications of SPY's fixture returns as (x, x^2), mean block 10 | 409.252 | 471.219 | 471.163 | 0.9x | 1.00x | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| cscv_pbo | fixture-ETF returns x 18 trials, S = 16 (12,870 combinations) | 61.554 | 14.360 | 10.869 | 4.3x | 1.32x | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | cscv_pbo | fixture-ETF returns x 18 trials, S = 16 (12,870 combinations) | 11.564 | 3.340 | 2.151 | 3.5x | 1.55x | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| garch_nll | one GJR-t likelihood over SPY's fixture returns | 0.663 | 0.417 | n/a | 1.6x | n/a | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | garch_nll | one GJR-t likelihood over SPY's fixture returns | 0.072 | 0.034 | n/a | 2.1x | n/a | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| garch_fit | one GJR-t fit on the last 1,000 SPY fixture returns | 23.710 | 112.328 | n/a | 0.2x | n/a | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | garch_fit | one GJR-t fit on the last 1,000 SPY fixture returns | 2.962 | 20.067 | n/a | 0.1x | n/a | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| backtest_weights | 9 fixture ETFs, every session, monthly executions | 43.117 | 0.811 | n/a | 53.2x | n/a | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | backtest_weights | 9 fixture ETFs, every session, monthly executions | 5.468 | 0.126 | n/a | 43.4x | n/a | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| svi_fit | one 41-point smile | 504.071 | 16.089 | n/a | 31.3x | n/a | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | svi_fit | one 41-point smile | 15.996 | 0.460 | n/a | 34.8x | n/a | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| realized_vol_minute | 252 sessions x 390 one-minute prices | 9.277 | 2.955 | n/a | 3.1x | n/a | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
 | realized_vol_minute | 252 sessions x 390 one-minute prices | 1.014 | 0.543 | n/a | 1.9x | n/a | Apple M2 Pro | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| american_price | 200 American contracts (strikes 600..900 on 750, calls and puts, 0.1-2 years), 400 steps | 100.343 | 33.783 | 16.791 | 3.0x | 2.01x | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
+| american_iv | the same 200 contracts' implied vols from their prices, 400 steps | 442.252 | 91.739 | 84.588 | 4.8x | 1.08x | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
+| heston_price | 5,000 European contracts (25 expiries x 200 strikes), COS with 160 terms | 240.301 | 68.668 | n/a | 3.5x | n/a | DO-Regular | DigitalOcean s-2vcpu-4gb droplet, ohcamel-quant image | a10eeb49822c |
