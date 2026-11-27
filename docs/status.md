@@ -120,6 +120,14 @@ The same steps are in [`runbooks/desk.md`](runbooks/desk.md).
 
 None of these is the agent's to do. The order is the order of dependence.
 
+0. **Deployed past the hold, 2026-11-27 13:26 ET (after the 13:00 early close), by the agent on the owner's
+   instruction:** `deploy/deploy.sh --sha a10eeb4 --live --during-market`, both hosts, smoke 52 of 52, `deploys.log`
+   `ok`, with the INC-02 book of item 4 installed as `~/OhCamel/book.sexp` (the INC-01 book archived as
+   `~/book-archive/book.sexp.2026-11-27.pre-inc02`). Before it, `f7366fe --public-only --build` (11:44 ET, `ok`) put the
+   wall-limit fix on the worker; a10eeb4 carries it too. After the restart: kill switch enabled, trips on
+   `book-cap es-cap dd-cap`, the desk still **halted by hand** on the owner's 2026-11-16 reason, no trip, no open order,
+   20 strategies registered. Seen in the live log: Alpaca refuses the quotes subscription (`error 405, symbol limit
+   exceeded`: the data plan's 30 symbols), so trade prints mark without the deviation filter, as the feed is built to.
 1. **INC-02: APPROVED by the owner on 2026-11-27**, every numbered line as drafted, Roster-6 by option (a)
    (`research/experiments/INC-02/preregistration.md`, *Approval*). The pooled test now also reads the file's
    `Roster-6(a) flatten completed:` line: until it names a date the test reads NOT STARTED, and then the series starts
