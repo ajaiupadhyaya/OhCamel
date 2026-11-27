@@ -204,8 +204,11 @@
   /* ---- /execution: 2x2, four independent reports rather than one wide one ----
      Open orders, costs, sessions and forecasts are four separate questions
      with four separate tables; none of them is a continuation of another, so
-     no section spans the way #stresssec does on /risk. */
+     none spans -- except the per-fill costs, whose twelve columns need the
+     page's width (#fillcostsec, below). */
   main.exec { grid-template-columns: 1fr 1fr; }
+  /* The per-fill costs have twelve columns: the whole width, as the history and trades sections. */
+  #fillcostsec { grid-column: 1 / -1; }
   @media (max-width: 900px) { main.exec { grid-template-columns: 1fr; } }
 
   /* ---- /research: the strategies and their latest signals side by side,

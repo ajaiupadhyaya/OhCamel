@@ -568,6 +568,7 @@ let test_the_execution_page_has_its_sections () =
         "<nav class=\"sitenav\"";
         "id=\"openorders\"";
         "id=\"tca\"";
+        "id=\"fillcosts\"";
         "id=\"sessions\"";
         "id=\"forecasts\"";
         "OhCamelStream.onFrame(poll)";

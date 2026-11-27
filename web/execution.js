@@ -97,6 +97,34 @@
     if (note) note.textContent = tca.note || "";
   }
 
+  /* Each recent fill's costs (Task 1.8): the shortfall against the decision
+     price split into delay and slippage, the half-spread at arrival, the
+     shortfall against the model's cost, and the venue-bar benchmarks. Basis
+     points only, as the summaries above. A fill whose arrival quote was read
+     after hours is marked, because its delay and slippage are noise (the note
+     above says so); a missing VWAP carries the engine's reason on hover. */
+  function renderFillCosts(d) {
+    var t = document.getElementById("fillcosts");
+    if (!t) return;
+    t.textContent = "";
+    var rows = d.fills || [];
+    if (rows.length === 0) { empty(t, "no fill has been recorded yet"); return; }
+    head(t, ["at", "symbol", "side", "shortfall", "delay", "slippage", "half-spread", "vs model",
+             "vs open", "vs close", "vs VWAP", "arrival"]);
+    rows.forEach(function (f) {
+      var r = document.createElement("tr");
+      cell(r, f.at, "lbl");
+      cell(r, f.symbol);
+      cell(r, f.side);
+      [f.shortfall_bps, f.delay_bps, f.slippage_bps, f.half_spread_bps, f.versus_model_bps,
+       f.vs_open_bps, f.vs_close_bps].forEach(function (v) { cell(r, bps(v), "num"); });
+      var vwap = cell(r, bps(f.vs_vwap_bps), "num");
+      if (f.vs_vwap_bps === null && f.vwap_reason) vwap.title = String(f.vwap_reason);
+      cell(r, f.arrival_after_hours ? "after hours" : (f.arrival_bid === null ? "no quote" : "in session"));
+      t.appendChild(r);
+    });
+  }
+
   function renderSessions(d) {
     var t = document.getElementById("sessions");
     if (!t) return;
@@ -135,6 +163,7 @@
   function draw(d) {
     renderOpen(d);
     renderTca(d);
+    renderFillCosts(d);
     renderSessions(d);
     renderForecasts(d);
   }
