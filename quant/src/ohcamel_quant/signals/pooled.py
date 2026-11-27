@@ -27,12 +27,17 @@ from scipy import stats
 
 from ..backtest.metrics import probabilistic_sharpe
 
-__all__ = ["ALPHA", "PERIODS", "SESSIONS", "analytic_power", "verdict_at", "psr_and_se"]
+__all__ = ["ALPHA", "DECIDED", "MIN_SCORED", "PERIODS", "SESSIONS", "analytic_power", "verdict_at", "psr_and_se"]
 
 SESSIONS = 500
 PERIODS = 252
 ALPHA = 0.05
 PSR_MIN = 1.0 - ALPHA   # the one-sided 5% test
+#: The fewest scorable sessions of the 500 a decision is made on (95%, 2026-11-27): below it the one evaluation is
+#: ``INSUFFICIENT DATA``, decided and stored like the other two, never a PSR over far fewer than 500 sessions.
+MIN_SCORED = 475
+#: The verdicts the evaluation at session 500 can give: once one is given it is stored and never recomputed.
+DECIDED = ("REJECTED NULL", "NOT REJECTED", "INSUFFICIENT DATA")
 
 
 def analytic_power(sharpe_annual: float, n: int = SESSIONS, alpha: float = ALPHA) -> float:
@@ -68,8 +73,11 @@ def psr_and_se(returns: Sequence[float]) -> tuple[float | None, float | None]:
     return round(psr, 6), round(math.sqrt(PERIODS * d / (n - 1)), 6)
 
 
-def verdict_at(sessions_done: int, psr: float | None) -> str:
-    """``IN PROGRESS`` until the 500th session, then the one evaluation: ``REJECTED NULL`` at PSR >= 0.95."""
+def verdict_at(sessions_done: int, psr: float | None, *, scored: int) -> str:
+    """``IN PROGRESS`` until the 500th session, then the one evaluation: ``INSUFFICIENT DATA`` when fewer than
+    :data:`MIN_SCORED` of the 500 sessions are scorable (``scored``), else ``REJECTED NULL`` at PSR >= 0.95."""
     if sessions_done < SESSIONS:
         return "IN PROGRESS"
+    if scored < MIN_SCORED:
+        return "INSUFFICIENT DATA"
     return "REJECTED NULL" if psr is not None and psr >= PSR_MIN else "NOT REJECTED"

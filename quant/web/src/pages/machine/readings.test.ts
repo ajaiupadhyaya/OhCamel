@@ -617,6 +617,19 @@ describe("reading: the book, its limits and kill switch", () => {
     expect(text(fx, "book")).toContain("detects an annualised Sharpe of 1.0 no times in ten");
   });
 
+  it("words a test decided on too few scorable sessions as insufficient data, with the count, and no null", () => {
+    const fx = clone();
+    const m = nodeOf(fx, "book").m;
+    Object.assign(m, {
+      pooled_done: 500, pooled_required: 500, pooled_verdict: "INSUFFICIENT DATA", pooled_power: 0.41, pooled_asof: "2028-12-01",
+      pooled_why: "the stored decision of 2028-12-01 (first fill 2026-12-01), not recomputed; 37 of 500 sessions unscorable (no prior-close equity or rate)",
+    });
+    const t = text(fx, "book");
+    expect(t).toContain("session 500 of 500 · this test detects an annualised Sharpe of 1.0 four times in ten · result: insufficient data, no test decided, 37 of 500 sessions could not be scored · as of 2028-12-01, from the desk report");
+    expect(t).not.toMatch(/null of no edge/);
+    expect(t).not.toMatch(/no result before session/);
+  });
+
   it("labels a draft roster on the book and on each strategy, and only while the payload says it is one", () => {
     const fx = clone();
     nodeOf(fx, "book").m.roster_draft = "INC-02";

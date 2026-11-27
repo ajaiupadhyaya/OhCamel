@@ -283,6 +283,7 @@ DIRECT_READS = {
     ("signals/contract.py", "read_text("): (1, "the committed JSON schema (code SHA)"),
     ("signals/roster.py", "read_text("): (2, "the committed roster and the pre-registration beside it (code SHA)"),
     ("signals/report.py", "httpx."): (2, "the live engine: UNRECORDED_READS"),
+    ("signals/report.py", "read_text("): (1, "INC-02's stored decision on the data volume: UNRECORDED_READS"),
     # completion task 3.6: ops.selftest's test-only hang (never scheduled, not submittable through the API): it holds
     # a DuckDB file's writer lock and starts a `sleep`; nothing is read and nothing reaches the artifact
     ("jobs/handlers/selftest.py", "duckdb.connect("): (1, "test-only: holds a writer lock, reads nothing"),

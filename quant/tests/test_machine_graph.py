@@ -442,6 +442,20 @@ def test_a_test_not_started_carries_its_reason_and_a_malformed_row_says_nothing(
     assert not [k for k in _node(build_graph(_inputs()), "book")["m"] if k.startswith("pooled")]
 
 
+def test_a_test_decided_on_too_few_scorable_sessions_is_carried_as_insufficient_data():
+    """2026-11-27: at session 500 with fewer than 475 sessions scorable the stored verdict is INSUFFICIENT DATA; the
+    book carries it with its reason (the count), not as a malformed row the page would drop."""
+    why = "37 of 500 sessions unscorable (no prior-close equity or rate)"
+    row = _pooled_row(sessions_done=500, verdict="INSUFFICIENT DATA", reason=why, psr=None, sharpe_se=None)
+    m = _node(build_graph(_inputs(book_summary=_desk_with({"book_summary": _summary(), "pooled_test": row}, []))),
+              "book")["m"]
+    assert (m["pooled_done"], m["pooled_verdict"], m["pooled_why"]) == (500, "INSUFFICIENT DATA", why)
+    from ohcamel_quant.machine.graph import POOLED_VERDICTS  # noqa: PLC0415
+    from ohcamel_quant.signals.pooled import DECIDED  # noqa: PLC0415
+
+    assert set(DECIDED) <= set(POOLED_VERDICTS)    # every verdict the evaluation can store, the book can carry
+
+
 def _desk_with(tables, live):
     return _product("desk.report", tables, live)
 

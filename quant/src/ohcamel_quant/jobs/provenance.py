@@ -102,7 +102,8 @@ UNRECORDED_READS: dict[str, str] = {
     "signals.daily": "the live engine's /api/research and the last signal document on the signals volume are read "
                      "outside the recorder (the document itself carries the hash of the bars it used)",
     "signals.overlay": "the signal documents on the signals volume are read outside the recorder",
-    "desk.report": "the live engine's routes are read over HTTP outside the recorder",
+    "desk.report": ("the live engine's routes are read over HTTP outside the recorder, and INC-02's stored decision "
+                    "({data_dir}/inc02_verdict.json) is read from the data volume"),
 }
 
 #: Kinds tools/regenerate.py refuses, and why: a re-run could not be faithful, or would act on the world.
