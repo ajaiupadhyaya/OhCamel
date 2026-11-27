@@ -578,11 +578,15 @@ let mode_to_string = function `Demo -> "demo" | `Live -> "live"
 
 (* A request as an extension sees it: enough to decide what was asked, with
    the body already read. Built-in routes never look at it -- every one of them
-   is a GET whose method is ignored -- and that stays true. *)
+   is a GET whose method is ignored -- and that stays true. [query] is the
+   request URI's query string, decoded (Uri.query), [] when there is none: an
+   extension that reads a parameter validates it itself (2026-11-27,
+   /api/desk/sessions' [since]); the built-ins still ignore it. *)
 module Request = struct
   type t = {
     meth : Cohttp.Code.meth;
     path : string;
+    query : (string * string list) list;
     headers : Cohttp.Header.t;
     body : string;
   }
@@ -1480,7 +1484,8 @@ let dispatch (t : t) (request : Request.t) =
       | None -> respond_json ~status:`Not_found t t.not_found_body)
 
 let handle (t : t) ~(path : string) =
-  dispatch t { Request.meth = `GET; path; headers = Cohttp.Header.init (); body = "" }
+  dispatch t
+    { Request.meth = `GET; path; query = []; headers = Cohttp.Header.init (); body = "" }
 
 (* A frame for a change the graph cannot see -- an order acknowledged, a
    cancel confirmed. The broadcaster cannot tell the two apart and does not
@@ -1659,6 +1664,7 @@ let start ?(port = 8080) (t : t) =
     (Tcp.Where_to_listen.of_port port)
     (fun ~body _address request ->
       let path = Uri.path (Cohttp.Request.uri request) in
+      let query = Uri.query (Cohttp.Request.uri request) in
       let headers = Cohttp.Request.headers request in
       let meth = Cohttp.Request.meth request in
       match lookup path with
@@ -1671,7 +1677,7 @@ let start ?(port = 8080) (t : t) =
              for the connection's next request rather than holding bytes no
              route here was ever going to read. *)
           don't_wait_for (Cohttp_async.Body.drain body);
-          dispatch t { Request.meth; path; headers; body = "" }
+          dispatch t { Request.meth; path; query; headers; body = "" }
       (* Only an extension or the 404 reaches here, and both are the one place
          this process reads a client-supplied body at all -- so this is the
          one place it has to be bounded, in size and in time, against a
@@ -1683,7 +1689,7 @@ let start ?(port = 8080) (t : t) =
               {|{"error":"body exceeds the 64 KiB limit"}|}
           else
             match%bind read_bounded_body body with
-            | `Body body -> dispatch t { Request.meth; path; headers; body }
+            | `Body body -> dispatch t { Request.meth; path; query; headers; body }
             | `Too_large ->
                 Cohttp_async.Server.respond_string ~headers:(refusal_headers t)
                   ~status:`Request_entity_too_large

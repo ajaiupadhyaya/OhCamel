@@ -526,6 +526,7 @@ let test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go () =
       {
         Ohcamel.Server.Request.meth = `POST;
         path = "/api/desk/kill";
+        query = [];
         headers =
           Cohttp.Header.of_list
             [ ("X-OhCamel-Desk", "1"); ("Sec-Fetch-Site", "same-origin") ];

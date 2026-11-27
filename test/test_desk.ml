@@ -571,6 +571,7 @@ let test_api_desk_answers_through_the_server () =
              {
                Server.Request.meth = `GET;
                path = "/api/desk";
+               query = [];
                headers = Cohttp.Header.init ();
                body = "";
              })

@@ -245,19 +245,56 @@ let protected ~host ~oms ~f server r =
 (* The newest 250 session closes, oldest first: a year of sessions, the
    window phase A5 validates over. Bounded, because this route answers anyone
    on the demo host, which records a session every five minutes -- the reason
-   A1's final review (M5) bounded /api/desk's own queries. *)
-let sessions_json journal : Yojson.Safe.t =
+   A1's final review (M5) bounded /api/desk's own queries.
+
+   [?since=YYYY-MM-DD] (2026-11-27) serves every close on or after that date
+   instead, oldest first: INC-02's pooled test needs all 500 of its sessions
+   from its first fill, and the newest 250 would stall it at 250 with its
+   window sliding. Still bounded, at [sessions_since_cap] -- twenty years of
+   NYSE sessions, which the live host's daily closes never reach, and a page
+   the demo host's five-minute closes cannot grow without limit; past it the
+   oldest [sessions_since_cap] on or after the date are served. No parameter
+   is exactly the route as it was. *)
+let sessions_newest = 250
+let sessions_since_cap = 5040
+
+let session_json (s : Journal.Session.t) : Yojson.Safe.t =
   let num x = if Float.is_finite x then `Float x else `Null in
-  `List
-    (List.map (Journal.recent_sessions journal ~limit:250) ~f:(fun s ->
-         `Assoc
-           [
-             ("date", `String (Date.to_string s.Journal.Session.date));
-             ("equity_close", num s.Journal.Session.equity_close);
-             ("cash_close", num s.Journal.Session.cash_close);
-             ("gross_close", num s.Journal.Session.gross_close);
-             ("net_close", num s.Journal.Session.net_close);
-           ]))
+  `Assoc
+    [
+      ("date", `String (Date.to_string s.Journal.Session.date));
+      ("equity_close", num s.Journal.Session.equity_close);
+      ("cash_close", num s.Journal.Session.cash_close);
+      ("gross_close", num s.Journal.Session.gross_close);
+      ("net_close", num s.Journal.Session.net_close);
+    ]
+
+let sessions_json ?since journal : Yojson.Safe.t =
+  let rows =
+    match since with
+    | None -> Journal.recent_sessions journal ~limit:sessions_newest
+    | Some since -> Journal.sessions_since journal ~since ~limit:sessions_since_cap
+  in
+  `List (List.map rows ~f:session_json)
+
+let since_sentence = "since: one date, as YYYY-MM-DD (for example 2026-11-27)"
+
+(* [since] exactly as YYYY-MM-DD, a real calendar date: Core's [Date.of_string]
+   also reads other spellings ("20261127", "Nov 27 2026"), so the shape is
+   checked first and the parse must print back to the same ten characters. *)
+let parse_since (r : Server.Request.t) : (Date.t option, string) Result.t =
+  let shaped s =
+    String.length s = 10
+    && String.for_alli s ~f:(fun i c ->
+           if i = 4 || i = 7 then Char.equal c '-' else Char.is_digit c)
+  in
+  match List.filter r.Server.Request.query ~f:(fun (k, _) -> String.equal k "since") with
+  | [] -> Ok None
+  | [ (_, [ s ]) ] when shaped s -> (
+      match Option.try_with (fun () -> Date.of_string s) with
+      | Some d when String.equal (Date.to_string d) s -> Ok (Some d)
+      | _ -> Error since_sentence)
+  | _ -> Error since_sentence
 
 let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
   let switch () = Halt.to_json (Oms.halt oms) ~now:(Time_ns.now ()) in
@@ -272,11 +309,15 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
     };
     {
       Server.path = "/api/desk/sessions";
-      purpose = "the newest 250 session closes, oldest first";
+      purpose =
+        "the newest 250 session closes, oldest first; ?since=YYYY-MM-DD, every close on \
+         or after that date (at most 5040)";
       handle =
-        (fun server _ ->
+        (fun server r ->
           guard_sync oms ~route:"sessions" ~sentence:read_error_sentence server (fun () ->
-              respond server (sessions_json (Oms.journal oms))));
+              match parse_since r with
+              | Error why -> respond_error server `Bad_request why
+              | Ok since -> respond server (sessions_json ?since (Oms.journal oms))));
     };
     {
       Server.path = "/api/desk/preview";
