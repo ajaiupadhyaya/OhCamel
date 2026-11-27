@@ -45,6 +45,11 @@ the archive under ``fixtures/archive/`` is how a repair is recorded. Checks, all
   *Exceptions.* ``DRIFT_EXCEPTIONS`` names (ticker, session, reason) for bars where the vendor's convention
   is known to differ from adjust.py's: each is REPORTED as its own non-gating finding carrying the reason and
   its size, and is left out of the series' drift and of ``adjust_max_drift``. Nothing is absorbed unnamed.
+  One convention is computed rather than listed (2026-11-27): an action whose ex-date is a weekday with no bar in
+  the series -- the market shut that day, as for four sessions after 9/11 -- is applied by Yahoo from the next
+  session and left off the session before it, while adjust.py's rule 3 adjusts every session before the ex-date.
+  So the one session before such an ex-date is excepted the same way, named with its ex-date (``shut_exdate``).
+  A bar merely missing from one series looks the same here; ``missing_session`` names those.
 
   *What it can prove.* For Yahoo-served series the raw bars are rebuilt from Yahoo's own split list, so the
   split part of the comparison is an identity: a split Yahoo never lists is invisible here (``split_suspect``
@@ -321,8 +326,9 @@ def adjust_drift(con: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], di
         if t not in cover or cover[t] > raw.index[0]:
             counts["no_actions"].append(t)
             continue
+        actions = adjust.read_actions(con, t)
         try:
-            derived = adjust.series(raw, adjust.read_actions(con, t), dividends=True)["close"]
+            derived = adjust.series(raw, actions, dividends=True)["close"]
         except ValueError as e:
             counts["failed"].append(f"{t} ({e})")
             continue
@@ -332,12 +338,15 @@ def adjust_drift(con: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], di
         common = v.index.intersection(derived.index)
         rel = (derived.loc[common] / v.loc[common] - 1.0).abs()
         counts["compared"] += 1
-        excepted = [d for d in rel.index if (t, d) in except_at and rel.loc[d] > DRIFT_RTOL]
+        why = {d: w for (k, d), w in except_at.items() if k == t}
+        for d, w in shut_exdates(raw.index, actions).items():
+            why.setdefault(d, w)
+        excepted = [d for d in rel.index if d in why and rel.loc[d] > DRIFT_RTOL]
         for d in excepted:
             counts["excepted"].append(f"{t} {d.date()}")
             out.append({"ticker": t, "date": str(d.date()), "check": "adjust_drift", "size": float(rel.loc[d]),
                         "excepted": True,
-                        "detail": f"excepted bar, drift {rel.loc[d]:.2e} relative: {except_at[(t, d)]}"})
+                        "detail": f"excepted bar, drift {rel.loc[d]:.2e} relative: {why[d]}"})
         rel = rel.drop(excepted)
         if len(rel):
             counts["max_drift"] = float(np.nanmax([counts["max_drift"], rel.max()]))
@@ -353,6 +362,26 @@ def adjust_drift(con: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], di
                               f"on the session after {last} shows this way"})
     out.sort(key=lambda r: (r["excepted"], -r["size"], r["ticker"]))
     return out, counts
+
+
+def shut_exdates(sessions: pd.DatetimeIndex, actions: pd.DataFrame) -> dict[pd.Timestamp, str]:
+    """The session before each ex-date that is a weekday with no bar in the series, inside it (``shut_exdate``,
+    module docstring), with the reason the finding carries."""
+    out: dict[pd.Timestamp, str] = {}
+    if len(sessions) == 0 or actions is None or actions.empty:
+        return out
+    have = set(sessions)
+    for e in sorted(set(pd.DatetimeIndex(actions["ex_date"]))):
+        if e.weekday() >= 5 or e in have or not (sessions[0] < e <= sessions[-1]):
+            continue
+        before = sessions[sessions < e]
+        if len(before):
+            p = before[-1]
+            out.setdefault(p, f"shut_exdate: the ex-date {e.date()} has no bar in this series (the market was shut "
+                              f"that day, or the bar is missing, which missing_session names): Yahoo leaves "
+                              f"{p.date()} unadjusted for it, adjust.py's rule 3 adjusts every session before the "
+                              f"ex-date")
+    return out
 
 
 def drift_gates(r: dict[str, Any], recent: pd.Timestamp | None) -> bool:

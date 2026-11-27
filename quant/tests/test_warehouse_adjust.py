@@ -434,6 +434,16 @@ def test_an_excepted_bar_is_reported_with_its_reason_and_does_not_gate(backfille
     assert "excepted" in row.detail and "CONSTRUCTED for this test" in row.detail and "6.95e-03" in row.detail       # 1/1.007 - 1
     s = spec.tables["summary"].iloc[0]
     assert s["adjust_excepted"] == 1 and s["adjust_max_drift"] < 1e-6 and s["n_adjust_drift"] == 0
+    # 2026-11-27, shut_exdate: an ex-date on a weekday the series has no bar for (9/11's four shut sessions)
+    # excepts the one session before it, computed, not listed; weekends, ex-dates with a bar and ex-dates outside
+    # the series are not excepted
+    days = pd.DatetimeIndex(["2001-09-07", "2001-09-10", "2001-09-17", "2001-09-18"])
+    acts = pd.DataFrame({"ex_date": pd.to_datetime(["2001-09-12", "2001-09-15", "2001-09-17", "2001-09-20",
+                                                    "2001-09-05"])})
+    shut = DI.shut_exdates(days, acts)
+    assert list(shut) == [pd.Timestamp("2001-09-10")]
+    assert "2001-09-12 has no bar" in shut[pd.Timestamp("2001-09-10")]
+    assert DI.shut_exdates(days, acts.iloc[0:0]) == {} and DI.shut_exdates(days[:0], acts) == {}
 
 
 def test_day_one_says_what_is_missing_instead_of_flooding(backfilled):
