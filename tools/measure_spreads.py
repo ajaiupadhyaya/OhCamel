@@ -59,6 +59,10 @@ WINDOWS = (time(10, 0), time(11, 30), time(13, 0), time(14, 30), time(15, 30))
 RETRIES = 6          # attempts after the first, on a 429 or a 5xx
 BACKOFF_S = 1.0      # the first wait; doubled each retry, capped at 60 s
 FEED = "iex"
+#: 2026-11-27: ``--feed sip`` reads the consolidated (SIP) quotes instead, which Alpaca serves free once they are
+#: more than 15 minutes old -- every sampled window here is days old. IEX's own book overstates a name IEX quotes
+#: thinly (USO measured 151 bp on it); the feed a run used is in its sidecar.
+FEEDS = ("iex", "sip")
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -126,12 +130,14 @@ def sessions(warehouse: str, n: int) -> list[date]:
 
 
 def quotes(symbol: str, start: datetime, end: datetime, key: str, secret: str,
-           client: Paced | None = None) -> list[tuple[float, float]]:
+           client: Paced | None = None, feed: str = FEED) -> list[tuple[float, float]]:
     client = client or Paced(0.0)
     out: list[tuple[float, float]] = []
     token = None
     while True:
-        q = {"feed": FEED, "start": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        if feed not in FEEDS:
+            raise ValueError(f"feed {feed!r} is not one of {FEEDS}")
+        q = {"feed": feed, "start": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
              "end": end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": "10000"}
         if token:
             q["page_token"] = token
@@ -157,6 +163,9 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="the CSV (default: research/config/costs_measured.csv, or /tmp "
                     "where the repository is read-only); its provenance goes to <out>.meta.json")
     ap.add_argument("--pace", type=float, default=0.35, help="seconds between requests (default 0.35)")
+    ap.add_argument("--feed", choices=FEEDS, default=FEED, help="iex (default) or sip, the consolidated quotes")
+    ap.add_argument("--tickers", default=None, help="comma-separated names to measure (default: every name in "
+                    "costs.yaml); each must be in the cost file")
     args = ap.parse_args()
     args.out = args.out or default_out()
     check_out(args.out)
@@ -172,18 +181,26 @@ def main() -> int:
     client = Paced(args.pace)
     started = datetime.now(UTC)
     rows, yaml_rows = [], []
-    for symbol in sorted(model.tickers):
+    names = sorted(model.tickers)
+    if args.tickers:
+        names = sorted({t.strip().upper() for t in args.tickers.split(",") if t.strip()})
+        unknown = [t for t in names if t not in model.tickers]
+        if unknown:
+            print(f"not in the cost file: {', '.join(unknown)}", file=sys.stderr)
+            return 2
+    for symbol in names:
         per_session, n_quotes = [], 0
         for d in days:
             hs: list[float] = []
             for w in WINDOWS:
                 t0 = datetime.combine(d, w, NY)
-                hs.extend(half_spreads_bps(quotes(symbol, t0, t0 + timedelta(minutes=1), key, secret, client)))
+                hs.extend(half_spreads_bps(quotes(symbol, t0, t0 + timedelta(minutes=1), key, secret, client,
+                                                    feed=args.feed)))
             n_quotes += len(hs)
             if hs:
                 per_session.append(statistics.median(hs))
         if not per_session:
-            print(f"{symbol}: no two-sided IEX quote in any sampled window; its provisional row stands")
+            print(f"{symbol}: no two-sided {args.feed.upper()} quote in any sampled window; its provisional row stands")
             continue
         med = statistics.median(per_session)
         try:
@@ -201,7 +218,7 @@ def main() -> int:
         wr = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["ticker"])
         wr.writeheader()
         wr.writerows(rows)
-    meta = {"source": "alpaca-market-data", "synthetic": False, "feed": FEED, "endpoint": QUOTES,
+    meta = {"source": "alpaca-market-data", "synthetic": False, "feed": args.feed, "endpoint": QUOTES,
             "windows_new_york": [w.strftime("%H:%M") + "-" + (datetime.combine(date.min, w) + timedelta(minutes=1))
                                  .strftime("%H:%M") for w in WINDOWS],
             "sessions": [d.isoformat() for d in days], "names": len(rows), "cost_file_version": model.version,

@@ -75,7 +75,7 @@ def test_a_400_is_not_retried():
         tool.Paced(0.0, sleep=lambda s: None).get(urllib.request.Request("https://example.invalid"), opener=opener)
 
 
-def test_requests_are_paced():
+def test_requests_are_paced_and_name_their_feed():
     tool = _tool()
     sleeps: list[float] = []
     clock = iter([0.0, 0.1, 0.35])
@@ -84,3 +84,20 @@ def test_requests_are_paced():
     client.get(urllib.request.Request("https://example.invalid"), opener=opener)
     client.get(urllib.request.Request("https://example.invalid"), opener=opener)
     assert sleeps == [pytest.approx(0.25)]
+    # 2026-11-27: the feed is a parameter (iex by default, sip for the consolidated quotes); any other is refused
+    class _Seen:
+        urls: list[str] = []
+
+        def get(self, req):
+            self.urls.append(req.full_url)
+            return {"quotes": [{"bp": 10.0, "ap": 10.02}]}
+
+    from datetime import UTC, datetime, timedelta
+
+    t0 = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)
+    seen = _Seen()
+    assert tool.quotes("USO", t0, t0 + timedelta(minutes=1), "k", "s", seen) == [(10.0, 10.02)]
+    assert tool.quotes("USO", t0, t0 + timedelta(minutes=1), "k", "s", seen, feed="sip") == [(10.0, 10.02)]
+    assert "feed=iex" in seen.urls[0] and "feed=sip" in seen.urls[1]
+    with pytest.raises(ValueError, match="not one of"):
+        tool.quotes("USO", t0, t0 + timedelta(minutes=1), "k", "s", seen, feed="otc")
