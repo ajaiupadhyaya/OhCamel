@@ -86,7 +86,7 @@ let with_routes ?(on_event = ignore) ~(host : D.Desk_routes.host) ~f =
       D.Oms.set_market oms ~session_open:true ~adv20:[];
       let server =
         Server.create
-          ~extensions:(D.Desk_routes.extensions ~host ~oms)
+          ~extensions:(D.Desk_routes.extensions ~host ~oms ())
           ~mode:host ~graph ~factor:"SYNTHETIC" ()
       in
       f server oms)
@@ -244,7 +244,7 @@ let test_the_demo_refuses_orders_and_answers_previews () =
          [protected]'s host check exists to catch. The check must run before
          Protection.check's own Live logic, or a same-site, correctly
          headered Live request would be let through onto the public demo. *)
-      let live_ext = D.Desk_routes.extensions ~host:`Live ~oms in
+      let live_ext = D.Desk_routes.extensions ~host:`Live ~oms () in
       let live_handle path = find_handle live_ext path in
       let code, _ =
         answer_of "/api/desk/kill/reset"
@@ -484,15 +484,18 @@ let test_sessions_since_serves_every_close_from_the_date () =
       let code, text = get [ ("since", [ since ]) ] in
       Alcotest.(check int) "since: 200" 200 code;
       let got = dates text in
-      Alcotest.(check int) "every close on or after the date: 550, not 250" 550
-        (List.length got);
-      Alcotest.(check string) "the first served is the date itself" since (List.hd_exn got);
+      Alcotest.(check int)
+        "every close on or after the date: 550, not 250" 550 (List.length got);
+      Alcotest.(check string)
+        "the first served is the date itself" since (List.hd_exn got);
       Alcotest.(check string)
         "the last is the newest, day 599"
         (Date.to_string (Date.add_days first 599))
         (List.last_exn got);
       Alcotest.(check (list string))
-        "oldest first" (List.sort got ~compare:String.compare) got;
+        "oldest first"
+        (List.sort got ~compare:String.compare)
+        got;
       (* a date between closes starts at the next close; one past the newest is [] *)
       let _, text = get [ ("since", [ "2026-08-23" ]) ] in
       Alcotest.(check int)
@@ -513,7 +516,9 @@ let test_sessions_since_serves_every_close_from_the_date () =
       let _, text' = get [ ("other", [ "x" ]) ] in
       Alcotest.(check string) "another parameter is ignored" text text';
       (* malformed: a 400 with the sentence *)
-      let sentence = {|{"error":"since: one date, as YYYY-MM-DD (for example 2026-11-27)"}|} in
+      let sentence =
+        {|{"error":"since: one date, as YYYY-MM-DD (for example 2026-11-27)"}|}
+      in
       List.iter
         [
           [ ("since", [ "20250201" ]) ];
@@ -569,6 +574,89 @@ let test_sessions_since_is_bounded () =
         "the oldest on or after the date are the ones kept" "2000-01-01"
         Yojson.Safe.Util.(to_string (member "date" (List.hd_exn shown))))
 
+(* The owner's flatten is guarded as the reset is: on the demo a 405 with a
+   sentence; on the live host a 403 without X-OhCamel-Desk, and a 403 with
+   it but with no Origin naming this host -- each before the body is read,
+   so nothing is asked of the order manager. Then a body that does not say
+   which strategies is a 400 naming the shape it must take, before anything
+   is read from the journal or sent; and none of these touches the switch. *)
+let test_the_owner's_flatten_is_guarded_and_its_body_validated () =
+  with_routes ~host:`Demo ~on_event:ignore ~f:(fun server _ ->
+      let code, text =
+        dispatched server
+          (request ~headers:from_this_site ~body:{|{"strategies":"all"}|}
+             "/api/desk/flatten")
+      in
+      Alcotest.(check int) "the demo: 405" 405 code;
+      Alcotest.(check bool)
+        "with a sentence" true
+        (String.is_substring text ~substring:"the public demo takes no orders"));
+  let events = ref [] in
+  with_routes ~host:`Live
+    ~on_event:(fun line -> events := line :: !events)
+    ~f:(fun server oms ->
+      D.Oms.halt_by_hand oms ~why:"a test";
+      let all = {|{"strategies":"all"}|} in
+      let code, text = dispatched server (request ~body:all "/api/desk/flatten") in
+      Alcotest.(check int) "live, no header: 403" 403 code;
+      Alcotest.(check string)
+        "naming the header"
+        {|{"error":"a request that changes the desk must carry X-OhCamel-Desk: 1"}|} text;
+      let code, _ =
+        dispatched server
+          (request ~headers:[ ("X-OhCamel-Desk", "1") ] ~body:all "/api/desk/flatten")
+      in
+      Alcotest.(check int) "live, the header but no Origin: 403" 403 code;
+      let code, _ =
+        dispatched server
+          (request
+             ~headers:
+               [
+                 ("X-OhCamel-Desk", "1");
+                 ("Origin", "https://elsewhere.example");
+                 ("Host", "localhost:8081");
+               ]
+             ~body:all "/api/desk/flatten")
+      in
+      Alcotest.(check int) "live, a foreign Origin: 403" 403 code;
+      let code, _ =
+        dispatched server (request ~meth:`GET ~headers:from_this_site "/api/desk/flatten")
+      in
+      Alcotest.(check int) "live, a GET: 405" 405 code;
+      let localhost =
+        [
+          ("X-OhCamel-Desk", "1");
+          ("Origin", "http://localhost:8081");
+          ("Host", "localhost:8081");
+        ]
+      in
+      List.iter
+        [
+          ("not JSON", "flatten everything", "not JSON");
+          ("no strategies field", "{}", "the body must be");
+          ("an empty list", {|{"strategies":[]}|}, "empty");
+          ("a word other than all", {|{"strategies":"everything"}|}, "the body must be");
+          ("a number in the list", {|{"strategies":[1]}|}, "slug");
+          ("a name that is no slug", {|{"strategies":["Not A Slug"]}|}, "slug");
+          ("a body that is a list", {|["inc_spy"]|}, "the body must be");
+        ]
+        ~f:(fun (what, body, says) ->
+          let code, text =
+            dispatched server (request ~headers:localhost ~body "/api/desk/flatten")
+          in
+          Alcotest.(check int) (what ^ ": 400") 400 code;
+          Alcotest.(check bool)
+            (sprintf "%s: %s says %S" what text says)
+            true
+            (String.is_substring text ~substring:says));
+      Alcotest.(check string)
+        "still halted" "halted"
+        (D.Halt.State.name (D.Halt.state (D.Oms.halt oms)));
+      Alcotest.(check bool)
+        "and no flatten was asked of the order manager" false
+        (List.exists !events ~f:(fun line ->
+             String.is_substring line ~substring:"owner's flatten")))
+
 let suite =
   ( "desk_routes",
     [
@@ -583,4 +671,6 @@ let suite =
       Alcotest.test_case "?since= serves every session close from the date" `Quick
         test_sessions_since_serves_every_close_from_the_date;
       Alcotest.test_case "?since= is bounded" `Quick test_sessions_since_is_bounded;
+      Alcotest.test_case "the owner's flatten is guarded and its body validated" `Quick
+        test_the_owner's_flatten_is_guarded_and_its_body_validated;
     ] )

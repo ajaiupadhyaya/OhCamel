@@ -2195,12 +2195,254 @@ let test_every_leg_is_a_day_limit_off_its_quote () =
            ~legs:[ leg aapl D.Order.Side.Buy 10 ]))
     ()
 
+(* ------------------------------------------------------------------------ *)
+(* The owner's flatten by hand (Oms.owner_flatten)                           *)
+(* ------------------------------------------------------------------------ *)
+
+module F = D.Oms.Owner_flatten
+
+let leg_triples legs =
+  List.map legs ~f:(fun (l : Leg.t) ->
+      (Symbol.to_string l.Leg.symbol, D.Order.Side.to_string l.Leg.side, l.Leg.qty))
+
+(* Each leg takes the strategy's own position in its name exactly to zero:
+   a long sold, a short bought, never more, so no leg grows |position| or
+   crosses zero (Rules.shrinks_position holds, and qty is |position|). Half
+   a share is flat and gets no leg; a fraction of a share is held back, as
+   is a name [held_back] names -- an open order in MSFT, here. *)
+let test_the_owner's_flatten_takes_each_name_to_zero_and_no_further () =
+  let spy = Symbol.of_string "SPY" and tlt = Symbol.of_string "TLT" in
+  let own =
+    Symbol.Map.of_alist_exn
+      [ (aapl, 100.0); (msft, -30.0); (xom, -250.0); (spy, 0.2); (tlt, 12.5) ]
+  in
+  let busy = Symbol.Set.singleton msft in
+  let legs, back =
+    F.legs ~own
+      ~held_back:
+        (F.held_back
+           ~in_universe:(fun _ -> true)
+           ~busy ~claims:Symbol.Map.empty ~strategy:"alpha")
+  in
+  Alcotest.(check (list (triple string string int)))
+    "AAPL sold, XOM bought, each to zero"
+    [ ("AAPL", "sell", 100); ("XOM", "buy", 250) ]
+    (leg_triples legs);
+  List.iter legs ~f:(fun (l : Leg.t) ->
+      let position = Map.find_exn own l.Leg.symbol in
+      Alcotest.(check bool)
+        (Symbol.to_string l.Leg.symbol ^ ": shrinks without crossing zero")
+        true
+        (D.Rules.shrinks_position ~position ~side:l.Leg.side ~qty:l.Leg.qty
+        && Float.equal (Float.of_int l.Leg.qty) (Float.abs position)
+        && l.Leg.target = 0));
+  Alcotest.(check (list string))
+    "MSFT (an open order) and TLT (12.5 shares) held back; SPY's 0.2 is flat"
+    [ "MSFT"; "TLT" ]
+    (List.map back ~f:(fun (s, _) -> Symbol.to_string s));
+  contains "MSFT's reason" ~substring:"may still fill"
+    (List.Assoc.find_exn back msft ~equal:Symbol.equal);
+  contains "TLT's reason" ~substring:"not a whole number"
+    (List.Assoc.find_exn back tlt ~equal:Symbol.equal);
+  let _, back =
+    F.legs
+      ~own:(Symbol.Map.singleton aapl 100.0)
+      ~held_back:
+        (F.held_back
+           ~in_universe:(fun _ -> false)
+           ~busy:Symbol.Set.empty ~claims:Symbol.Map.empty ~strategy:"alpha")
+  in
+  contains "a name outside the universe" ~substring:"not in the book's universe"
+    (snd (List.hd_exn back))
+
+(* NETTING: in a name two strategies of one request hold, the one whose
+   flatten leaves the account nearest zero goes first, whatever the order
+   they were named in. alpha +100 and beta -50, the account +50: alpha's
+   sale leaves -50, beta's cover +100, so alpha. Two longs, +100 and +30 in
+   an account of 130: the larger, leaving 30. A name one strategy holds is
+   no one's claim. beta's leg in AAPL is then held back, naming alpha. *)
+let test_netted_strategies_go_one_at_a_time_nearest_flat_first () =
+  let own l = Symbol.Map.of_alist_exn l in
+  let alpha = ("alpha", own [ (aapl, 100.0); (msft, 10.0) ]) in
+  let beta = ("beta", own [ (aapl, -50.0) ]) in
+  let account s = if Symbol.equal s aapl then 50.0 else 10.0 in
+  let named claims =
+    List.map (Map.to_alist claims) ~f:(fun (s, n) -> (Symbol.to_string s, n))
+  in
+  List.iter
+    [ [ alpha; beta ]; [ beta; alpha ] ]
+    ~f:(fun owns ->
+      Alcotest.(check (list (pair string string)))
+        "alpha goes first in AAPL, MSFT is nobody's claim"
+        [ ("AAPL", "alpha") ]
+        (named (F.claims ~account owns)));
+  Alcotest.(check (list (pair string string)))
+    "two longs: the larger"
+    [ ("AAPL", "big") ]
+    (named
+       (F.claims
+          ~account:(fun _ -> 130.0)
+          [ ("small", own [ (aapl, 30.0) ]); ("big", own [ (aapl, 100.0) ]) ]));
+  let claims = F.claims ~account [ alpha; beta ] in
+  let legs, back =
+    F.legs ~own:(snd beta)
+      ~held_back:
+        (F.held_back
+           ~in_universe:(fun _ -> true)
+           ~busy:Symbol.Set.empty ~claims ~strategy:"beta")
+  in
+  Alcotest.(check (list (triple string string int)))
+    "beta sends nothing" [] (leg_triples legs);
+  contains "naming alpha" ~substring:{|"alpha" also holds AAPL|} (snd (List.hd_exn back));
+  let legs, _ =
+    F.legs ~own:(snd alpha)
+      ~held_back:
+        (F.held_back
+           ~in_universe:(fun _ -> true)
+           ~busy:Symbol.Set.empty ~claims ~strategy:"alpha")
+  in
+  Alcotest.(check (list (triple string string int)))
+    "alpha sends both"
+    [ ("AAPL", "sell", 100); ("MSFT", "sell", 10) ]
+    (leg_triples legs)
+
+(* The answer never quotes a threshold: a refusal by the gate or by an order
+   rule that carries one is named, not quoted; any other refusal is said as
+   it is. The owner's flatten's source is the strategy's, and no document's. *)
+let test_the_owner's_flatten_names_a_threshold_and_never_quotes_it () =
+  let gate =
+    "the gate refuses the rebalance as a unit (order 1 of 1 (AAPL sell 100) at 149.80): \
+     var-cap would be breached: 12345.67 over 10000.00"
+  in
+  let said = F.public_why gate in
+  contains "the limits named" ~substring:"the limits" said;
+  Alcotest.(check bool)
+    (sprintf "%S quotes no figure" said)
+    false
+    (String.exists said ~f:Char.is_digit);
+  let collar =
+    "order 1 of 1 (AAPL sell 100 day limit at 120.00): collar: a limit of 120.00 is \
+     20.00% from the mark of 150.00; the collar is 5.00%"
+  in
+  let said = F.public_why collar in
+  contains "the collar named" ~substring:"the collar rule" said;
+  Alcotest.(check bool)
+    "and not quoted" false
+    (String.is_substring said ~substring:"5.00%");
+  let switch = "order 1 of 1 (AAPL sell 100): kill_switch: the desk was stopped" in
+  Alcotest.(check string) "anything else, as it is" switch (F.public_why switch);
+  let name =
+    D.Rebalance.Source.name ~strategy:"alpha"
+      ~sequence:D.Rebalance.Source.owner_flatten_sequence
+  in
+  Alcotest.(check string) "the source" "signal:alpha:owner-flatten" name;
+  Alcotest.(check string) "is alpha's sub-ledger" "alpha" (D.Subledger.owner ~source:name);
+  Alcotest.(check bool)
+    "under alpha's prefix" true
+    (String.is_prefix name ~prefix:(D.Rebalance.Source.prefix ~strategy:"alpha"));
+  Alcotest.(check string)
+    "and a document's is unchanged" "signal:alpha:1"
+    (D.Rebalance.Source.name ~strategy:"alpha" ~sequence:1)
+
+let owner_source (s : Signals_spec.Strategy.t) =
+  {
+    D.Rebalance.Source.strategy = s.name;
+    sequence = D.Rebalance.Source.owner_flatten_sequence;
+    as_of = Date.of_string "2026-09-14";
+  }
+
+let owner_flatten_for oms s legs =
+  D.Oms.check_rebalance ~owner_flatten:true oms ~quotes:(quotes oms)
+    ~source:(owner_source s) ~legs
+
+(* THE HALT WAIVER. The netted pair (alpha +100 AAPL, beta -50, the account
+   +50) under a hand's halt and book-cap at 10,000 -- the account's 7,500
+   inside it, a long of 100 (15,000) over it. As the owner's flatten, beta's
+   cover passes the halt (the sub-ledger sums, so it may grow the account's
+   long) and book-cap (an exposure cap); alpha's sale of all 100 passes too.
+   The same cover as an ordinary rebalance is refused by the switch; as the
+   owner's, a cover of 60 (through beta's zero) and a buy by alpha (growing
+   its own) are refused by the switch. The halt stands throughout. *)
+let test_a_halted_desk_lets_the_owner's_flatten_through_and_nothing_else () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.halt halt ~why:"halted by hand" ~at:evening;
+  with_oms ~halt
+    ~held:[ (aapl, 50.0); (msft, 0.0); (xom, 0.0) ]
+    ~limits:[ limit "book-cap" Limit.Portfolio 10_000.0 ]
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      let cover = [ leg aapl D.Order.Side.Buy 50 ] in
+      passes "the owner's flatten of beta" (owner_flatten_for oms beta cover);
+      passes "the owner's flatten of alpha"
+        (owner_flatten_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]);
+      contains "beta's cover as an ordinary rebalance" ~substring:"kill_switch"
+        (refusal (check_for oms beta cover));
+      contains "the owner's cover through beta's zero" ~substring:"kill_switch"
+        (refusal (owner_flatten_for oms beta [ leg aapl D.Order.Side.Buy 60 ]));
+      contains "the owner's buy by alpha" ~substring:"kill_switch"
+        (refusal (owner_flatten_for oms alpha [ leg aapl D.Order.Side.Buy 10 ]));
+      Alcotest.(check string)
+        "still halted" "halted"
+        (D.Halt.State.name (D.Halt.state halt));
+      Alcotest.(check int) "nothing journaled" 2 (journaled journal))
+    ()
+
+(* THE RISK STATISTICS ARE WAIVED FOR THE OWNER, NOT FOR A STOP. var-cap is
+   breached already by the account's +50 (a VaR of 1 is), and beta's cover
+   takes the account long 100, further over it. As an ordinary rebalance and
+   as a stop's flatten (beta's stop latched) the cover is refused, naming
+   var-cap: the stop's waiver is the exposure caps alone. As the owner's
+   flatten it passes, var-cap reported among what was waived -- Gate.check's
+   [waive_risk] header argues why. A raise by alpha called the owner's
+   flatten is still refused. *)
+let test_the_owner's_flatten_is_not_held_by_a_risk_statistic () =
+  with_oms
+    ~held:[ (aapl, 50.0); (msft, 0.0); (xom, 0.0) ]
+    ~limits:
+      [
+        {
+          Limit.name = "var-cap";
+          scope = Limit.Portfolio;
+          kind = Limit.Value_at_risk (Notional.of_float 1.0);
+        };
+      ]
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      stop journal "beta";
+      let cover = [ leg aapl D.Order.Side.Buy 50 ] in
+      contains "an ordinary rebalance" ~substring:"var-cap would be further over its line"
+        (refusal (check_for oms beta cover));
+      contains "the stop's flatten" ~substring:"var-cap would be further over its line"
+        (refusal (flatten_for oms beta cover));
+      (match owner_flatten_for oms beta cover with
+      | Error why -> Alcotest.failf "the owner's flatten was refused: %s" why
+      | Ok c ->
+          let verdict = D.Oms.Scenarios.as_it_stands c.D.Oms.Checked_rebalance.gate in
+          Alcotest.(check (list string))
+            "var-cap waived, and said" [ "var-cap" ]
+            (List.map verdict.Ohcamel.Gate.Verdict.waived ~f:(fun m ->
+                 m.Ohcamel.Gate.Move.limit)));
+      contains "alpha's raise called the owner's" ~substring:"var-cap"
+        (refusal (owner_flatten_for oms alpha [ leg aapl D.Order.Side.Buy 10 ])))
+    ()
+
 let suite =
   ( "rebalance",
     [
       Alcotest.test_case "a desk order's limit is off the far side of the quote" `Quick
         test_a_desk_order's_limit_is_off_the_far_side_of_the_quote;
       Alcotest.test_case "drop_small" `Quick test_drop_small;
+      Alcotest.test_case "the owner's flatten takes each name to zero and no further"
+        `Quick test_the_owner's_flatten_takes_each_name_to_zero_and_no_further;
+      Alcotest.test_case "netted strategies go one at a time, nearest flat first" `Quick
+        test_netted_strategies_go_one_at_a_time_nearest_flat_first;
+      Alcotest.test_case "the owner's flatten names a threshold and never quotes it"
+        `Quick test_the_owner's_flatten_names_a_threshold_and_never_quotes_it;
+      Alcotest.test_case
+        "a halted desk lets the owner's flatten through, and nothing else" `Quick
+        test_a_halted_desk_lets_the_owner's_flatten_through_and_nothing_else;
+      Alcotest.test_case "the owner's flatten is not held by a risk statistic" `Quick
+        test_the_owner's_flatten_is_not_held_by_a_risk_statistic;
       Alcotest.test_case "a stopped strategy's flatten passes the exposure limits" `Quick
         test_a_stopped_strategy's_flatten_passes_the_exposure_limits;
       Alcotest.test_case "under a trip a stop flatten is gated as before" `Quick

@@ -517,7 +517,7 @@ let test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go () =
   Alcotest.(check string) "resting" "accepted" (state f resting);
   let server =
     Ohcamel.Server.create
-      ~extensions:(D.Desk_routes.extensions ~host:`Live ~oms)
+      ~extensions:(D.Desk_routes.extensions ~host:`Live ~oms ())
       ~mode:`Live ~graph:f.graph ~factor:"SYNTHETIC" ()
   in
   armed := true;
@@ -7274,6 +7274,323 @@ let test_a_week_with_a_gap_day_trips_cuts_flattens_and_restarts_tripped () =
 let test_the_same_week_with_the_word_off_sends_nothing_while_tripped () =
   soak_week ~r2:false
 
+(* THE OWNER'S FLATTEN, ON A HALTED DESK (POST /api/desk/flatten). The soak's
+   process over a fresh journal, with a third strategy beside the soak's two:
+   soak_short, which sold 300 SPY short through the desk. Monday buys soak_gov
+   (SPY 500, TLT 2777) and soak_stop (SPY 600), sells soak_short's 300, and
+   closes whole: the account holds SPY 800 and TLT 2777. Tuesday the owner
+   halts the desk by hand, then:
+   - at 09:32 New York a flatten is refused whole, 409: the desk's own orders
+     wait for 09:35;
+   - a name that is no strategy's is a 400, and nothing is sent;
+   - an ordinary rebalance -- a raise, and soak_stop's own sale under its
+     document's source -- is still refused by the halt;
+   - the owner's flatten of soak_stop sends its SPY 600 as one day limit, under
+     signal:soak_stop:owner-flatten, and the answer says the switch still
+     reads halted; asked again before the venue fills it, nothing new is sent
+     (its order may still fill); it fills, soak_stop holds nothing, and the
+     flatten is on the journal as an owner_flatten alert;
+   - "all": soak_gov and soak_short net in SPY (500 against -300, the account
+     200). soak_gov's sale leaves the account short 300, soak_short's cover
+     would take it long 500, so soak_gov goes first -- SPY 500 and TLT 2777
+     sold -- and soak_short's cover is held back, naming soak_gov. Filled, the
+     account holds soak_short's -300; "all" again covers it; and once more
+     sends nothing, because no strategy of the book holds anything;
+   - the close finds the sub-ledger whole, the account flat, and the switch
+     still halted -- a raise is still refused. *)
+
+let contains_text what ~substring s =
+  Alcotest.(check bool)
+    (sprintf "%s: %S contains %S" what s substring)
+    true
+    (String.is_substring s ~substring)
+
+let flatten_answer s ~book body =
+  let server =
+    Ohcamel.Server.create
+      ~extensions:
+        (D.Desk_routes.extensions ~host:`Live ~oms:s.s_p.p_oms ~strategies:book ())
+      ~mode:`Live ~graph:s.s_p.p_graph ~factor:"SYNTHETIC" ()
+  in
+  let d =
+    Ohcamel.Server.dispatch server
+      {
+        Ohcamel.Server.Request.meth = `POST;
+        path = "/api/desk/flatten";
+        query = [];
+        headers =
+          Cohttp.Header.of_list
+            [
+              ("X-OhCamel-Desk", "1");
+              ("Origin", "http://localhost:8081");
+              ("Host", "localhost:8081");
+            ];
+        body;
+      }
+  in
+  (* Answered without the venue pumped: the answer is the first wave's
+     acknowledgement, never its fills. *)
+  let%bind () = settle () in
+  match Deferred.peek d with
+  | None -> Alcotest.fail "the flatten did not answer once its orders were acknowledged"
+  | Some (response, body) ->
+      let text =
+        match body with
+        | `String s -> s
+        | `Strings ss -> String.concat ss
+        | `Empty -> ""
+        | `Pipe _ -> Alcotest.fail "the flatten answered with a pipe"
+      in
+      return (Cohttp.Code.code_of_status (Cohttp.Response.status response), text)
+
+let flatten_reports text =
+  let json = Yojson.Safe.from_string text in
+  Yojson.Safe.Util.(to_list (member "strategies" json))
+
+let flatten_sent report =
+  Yojson.Safe.Util.(
+    List.map
+      (to_list (member "sent" report))
+      ~f:(fun l ->
+        ( to_string (member "symbol" l),
+          to_string (member "side" l),
+          to_int (member "qty" l) )))
+
+let flatten_report_of text name =
+  match
+    List.find (flatten_reports text) ~f:(fun r ->
+        String.equal name Yojson.Safe.Util.(to_string (member "strategy" r)))
+  with
+  | Some r -> r
+  | None -> Alcotest.failf "no report for %s in %s" name text
+
+let flatten_outcome r = Yojson.Safe.Util.(to_string (member "outcome" r))
+
+let owner_flatten_in ~dir =
+  let clock = Time_source.create ~now:(soak_at 0 ~hr:14 ~min:0) () in
+  let marks = Symbol.Table.create () in
+  Hashtbl.set marks ~key:soak_spy ~data:500.0;
+  Hashtbl.set marks ~key:soak_tlt ~data:90.0;
+  let venue =
+    D.Sim_venue.create ~latency:Time_ns.Span.zero ~opened_at:(soak_at 0 ~hr:13 ~min:30)
+      ~marks:(fun sym -> Option.map (Hashtbl.find marks sym) ~f:Price.of_float)
+      ~now:(soak_now clock)
+      ~half_spread_bps:(fun _ -> 5.0)
+      ~cash:(Notional.of_float 1_000_000.0)
+      ~positions:[] ()
+  in
+  let path = Filename.concat dir "journal.sqlite" in
+  let events = Queue.create () in
+  let say line =
+    Queue.enqueue events line;
+    printf "  [%s] %s\n%!" (Time_ns.to_string_utc (Time_source.now clock)) line
+  in
+  printf "\n  OWNER'S FLATTEN on a halted desk\n%!";
+  let%bind p = soak_start ~venue ~marks ~clock ~path ~dir ~r2:false ~say in
+  let s =
+    { s_venue = venue; s_marks = marks; s_clock = clock; s_events = events; s_p = p }
+  in
+  (* soak_short first: "all" goes in the book's order, so soak_gov going
+     first in SPY is the netting rule's doing, not the order's. *)
+  let book = [ "soak_short"; "soak_stop"; "soak_gov" ] in
+  ignore
+    (D.Session_close.record ~session_bars:Symbol.Map.empty ~graph:s.s_p.p_graph
+       ~journal:s.s_p.p_journal ~date:(soak_date (-3)) ~returns:[] ~mark_equity:true
+       ~confidence:0.95 ~recorded_at:(soak_at (-3) ~hr:20 ~min:5)
+      : [ `Recorded | `Already_recorded ]);
+  (* MONDAY. *)
+  soak_session s 0;
+  let%bind () = soak_advance s (soak_at 0 ~hr:14 ~min:0) in
+  let%bind () =
+    soak_rebalance s ~name:"soak_gov"
+      ~legs:[ (soak_spy, 500); (soak_tlt, 2777) ]
+      ~allocated:500_000.0
+  in
+  let%bind () =
+    soak_rebalance s ~name:"soak_stop" ~legs:[ (soak_spy, 600) ] ~allocated:300_000.0
+  in
+  let%bind shorted =
+    soak_drive s
+      (D.Oms.propose_rebalance s.s_p.p_oms
+         ~source:
+           {
+             D.Rebalance.Source.strategy = "soak_short";
+             sequence = 1;
+             as_of = Date.of_string "2026-09-11";
+           }
+         ~legs:[ rebalance_leg soak_spy D.Order.Side.Sell 300 ])
+  in
+  (match shorted with
+  | D.Oms.Rebalance_outcome.Sent (_ :: _) -> ()
+  | other ->
+      Alcotest.failf "soak_short not sold: %s" (D.Oms.Rebalance_outcome.to_string other));
+  Alcotest.(check (list (pair string (float 0.0))))
+    "Monday: the account nets the three strategies"
+    [ ("SPY", 800.0); ("TLT", 2777.0) ]
+    (soak_positions s);
+  let%bind () = soak_close s 0 in
+  soak_no_break s 0;
+  (* TUESDAY: halted by hand. *)
+  let%bind () = soak_advance s (soak_at 1 ~hr:13 ~min:32) in
+  soak_session s 1;
+  D.Oms.halt_by_hand s.s_p.p_oms ~why:"the owner halted the desk";
+  Alcotest.(check string) "halted" "halted" (soak_switch s);
+  let received = D.Sim_venue.received s.s_venue in
+  let%bind code, text = flatten_answer s ~book {|{"strategies":["soak_stop"]}|} in
+  Alcotest.(check int) "09:32 New York: 409" 409 code;
+  contains_text "the refusal says nothing was sent" ~substring:"nothing was sent" text;
+  let%bind () = soak_advance s (soak_at 1 ~hr:14 ~min:0) in
+  let%bind code, text = flatten_answer s ~book {|{"strategies":["no_such_strategy"]}|} in
+  Alcotest.(check int) "a name that is no strategy's: 400" 400 code;
+  contains_text "naming it" ~substring:"no_such_strategy" text;
+  Alcotest.(check int)
+    "neither refusal reached the venue" received
+    (D.Sim_venue.received s.s_venue);
+  let%bind () = soak_raise_refused s "halted" in
+  let ordinary name ~sequence side qty =
+    soak_drive s
+      (D.Oms.propose_rebalance s.s_p.p_oms
+         ~source:
+           {
+             D.Rebalance.Source.strategy = name;
+             sequence;
+             as_of = Date.of_string "2026-09-14";
+           }
+         ~legs:[ rebalance_leg soak_spy side qty ])
+  in
+  let%bind raise_ = ordinary "soak_gov" ~sequence:2 D.Order.Side.Buy 10 in
+  let%bind sale = ordinary "soak_stop" ~sequence:2 D.Order.Side.Sell 600 in
+  List.iter
+    [ ("a raise", raise_); ("soak_stop's own sale, as an ordinary rebalance", sale) ]
+    ~f:(fun (what, outcome) ->
+      match outcome with
+      | D.Oms.Rebalance_outcome.Refused why ->
+          contains_text (what ^ ": refused by the switch") ~substring:"kill_switch" why
+      | other ->
+          Alcotest.failf "%s under the halt: %s" what
+            (D.Oms.Rebalance_outcome.to_string other));
+  Alcotest.(check int)
+    "nothing ordinary reached the venue" received
+    (D.Sim_venue.received s.s_venue);
+  (* The owner's flatten of soak_stop. *)
+  let%bind code, text = flatten_answer s ~book {|{"strategies":["soak_stop"]}|} in
+  Alcotest.(check int) "the owner's flatten: 200" 200 code;
+  let r = flatten_report_of text "soak_stop" in
+  Alcotest.(check (list (triple string string int)))
+    "soak_stop's SPY 600, sold"
+    [ ("SPY", "sell", 600) ]
+    (flatten_sent r);
+  contains_text "under its own source" ~substring:"signal:soak_stop:owner-flatten"
+    (flatten_outcome r);
+  Alcotest.(check string)
+    "the answer's switch still reads halted" "halted"
+    Yojson.Safe.Util.(
+      to_string (member "state" (member "switch" (Yojson.Safe.from_string text))));
+  Alcotest.(check int)
+    "one order reached the venue" (received + 1)
+    (D.Sim_venue.received s.s_venue);
+  let%bind code, text = flatten_answer s ~book {|{"strategies":["soak_stop"]}|} in
+  Alcotest.(check int) "asked again: 200" 200 code;
+  let r = flatten_report_of text "soak_stop" in
+  Alcotest.(check (list (triple string string int)))
+    "asked again before the fill: nothing new" [] (flatten_sent r);
+  contains_text "because its order may still fill" ~substring:"may still fill"
+    (flatten_outcome r);
+  Alcotest.(check int)
+    "still one order at the venue" (received + 1)
+    (D.Sim_venue.received s.s_venue);
+  D.Sim_venue.pump s.s_venue;
+  let%bind () =
+    soak_advance s (Time_ns.add (soak_at 1 ~hr:14 ~min:0) (Time_ns.Span.of_sec 10.0))
+  in
+  Alcotest.(check (list (pair string (float 0.0))))
+    "filled: soak_stop holds nothing" [] (soak_own s "soak_stop");
+  Alcotest.(check (list (pair string string)))
+    "journaled under the strategy, filled"
+    [ ("signal:soak_stop:owner-flatten", "filled") ]
+    (List.filter_map (D.Journal.recent_orders s.s_p.p_journal ~limit:50) ~f:(fun r ->
+         Option.some_if
+           (String.is_substring r.D.Journal.Order_row.source ~substring:"owner-flatten")
+           ( r.D.Journal.Order_row.source,
+             D.Order.State.to_string r.D.Journal.Order_row.order.D.Order.state )));
+  Alcotest.(check bool)
+    "the owner's flatten is on the journal" true
+    (List.exists (D.Journal.recent_alerts s.s_p.p_journal ~limit:20) ~f:(fun a ->
+         String.equal a.D.Journal.Alert.kind "owner_flatten"
+         && String.equal a.D.Journal.Alert.limit_name "soak_stop"));
+  Alcotest.(check string) "still halted after the fill" "halted" (soak_switch s);
+  (* "all": soak_gov and soak_short net in SPY. *)
+  let%bind code, text = flatten_answer s ~book {|{"strategies":"all"}|} in
+  Alcotest.(check int) "all: 200" 200 code;
+  Alcotest.(check (list string))
+    "all: the strategies of the book that hold a position, in its order"
+    [ "soak_short"; "soak_gov" ]
+    (List.map (flatten_reports text) ~f:(fun r ->
+         Yojson.Safe.Util.(to_string (member "strategy" r))));
+  Alcotest.(check (list (triple string string int)))
+    "soak_gov goes first in SPY, and sells its TLT"
+    [ ("SPY", "sell", 500); ("TLT", "sell", 2777) ]
+    (List.sort ~compare:[%compare: string * string * int]
+       (flatten_sent (flatten_report_of text "soak_gov")));
+  let short = flatten_report_of text "soak_short" in
+  Alcotest.(check (list (triple string string int)))
+    "soak_short's cover waits" [] (flatten_sent short);
+  Alcotest.(check (list string))
+    "held back in SPY" [ "SPY" ]
+    Yojson.Safe.Util.(
+      List.map
+        (to_list (member "held_back" short))
+        ~f:(fun h -> to_string (member "symbol" h)));
+  contains_text "naming who goes first" ~substring:{|"soak_gov" also holds SPY|}
+    Yojson.Safe.Util.(
+      to_string (member "why" (List.hd_exn (to_list (member "held_back" short)))));
+  D.Sim_venue.pump s.s_venue;
+  let%bind () =
+    soak_advance s (Time_ns.add (soak_at 1 ~hr:14 ~min:0) (Time_ns.Span.of_sec 30.0))
+  in
+  Alcotest.(check (list (pair string (float 0.0))))
+    "filled: the account holds soak_short's -300"
+    [ ("SPY", -300.0) ]
+    (soak_positions s);
+  let%bind code, text = flatten_answer s ~book {|{"strategies":"all"}|} in
+  Alcotest.(check int) "all again: 200" 200 code;
+  Alcotest.(check (list (triple string string int)))
+    "soak_short's cover goes"
+    [ ("SPY", "buy", 300) ]
+    (flatten_sent (flatten_report_of text "soak_short"));
+  D.Sim_venue.pump s.s_venue;
+  let%bind () =
+    soak_advance s (Time_ns.add (soak_at 1 ~hr:14 ~min:0) (Time_ns.Span.of_sec 60.0))
+  in
+  Alcotest.(check (list (pair string (float 0.0))))
+    "the account is flat" [] (soak_positions s);
+  let%bind code, text = flatten_answer s ~book {|{"strategies":"all"}|} in
+  Alcotest.(check (pair int int))
+    "all once more: 200, and no strategy holds anything" (200, 0)
+    (code, List.length (flatten_reports text));
+  let%bind () = soak_close s 1 in
+  soak_no_break s 1;
+  Alcotest.(check (list (pair string (float 0.0))))
+    "every strategy flat on the journal" []
+    (soak_own s "soak_gov" @ soak_own s "soak_stop" @ soak_own s "soak_short");
+  Alcotest.(check string) "the desk is still halted" "halted" (soak_switch s);
+  let%bind () = soak_advance s (soak_at 2 ~hr:14 ~min:0) in
+  soak_session s 2;
+  let%bind () = soak_raise_refused s "halted, after the owner's flatten" in
+  D.Journal.close s.s_p.p_journal;
+  Graph.destroy s.s_p.p_graph;
+  return ()
+
+let test_a_halted_desk_flattens_on_the_owner's_word () =
+  let dir = Filename_unix.temp_dir "ohcamel-flatten-" "" in
+  Monitor.protect
+    (fun () -> owner_flatten_in ~dir)
+    ~finally:(fun () ->
+      Array.iter (Sys_unix.readdir dir) ~f:(fun n ->
+          Core_unix.unlink (Filename.concat dir n));
+      Core_unix.rmdir dir;
+      return ())
+
 let suites =
   [
     ( "transport",
@@ -7516,6 +7833,8 @@ let suites =
           test_a_week_with_a_gap_day_trips_cuts_flattens_and_restarts_tripped;
         case "the same week with the word off sends nothing while tripped"
           test_the_same_week_with_the_word_off_sends_nothing_while_tripped;
+        case "a halted desk flattens on the owner's word, and stays halted"
+          test_a_halted_desk_flattens_on_the_owner's_word;
       ] );
   ]
 

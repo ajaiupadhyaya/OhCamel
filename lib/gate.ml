@@ -148,6 +148,19 @@ let is_exposure (kind : Limit.kind) =
   | Limit.Max_drawdown _ | Limit.Greek_limit _ ->
       false
 
+(* The limits that are RISK STATISTICS of the book as held -- VaR, expected
+   shortfall, component VaR, the Greeks -- as opposed to its exposure caps
+   ([is_exposure]) and its drawdown. What an owner's flatten is let past as
+   well ([waive_risk]); the drawdown is never among them. *)
+let is_risk_statistic (kind : Limit.kind) =
+  match kind with
+  | Limit.Value_at_risk _ | Limit.Expected_shortfall _ | Limit.Component_var _
+  | Limit.Greek_limit _ ->
+      true
+  | Limit.Gross_notional _ | Limit.Name_weight _ | Limit.Class_gross _
+  | Limit.Max_drawdown _ ->
+      false
+
 let apply (graph : Graph.t) (fills : Fill.t list) =
   List.iter fills ~f:(fun (f : Fill.t) ->
       Graph.apply_fill graph
@@ -188,9 +201,22 @@ let apply (graph : Graph.t) (fills : Fill.t list) =
    with the book's reduce_through_trip on); nothing here knows a strategy.
    Cost if wrong: a reduction can take the realised drawdown past its line
    by at most its own cost. *)
+(* AN OWNER'S FLATTEN IS NOT HELD BY A RISK STATISTIC EITHER. With
+   [waive_risk] (Oms.check_rebalance passes it only for the owner's flatten
+   by hand, every leg taking its strategy's own position toward zero without
+   crossing it), a breach the fills create or worsen on a risk statistic
+   ([is_risk_statistic]) is reported in [waived] too, beside the exposure
+   caps [waive_exposure] lets past. Why: the owner has asked for the
+   strategy's position to be gone, and every leg only shrinks it. A VaR or
+   shortfall that reads worse afterwards can only be the ACCOUNT's, through
+   netting -- the other strategies' positions left unhedged -- and refusing
+   the flatten keeps exactly the position the owner judged worse than that.
+   The stop's own flatten does not get this: it is the desk acting on a rule,
+   not a person who has read the book. The drawdown is still judged, at the
+   mark ([reductions_at_mark]), where a flatten cannot move it. *)
 let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
-    ?(waive_exposure = false) ?(reductions_at_mark = false) (graph : Graph.t)
-    ~(fills : Fill.t list) : Verdict.t =
+    ?(waive_exposure = false) ?(waive_risk = false) ?(reductions_at_mark = false)
+    (graph : Graph.t) ~(fills : Fill.t list) : Verdict.t =
   (* The live snapshot first: it stabilizes, so any write the live graph had
      not settled is settled before the fork copies its cells. *)
   let live = Graph.snapshot graph in
@@ -265,9 +291,10 @@ let check ?(base : Fill.t list = []) ?(trips_on : string list = [])
               p)
       in
       let waivable (m : Move.t) =
-        waive_exposure
-        && List.exists limits_before ~f:(fun (l, _) ->
-            String.equal (Limit.name l) m.Move.limit && is_exposure (Limit.kind l))
+        List.exists limits_before ~f:(fun (l, _) ->
+            String.equal (Limit.name l) m.Move.limit
+            && ((waive_exposure && is_exposure (Limit.kind l))
+               || (waive_risk && is_risk_statistic (Limit.kind l))))
       in
       let waived = List.filter (created @ worsened) ~f:waivable @ judged_at_mark in
       let created = List.filter created ~f:(fun m -> not (waivable m)) in

@@ -136,6 +136,13 @@ type t = {
      because the trip lets it. A hand's halt or the engine's stop landing
      while it is in flight still cancels it. *)
   through_trip : String.Hash_set.t;
+  (* The client order ids of the owner's flatten orders ([owner_flatten])
+     [submit_journaled] sent while the switch read halted or tripped, each
+     with the switch as it read then ([switch_key]). [record] does not cancel
+     one when the venue names it while the switch still reads the same: the
+     owner sent it through that very halt. A new halt, trip or stop landing
+     while it is in flight still cancels it. *)
+  owner_flattened : string String.Table.t;
   (* The sub-ledger's breaks as the checks have seen them ([check_subledger]):
      [seen_breaks], the names that broke at the last check that judged them;
      [standing_breaks], those that broke at two such checks running, each
@@ -185,6 +192,7 @@ let create ~graph ~journal ~spec ~trips_on ~read ~trade ~halt ~accepts_tickets ~
     failed_cancels = String.Hash_set.create ();
     resent_cancels = String.Hash_set.create ();
     through_trip = String.Hash_set.create ();
+    owner_flattened = String.Table.create ();
     seen_breaks = Symbol.Set.empty;
     standing_breaks = Symbol.Map.empty;
     subledger_unread = false;
@@ -466,8 +474,19 @@ let subledger ?except t : (Subledger_reading.t, string) Result.t =
    Read only under a limit's trip with the book's (reduce_through_trip) word
    on, the one place it decides anything; false otherwise, and false when
    the sub-ledger cannot be read. *)
-let netted ?except t symbol =
+let netted ?(owner_flatten = false) ?except t symbol =
   match Halt.state t.halt with
+  | (Halt.State.Clear | Halt.State.Halted _ | Halt.State.Tripped _) when owner_flatten
+    -> (
+      (* The owner's flatten: read in any switch but the engine's stop, the
+         same reading the trip's own branch below takes. *)
+      match subledger ?except t with
+      | Error _ -> false
+      | Ok r ->
+          Set.mem r.Subledger_reading.checked symbol
+          && not
+               (List.exists r.Subledger_reading.breaks ~f:(fun b ->
+                    Symbol.equal b.Subledger.symbol symbol)))
   | Halt.State.Tripped _ when t.spec.Desk_spec.reduce_through_trip -> (
       match subledger ?except t with
       | Error _ -> false
@@ -608,8 +627,8 @@ let close_subledger t ~(date : Date.t) ~at =
 
 (* [own]: the proposer's own position in [symbol] -- a strategy's, from its
    fills; 0 for a ticket, which is no strategy's. *)
-let context ?(origin = Rules.Origin.Hand) ?(own = 0.0) t ~(source : string)
-    ~(symbol : Symbol.t) : Rules.Context.t =
+let context ?(owner_flatten = false) ?(origin = Rules.Origin.Hand) ?(own = 0.0) t
+    ~(source : string) ~(symbol : Symbol.t) : Rules.Context.t =
   let now = t.now () in
   let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
   let held = Set.mem universe symbol in
@@ -631,7 +650,8 @@ let context ?(origin = Rules.Origin.Hand) ?(own = 0.0) t ~(source : string)
     halt_why = Halt.reason t.halt;
     own;
     account = reducible_account t symbol;
-    netted = netted t symbol;
+    netted = netted ~owner_flatten t symbol;
+    owner_flatten;
     session = t.session;
     mark = live_mark t symbol;
     origin;
@@ -935,8 +955,9 @@ let resting_fills t : (Gate.Fill.t list, string) Result.t =
    The one function [preview] gates through, and so [propose], which takes
    its verdict from [preview]. Every symbol in [fills] must be one the book
    holds; [preview] runs no gate for a ticket that names another. *)
-let gate_scenarios ?(waive_exposure = false) ?(reductions_at_mark = false) t
-    ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.t =
+let gate_scenarios ?(waive_exposure = false) ?(waive_risk = false)
+    ?(reductions_at_mark = false) t ~(fills : Gate.Fill.t list) :
+    (Scenarios.t, string) Result.t =
   Result.map (resting_fills t) ~f:(fun resting ->
       let by_symbol fs =
         List.fold fs ~init:Symbol.Map.empty ~f:(fun acc (f : Gate.Fill.t) ->
@@ -991,16 +1012,16 @@ let gate_scenarios ?(waive_exposure = false) ?(reductions_at_mark = false) t
                 Option.some_if took f)
           in
           ( scenario,
-            Gate.check t.graph ~base ~trips_on:t.trips_on ~waive_exposure
+            Gate.check t.graph ~base ~trips_on:t.trips_on ~waive_exposure ~waive_risk
               ~reductions_at_mark ~fills )))
 
 (* The gate for orders at their decision prices, each signed by its side:
    what [preview] runs for a ticket's one order and [check_rebalance] for a
    rebalance's many, one call for each combination of them that could be
    its fills (Rebalance.fill_sets). *)
-let gate_orders ?waive_exposure ?reductions_at_mark t
+let gate_orders ?waive_exposure ?waive_risk ?reductions_at_mark t
     (priced : (Order.Request.t * Price.t) list) =
-  gate_scenarios ?waive_exposure ?reductions_at_mark t
+  gate_scenarios ?waive_exposure ?waive_risk ?reductions_at_mark t
     ~fills:
       (List.map priced ~f:(fun ((r : Order.Request.t), price) ->
            {
@@ -1079,6 +1100,18 @@ let one_loop t ~(loop : string) (client : Ids.Client_order_id.t)
    first gives an id while the switch is not clear -- a kill that landed while
    its request was in flight, an unknown found after a trip -- is cancelled at
    once, by that id. *)
+(* The switch as one string -- its state and when it was set -- so an order
+   the owner's flatten sent through one halt is told from a halt pressed
+   after it ([owner_flattened]). *)
+let switch_key (s : Halt.State.t) =
+  match s with
+  | Halt.State.Clear -> "clear"
+  | Halt.State.Tripped { limit; at } ->
+      sprintf "tripped %s %s" limit (Time_ns.to_string_utc at)
+  | Halt.State.Halted { why; at } -> sprintf "halted %s %s" why (Time_ns.to_string_utc at)
+  | Halt.State.Stopped { why; at } ->
+      sprintf "stopped %s %s" why (Time_ns.to_string_utc at)
+
 let rec record t (o : Order.t) (event : Order.Event.t) : Order.t =
   let o', anomaly = Order.apply o event in
   (match event with
@@ -1100,10 +1133,17 @@ let rec record t (o : Order.t) (event : Order.Event.t) : Order.t =
     | Halt.State.Tripped _ -> Hash_set.mem t.through_trip (key o')
     | Halt.State.Clear | Halt.State.Halted _ | Halt.State.Stopped _ -> false
   in
-  if Order.State.is_terminal o'.Order.state then Hash_set.remove t.through_trip (key o');
+  let owners =
+    match Hashtbl.find t.owner_flattened (key o') with
+    | Some sent_under -> String.equal sent_under (switch_key (Halt.state t.halt))
+    | None -> false
+  in
+  if Order.State.is_terminal o'.Order.state then (
+    Hash_set.remove t.through_trip (key o');
+    Hashtbl.remove t.owner_flattened (key o'));
   if
     Option.is_some (Halt.reason t.halt)
-    && (not through_trip)
+    && (not through_trip) && (not owners)
     && Option.is_none o.Order.venue_order_id
     && Option.is_some o'.Order.venue_order_id
     && not (Order.State.is_terminal o'.Order.state)
@@ -1320,17 +1360,17 @@ let resolve t (client : Ids.Client_order_id.t) ~(delays : Time_ns.Span.t list) :
    counted as one that may still fill. [own] is what the rules were given:
    a strategy's fills change only in a sequencer job, and this runs inside
    the one that checked it. *)
-let pre_wire ?(origin = Rules.Origin.Hand) t ~(own : float) (request : Order.Request.t) :
-    (Wire.permit Venue.Trade.t, Rules.Failure.t) Result.t =
+let pre_wire ?(owner_flatten = false) ?(origin = Rules.Origin.Hand) t ~(own : float)
+    (request : Order.Request.t) : (Wire.permit Venue.Trade.t, Rules.Failure.t) Result.t =
   let fail rule why = Error { Rules.Failure.rule; why } in
   let tif = request.Order.Request.tif in
   let except = Ids.Client_order_id.to_string request.Order.Request.client_order_id in
   match
-    ( Rules.switch_refusal ~spec:t.spec ~halt_state:(Halt.state t.halt)
+    ( Rules.switch_refusal ~owner_flatten ~spec:t.spec ~halt_state:(Halt.state t.halt)
         ~halt_why:(Halt.reason t.halt) ~own
         ~account:(reducible_account ~except t request.Order.Request.symbol)
-        ~netted:(netted ~except t request.Order.Request.symbol)
-        ~side:request.Order.Request.side ~qty:request.Order.Request.qty,
+        ~netted:(netted ~owner_flatten ~except t request.Order.Request.symbol)
+        ~side:request.Order.Request.side ~qty:request.Order.Request.qty (),
       t.trade )
   with
   | Some why, _ -> fail "kill_switch" why
@@ -1428,19 +1468,21 @@ let admit t (orders : Journal.Insert.t list) =
    its next order only after an acknowledgement. An order that passes while a
    limit's trip stands passed because it only shrinks a position, and is
    remembered as such ([through_trip]) before it is sent. *)
-let submit_journaled ?origin t ~(own : float) (o : Order.t) :
+let submit_journaled ?(owner_flatten = false) ?origin t ~(own : float) (o : Order.t) :
     [ `Acknowledged of Order.t
     | `Not_acknowledged of Order.t * string
     | `Stopped of Rules.Failure.t * Order.t ]
     Deferred.t =
   let request = o.Order.request in
-  match pre_wire ?origin t ~own request with
+  match pre_wire ~owner_flatten ?origin t ~own request with
   | Error f ->
       return (`Stopped (f, record t o (Order.Event.Pre_trade_rejected [ reason f ])))
   | Ok trade -> (
       (match Halt.state t.halt with
       | Halt.State.Tripped _ -> Hash_set.add t.through_trip (key o)
       | Halt.State.Clear | Halt.State.Halted _ | Halt.State.Stopped _ -> ());
+      if owner_flatten then
+        Hashtbl.set t.owner_flattened ~key:(key o) ~data:(switch_key (Halt.state t.halt));
       let%map submission = Wire.submit trade request in
       match submission with
       | Venue.Submission.Accepted v ->
@@ -1818,8 +1860,8 @@ end
    refused order failed for timing alone (Rules.is_timing_refusal): the
    rebalance may go later unchanged ([Rebalance_outcome.Not_now]). Every
    other refusal leaves it false. *)
-let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
-    ~(quotes : Symbol.t -> Rebalance.Fetched.t option) ~(source : Rebalance.Source.t)
+let check_rebalance ?(timing = ref false) ?(stop_flatten = false) ?(owner_flatten = false)
+    t ~(quotes : Symbol.t -> Rebalance.Fetched.t option) ~(source : Rebalance.Source.t)
     ~(legs : Rebalance.Leg.t list) : (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
   (* The book as the gate reads it: a name it does not hold is flat here, and
@@ -1921,31 +1963,38 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
         | None -> Ok ())
   in
   let now = t.now () in
+  (* The owner's flatten is sized off nothing the calendar could make stale:
+     each leg is the strategy's own journaled position, to zero, and no close
+     or signal date enters it. A calendar refusal -- a weekday's session
+     unrecorded after an outage, say -- would hold exactly the position the
+     owner has asked to be rid of, so it is not asked. *)
   let%bind () =
-    match
-      Rebalance.calendar_refusal
-        ~zone:(Lazy.force Desk_time.new_york)
-        ~now ~as_of:source.Rebalance.Source.as_of
-        ~standing:
-          (Journal.source_has_orders t.journal
-             ~source:(Rebalance.Source.to_string source))
-        ~latest:
-          (Option.map
-             (List.hd (Journal.recent_sessions t.journal ~limit:1))
-             ~f:(fun s -> s.Journal.Session.date))
-        ~closes:
-          (List.filter_map legs ~f:(fun (l : Rebalance.Leg.t) ->
-               Option.map (recorded_close t l.Rebalance.Leg.symbol) ~f:fst))
-    with
-    | None -> Ok ()
-    | Some why -> Error why
+    if owner_flatten then Ok ()
+    else
+      match
+        Rebalance.calendar_refusal
+          ~zone:(Lazy.force Desk_time.new_york)
+          ~now ~as_of:source.Rebalance.Source.as_of
+          ~standing:
+            (Journal.source_has_orders t.journal
+               ~source:(Rebalance.Source.to_string source))
+          ~latest:
+            (Option.map
+               (List.hd (Journal.recent_sessions t.journal ~limit:1))
+               ~f:(fun s -> s.Journal.Session.date))
+          ~closes:
+            (List.filter_map legs ~f:(fun (l : Rebalance.Leg.t) ->
+                 Option.map (recorded_close t l.Rebalance.Leg.symbol) ~f:fst))
+      with
+      | None -> Ok ()
+      | Some why -> Error why
   in
   let max_age_s = t.spec.Desk_spec.quote_max_age_s in
   let judged =
     List.mapi legs ~f:(fun i (leg : Rebalance.Leg.t) ->
         let quote = quotes leg.Rebalance.Leg.symbol in
         let ctx =
-          context ~origin:(Rules.Origin.Desk quote)
+          context ~owner_flatten ~origin:(Rules.Origin.Desk quote)
             ~own:(Option.value (Map.find own leg.Rebalance.Leg.symbol) ~default:0.0)
             t
             ~source:(Rebalance.Source.to_string source)
@@ -2052,18 +2101,34 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
      switch is clear. Under a trip nothing changes -- R2's word decides what
      a trip lets through, and the gate judges it as it always has. An
      ordinary rebalance is never waived. *)
+  (* THE OWNER'S FLATTEN (POST /api/desk/flatten) is let past the exposure
+     caps as a stop's is, and past the risk statistics too (Gate.check's
+     [waive_risk], whose header argues it), whenever every leg shrinks the
+     strategy's own position without crossing zero -- in any switch but the
+     engine's stop, which [pre_wire] refuses anyway. Its drawdown is judged at
+     the mark ([reductions_at_mark] below). *)
+  let owners =
+    owner_flatten && every_leg_shrinks
+    &&
+    match Halt.state t.halt with
+    | Halt.State.Clear | Halt.State.Tripped _ | Halt.State.Halted _ -> true
+    | Halt.State.Stopped _ -> false
+  in
+  let waive_risk = owners in
   let waive_exposure =
-    stop_flatten
-    && (match Halt.state t.halt with
-      | Halt.State.Clear -> true
-      | Halt.State.Tripped _ | Halt.State.Halted _ | Halt.State.Stopped _ -> false)
-    && (match
-          Or_error.try_with (fun () ->
-              Journal.strategy_state t.journal ~strategy:source.Rebalance.Source.strategy)
-        with
-      | Ok (Some (`Stopped, _, _, _)) -> true
-      | Ok (Some (`Active, _, _, _)) | Ok None | Error _ -> false)
-    && every_leg_shrinks
+    owners
+    || stop_flatten
+       && (match Halt.state t.halt with
+         | Halt.State.Clear -> true
+         | Halt.State.Tripped _ | Halt.State.Halted _ | Halt.State.Stopped _ -> false)
+       && (match
+             Or_error.try_with (fun () ->
+                 Journal.strategy_state t.journal
+                   ~strategy:source.Rebalance.Source.strategy)
+           with
+         | Ok (Some (`Stopped, _, _, _)) -> true
+         | Ok (Some (`Active, _, _, _)) | Ok None | Error _ -> false)
+       && every_leg_shrinks
   in
   (* A REDUCTION'S DRAWDOWN AT THE MARK (Task 1.12): when every leg shrinks
      the strategy's own position toward zero without crossing it, the gate
@@ -2074,15 +2139,19 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
      or the engine's stop. A leg that grows or crosses zero leaves the whole
      rebalance judged as before, and every other limit is unchanged. *)
   let reductions_at_mark =
-    (match Halt.state t.halt with
-      | Halt.State.Clear -> true
-      | Halt.State.Tripped _ -> t.spec.Desk_spec.reduce_through_trip
-      | Halt.State.Halted _ | Halt.State.Stopped _ -> false)
-    && every_leg_shrinks
+    owners
+    || (match Halt.state t.halt with
+         | Halt.State.Clear -> true
+         | Halt.State.Tripped _ -> t.spec.Desk_spec.reduce_through_trip
+         | Halt.State.Halted _ | Halt.State.Stopped _ -> false)
+       && every_leg_shrinks
   in
   let gate ids =
     let orders = List.map ids ~f:(fun i -> (i, by_place.(i))) in
-    match gate_orders ~waive_exposure ~reductions_at_mark t (List.map orders ~f:snd) with
+    match
+      gate_orders ~waive_exposure ~waive_risk ~reductions_at_mark t
+        (List.map orders ~f:snd)
+    with
     | Error why -> Error why
     | Ok s when Scenarios.passed s -> Ok s
     | Ok s ->
@@ -2136,7 +2205,7 @@ let check_rebalance ?(timing = ref false) ?(stop_flatten = false) t
    sends nothing. After it, what the venue has taken it has; an order already
    acknowledged when the switch is set is cancelled by the switch's own
    machinery ([record], [cancel_all]), as any open order is. *)
-let send_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
+let send_rebalance ?stop_flatten ?(owner_flatten = false) t ~(source : Rebalance.Source.t)
     ~(legs : Rebalance.Leg.t list) : Rebalance_outcome.t Deferred.t =
   enqueue t (fun () ->
       match send_window t with
@@ -2158,7 +2227,8 @@ let send_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
           in
           let timing = ref false in
           match
-            check_rebalance ~timing ?stop_flatten t ~quotes:quote_of ~source ~legs
+            check_rebalance ~timing ?stop_flatten ~owner_flatten t ~quotes:quote_of
+              ~source ~legs
           with
           | Error why when !timing -> return (Rebalance_outcome.Not_now why)
           | Error why -> return (Rebalance_outcome.Refused why)
@@ -2189,7 +2259,9 @@ let send_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
               in
               match
                 List.find_mapi orders ~f:(fun i (r, _) ->
-                    match pre_wire ~origin:(origin_of r) t ~own:(own_of r) r with
+                    match
+                      pre_wire ~owner_flatten ~origin:(origin_of r) t ~own:(own_of r) r
+                    with
                     | Ok _ -> None
                     | Error f -> Some (i, r, f))
               with
@@ -2251,7 +2323,8 @@ let send_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
                     | [] -> return (Rebalance_outcome.Sent (List.rev sent))
                     | o :: rest -> (
                         match%bind
-                          submit_journaled ~origin:(origin_of o.Order.request) t
+                          submit_journaled ~owner_flatten
+                            ~origin:(origin_of o.Order.request) t
                             ~own:(own_of o.Order.request) o
                         with
                         | `Acknowledged o -> go (i + 1) (o :: sent) rest
@@ -2348,8 +2421,9 @@ let cancel_rebalance t ~(source : Rebalance.Source.t) : unit Deferred.t =
    nothing journaled; a rebalance of one wave that settled inside its wait
    is that wave's own outcome ([Sent], or [Stopped]); anything else -- more
    than one wave, or a wait that ran out -- is [Waved]. *)
-let propose_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
-    ~(legs : Rebalance.Leg.t list) : Rebalance_outcome.t Deferred.t =
+let propose_rebalance ?stop_flatten ?owner_flatten ?(on_wave = fun _ -> ()) t
+    ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
+    Rebalance_outcome.t Deferred.t =
   let position symbol =
     if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
     else 0.0
@@ -2367,7 +2441,11 @@ let propose_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
   let rec go sent = function
     | [] -> return (finish sent ~timed_out:false)
     | wave :: rest -> (
-        match%bind send_rebalance ?stop_flatten t ~source ~legs:wave with
+        let%bind outcome =
+          send_rebalance ?stop_flatten ?owner_flatten t ~source ~legs:wave
+        in
+        on_wave outcome;
+        match outcome with
         | (Rebalance_outcome.Refused _ | Rebalance_outcome.Not_now _) as refused
           when List.is_empty sent ->
             return refused
@@ -2385,6 +2463,429 @@ let propose_rebalance ?stop_flatten t ~(source : Rebalance.Source.t)
                 finish (this :: sent) ~timed_out:true))
   in
   go [] waves
+
+(* ------------------------------------------------------------------------ *)
+(* The owner's flatten by hand (POST /api/desk/flatten)                      *)
+(* ------------------------------------------------------------------------ *)
+
+(* WHY THERE IS ONE. A strategy can be left holding shares the owner wants
+   gone while the desk refuses every order: the switch halted by hand, a
+   stop's flatten refused, a closed experiment's names carried into a new one
+   (INC-02's Roster-6, option (a)). Selling at the venue bypasses the desk
+   and breaks the strategy's sub-ledger; a zero-target document written by
+   hand into the signals directory races the producers' sequences. So the
+   owner asks the desk itself, by name, and the desk sends the strategy's
+   own position to zero through the one path every strategy's orders take
+   ([propose_rebalance]): journaled before the wire under
+   signal:<slug>:owner-flatten (Rebalance.Source's header), so the fills are
+   the strategy's and its sub-ledger still sums.
+
+   WHAT IT IS LET THROUGH, AND WHAT NOT. A hand's halt and a limit's trip
+   (Rules.switch_refusal's owner_flatten branch: every order must reduce);
+   the exposure caps and the risk statistics (Gate.check's waive_exposure
+   and waive_risk); the calendar ([check_rebalance]). Not the engine's stop,
+   not a closed session, not a standing sub-ledger break's own rule, and not
+   the order rules -- the collar, the order cap, the ADV share, the open
+   orders' cap. The halt itself stays: nothing here touches the switch, and
+   nothing but these orders goes out under it. Each order is what a stop's
+   flatten sends: a day limit off the venue's quote, intraday_slip_bps
+   through it ([check_rebalance]). *)
+module Owner_flatten = struct
+  (* The legs that take one strategy's own position ([own], from its fills)
+     in each of its names to zero: a sale of a long, a purchase of a short,
+     each exactly the position's size, so no leg grows |position| or takes it
+     through zero. A name under half a share is flat (Subledger.tolerance)
+     and gets no leg. A name [held_back] names, or whose position is not a
+     whole number of shares, gets no leg and is listed with why. *)
+  let legs ~(own : float Symbol.Map.t) ~(held_back : Symbol.t -> string option) :
+      Rebalance.Leg.t list * (Symbol.t * string) list =
+    let legs, back =
+      Map.fold own ~init:([], []) ~f:(fun ~key:symbol ~data:q (legs, back) ->
+          let whole = Float.round_nearest q in
+          if Float.is_finite q && Float.( < ) (Float.abs q) Subledger.tolerance then
+            (legs, back)
+          else if (not (Float.is_finite q)) || Float.( > ) (Float.abs (q -. whole)) 1e-6
+          then
+            ( legs,
+              ( symbol,
+                sprintf
+                  "the strategy's own position is %g, not a whole number of shares, and \
+                   the desk sends whole shares only"
+                  q )
+              :: back )
+          else
+            match held_back symbol with
+            | Some why -> (legs, (symbol, why) :: back)
+            | None ->
+                let current = Float.to_int whole in
+                ( {
+                    Rebalance.Leg.symbol;
+                    weight = 0.0;
+                    price = Float.nan;
+                    target = 0;
+                    current;
+                    side = (if current > 0 then Order.Side.Sell else Order.Side.Buy);
+                    qty = Int.abs current;
+                  }
+                  :: legs,
+                  back ))
+    in
+    (List.rev legs, List.rev back)
+
+  (* NETTING. Two strategies in one request may hold one name -- on opposite
+     sides, or the same. Their orders cannot rest together: the venue refuses
+     the second side of a name as a wash (the rules' [wash]), and two
+     reductions on one side would each be judged against the same account.
+     So in each name held by more than one of [owns], ONE strategy goes
+     first: the one whose flatten leaves the account's position ([account])
+     nearest zero. Long 100 beside short 50, in an account long 50: the
+     long's sale goes (the account to short 50, its gross unchanged) and the
+     short's purchase, which would take the account to long 100, waits. Ties
+     go to the first named. The answer is each contested name and who goes
+     first in it; the others' legs in it are held back, and the next request
+     sends them once the first has filled. A request for "all", repeated
+     until it sends nothing, flattens every strategy. *)
+  let claims ~(account : Symbol.t -> float) (owns : (string * float Symbol.Map.t) list) :
+      string Symbol.Map.t =
+    List.concat_map owns ~f:(fun (name, own) ->
+        List.filter_map (Map.to_alist own) ~f:(fun (symbol, q) ->
+            Option.some_if
+              (Float.( >= ) (Float.abs q) Subledger.tolerance)
+              (symbol, (name, q))))
+    |> Symbol.Map.of_alist_multi
+    |> Map.filter_mapi ~f:(fun ~key:symbol ~data:holders ->
+        match holders with
+        | [] | [ _ ] -> None
+        | first :: rest ->
+            let left (_, q) = Float.abs (account symbol -. q) in
+            Some
+              (fst
+                 (List.fold rest ~init:first ~f:(fun best h ->
+                      if Float.( < ) (left h) (left best) then h else best))))
+
+  (* Why [strategy]'s leg in [symbol] is not sent in this request, or None:
+     the name is not in the book's universe; another strategy of this
+     request goes first in it ([claims]); or an order of the desk's in it may
+     still fill ([busy] -- the wash rule, and the room a reduction is judged
+     against, wait on it). *)
+  let held_back ~(in_universe : Symbol.t -> bool) ~(busy : Symbol.Set.t)
+      ~(claims : string Symbol.Map.t) ~(strategy : string) (symbol : Symbol.t) :
+      string option =
+    let name = Symbol.to_string symbol in
+    if not (in_universe symbol) then
+      Some
+        (sprintf
+           "%s is not in the book's universe, so the desk cannot trade it; a person must \
+            settle it at the venue (docs/runbooks/desk.md, \"A sub-ledger break\")"
+           name)
+    else
+      match Map.find claims symbol with
+      | Some first when not (String.equal first strategy) ->
+          Some
+            (sprintf
+               "%S also holds %s and goes first in it, leaving the account nearer flat; \
+                ask again once its order has filled"
+               first name)
+      | Some _ | None ->
+          if Set.mem busy symbol then
+            Some
+              (sprintf
+                 "an order of the desk's in %s may still fill; ask again once it has \
+                  filled or ended"
+                 name)
+          else None
+
+  (* A refusal as the answer may say it: the limits' thresholds and the order
+     rules' figures (the collar, the order cap, the ADV share, the open
+     orders' cap, the duplicate window) are named, never quoted. The whole
+     sentence goes to the log and to the journal's owner_flatten alert. *)
+  let public_why why =
+    let gate = String.is_substring why ~substring:"the gate refuses" in
+    let rules =
+      List.filter [ "collar"; "notional"; "adv"; "open_orders"; "duplicate" ] ~f:(fun r ->
+          String.is_substring why ~substring:(r ^ ": "))
+    in
+    if (not gate) && List.is_empty rules then why
+    else
+      sprintf "refused by %s; the figures are in the desk's log, not in this answer"
+        (String.concat ~sep:", "
+           ((if gate then [ "the limits" ] else [])
+           @ List.map rules ~f:(fun r -> sprintf "the %s rule" r)))
+
+  module Sent = struct
+    type t = {
+      client_order_id : string;
+      symbol : Symbol.t;
+      side : Order.Side.t;
+      qty : int;
+      state : string;
+    }
+  end
+
+  module Report = struct
+    type t = {
+      strategy : string;
+      sent : Sent.t list;
+      held_back : (Symbol.t * string) list;
+      outcome : string;
+    }
+
+    let to_json t : Yojson.Safe.t =
+      `Assoc
+        [
+          ("strategy", `String t.strategy);
+          ( "sent",
+            `List
+              (List.map t.sent ~f:(fun (s : Sent.t) ->
+                   `Assoc
+                     [
+                       ("client_order_id", `String s.Sent.client_order_id);
+                       ("symbol", `String (Symbol.to_string s.Sent.symbol));
+                       ("side", `String (Order.Side.to_string s.Sent.side));
+                       ("qty", `Int s.Sent.qty);
+                       ("state", `String s.Sent.state);
+                     ])) );
+          ( "held_back",
+            `List
+              (List.map t.held_back ~f:(fun (symbol, why) ->
+                   `Assoc
+                     [
+                       ("symbol", `String (Symbol.to_string symbol)); ("why", `String why);
+                     ])) );
+          ("outcome", `String t.outcome);
+        ]
+  end
+
+  (* Why a request was refused whole: a name that is no strategy's
+     ([Unknown], the caller's mistake), or the desk's state ([Refused]). *)
+  type refusal = Unknown of string | Refused of string
+end
+
+(* The names an order of the desk's may still fill in: open, or failed and
+   possibly still worked ([failed_still_working]). *)
+let in_flight t : (Symbol.Set.t, string) Result.t =
+  Result.map (failed_still_working t) ~f:(fun failed ->
+      Symbol.Set.of_list
+        (List.filter_map
+           (Map.data t.open_ @ failed)
+           ~f:(fun o ->
+             Option.some_if
+               (Float.( > ) (Order.remaining_qty o) Order.epsilon)
+               o.Order.request.Order.Request.symbol)))
+
+(* Every strategy the journal holds a position for, by its fills' sources
+   (Subledger.owner), in order. *)
+let journal_holders t : string list =
+  Journal.fills_by_source t.journal
+  |> List.filter_map ~f:(fun (source, symbol, q) ->
+      let owner = Subledger.owner ~source in
+      Option.some_if (not (String.equal owner Subledger.hand)) (owner, symbol, q))
+  |> List.fold ~init:String.Map.empty ~f:(fun acc (owner, symbol, q) ->
+      Map.update acc owner ~f:(fun m ->
+          Map.update (Option.value m ~default:Symbol.Map.empty) symbol ~f:(fun x ->
+              Option.value x ~default:0.0 +. q)))
+  |> Map.filter
+       ~f:(Map.exists ~f:(fun q -> Float.( >= ) (Float.abs q) Subledger.tolerance))
+  |> Map.keys
+
+(* THE OWNER'S FLATTEN: [asked] is the strategies named, or `All -- every
+   strategy of the [book] that holds a position in the journal. Refused whole
+   ([Owner_flatten.Refused]) while the engine has stopped the desk or the
+   session is closed to the desk's own orders ([send_window]); a name neither
+   in the book nor holding a position in the journal is [Unknown]. Otherwise,
+   one strategy at a time, in the order asked: its own position
+   ([strategy_position] -- which refuses while an order of its may still
+   fill, so a second request while the first's orders work sends nothing for
+   them), its legs to zero ([Owner_flatten.legs], less what
+   [Owner_flatten.held_back] holds), and those handed to [propose_rebalance]
+   with the owner's flatten's waivers. The answer for each is its first
+   wave's outcome -- what was sent, or why nothing was; the waves after it,
+   the wait for its fills and a timeout's cancels go on behind, and their
+   end is said in the log. Each strategy's outcome is journaled as an alert
+   of kind owner_flatten, its slug as the limit's name. Nothing here touches
+   the switch: a halted desk is still halted after it. *)
+let owner_flatten t ~(book : string list) ~(asked : [ `All | `Named of string list ]) :
+    (Owner_flatten.Report.t list, Owner_flatten.refusal) Result.t Deferred.t =
+  let holders = journal_holders t in
+  let names =
+    match asked with
+    | `Named names -> List.stable_dedup names ~compare:String.compare
+    | `All -> List.filter book ~f:(List.mem holders ~equal:String.equal)
+  in
+  match
+    List.filter names ~f:(fun n ->
+        not (List.mem book n ~equal:String.equal || List.mem holders n ~equal:String.equal))
+  with
+  | _ :: _ as unknown ->
+      return
+        (Error
+           (Owner_flatten.Unknown
+              (sprintf
+                 "%s: neither a strategy of the book nor one the journal holds a \
+                  position for"
+                 (String.concat ~sep:", " (List.map unknown ~f:(sprintf "%S"))))))
+  | [] -> (
+      match (Halt.state t.halt, send_window t) with
+      | Halt.State.Stopped _, _ ->
+          return
+            (Error
+               (Owner_flatten.Refused
+                  "the engine stopped this desk, so no order is sent -- no fill would be \
+                   heard; nothing was sent"))
+      | _, Some why ->
+          return
+            (Error
+               (Owner_flatten.Refused
+                  (sprintf
+                     "the session is closed to the desk's own orders (%s); nothing was \
+                      sent"
+                     why)))
+      | (Halt.State.Clear | Halt.State.Tripped _ | Halt.State.Halted _), None ->
+          t.on_event
+            (sprintf
+               "desk      the owner's flatten was asked for: %s (the switch reads %s)"
+               (match asked with
+               | `All -> "every strategy of the book holding a position"
+               | `Named _ -> String.concat ~sep:", " names)
+               (Halt.State.name (Halt.state t.halt)));
+          let positions =
+            List.map names ~f:(fun name -> (name, strategy_position t ~strategy:name))
+          in
+          let claims =
+            Owner_flatten.claims ~account:(account_position t)
+              (List.filter_map positions ~f:(fun (name, p) ->
+                   Option.map (Result.ok p) ~f:(fun own -> (name, own))))
+          in
+          let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
+          let journal name line =
+            match
+              Or_error.try_with (fun () ->
+                  Journal.record_alert t.journal
+                    {
+                      Journal.Alert.at = t.now ();
+                      kind = "owner_flatten";
+                      limit_name = name;
+                      line;
+                    })
+            with
+            | Ok () -> ()
+            | Error e ->
+                t.on_event
+                  (sprintf
+                     "desk      the owner's flatten of %S could not be journaled: %s" name
+                     (Error.to_string_hum e))
+          in
+          let report name ~sent ~held_back ~line outcome =
+            journal name line;
+            t.on_event (sprintf "desk      the owner's flatten of %S: %s" name line);
+            { Owner_flatten.Report.strategy = name; sent; held_back; outcome }
+          in
+          let nothing name ~held_back why =
+            let line = "nothing sent: " ^ why in
+            report name ~sent:[] ~held_back ~line line
+          in
+          let sent_of os =
+            List.filter_map os ~f:(fun (o : Order.t) ->
+                let r = o.Order.request in
+                Option.some_if
+                  (not (Order.State.equal o.Order.state Order.State.Rejected_pre_trade))
+                  {
+                    Owner_flatten.Sent.client_order_id = key o;
+                    symbol = r.Order.Request.symbol;
+                    side = r.Order.Request.side;
+                    qty = r.Order.Request.qty;
+                    state = Order.State.to_string o.Order.state;
+                  })
+          in
+          let rec first_wave = function
+            | Rebalance_outcome.Waved { waves = w :: _; _ } -> first_wave w
+            | o -> o
+          in
+          let send name ~held_back legs =
+            let source =
+              {
+                Rebalance.Source.strategy = name;
+                sequence = Rebalance.Source.owner_flatten_sequence;
+                as_of = Time_ns.to_date (t.now ()) ~zone:Time_float.Zone.utc;
+              }
+            in
+            (* The first wave's outcome answers; the rest of the rebalance --
+               its wait, its later waves, a timeout's cancels -- goes on
+               behind, under a monitor of its own, its end said in the log. *)
+            let first = Ivar.create () in
+            don't_wait_for
+              (match%map
+                 Monitor.try_with ~extract_exn:true ~rest:`Log (fun () ->
+                     propose_rebalance ~owner_flatten:true
+                       ~on_wave:(fun o -> Ivar.fill_if_empty first (Ok o))
+                       t ~source ~legs)
+               with
+              | Ok final ->
+                  Ivar.fill_if_empty first (Ok final);
+                  t.on_event
+                    (sprintf "desk      the owner's flatten of %S came to: %s" name
+                       (Rebalance_outcome.to_string final))
+              | Error exn ->
+                  Ivar.fill_if_empty first (Error exn);
+                  t.on_event
+                    (sprintf "desk      the owner's flatten of %S raised: %s" name
+                       (Exn.to_string exn)));
+            match%map Ivar.read first with
+            | Error _ ->
+                let line =
+                  "the desk hit an internal error partway through; what was sent is not \
+                   known here -- check /api/desk's orders before asking again"
+                in
+                report name ~sent:[] ~held_back ~line line
+            | Ok outcome ->
+                let line = Rebalance_outcome.to_string outcome in
+                let sent, public =
+                  match first_wave outcome with
+                  | Rebalance_outcome.Sent os ->
+                      ( sent_of os,
+                        sprintf
+                          "sent: %d day limit order%s journaled under %s, then sent, and \
+                           acknowledged; the switch still reads %s"
+                          (List.length os)
+                          (if List.length os = 1 then "" else "s")
+                          (Rebalance.Source.to_string source)
+                          (Halt.State.name (Halt.state t.halt)) )
+                  | Rebalance_outcome.Stopped { sent; why; _ } ->
+                      ( sent_of sent,
+                        "stopped between submits: " ^ Owner_flatten.public_why why )
+                  | Rebalance_outcome.Refused why | Rebalance_outcome.Not_now why ->
+                      ( [],
+                        "refused, and nothing journaled or sent: "
+                        ^ Owner_flatten.public_why why )
+                  | Rebalance_outcome.Waved _ -> ([], "nothing sent")
+                in
+                report name ~sent ~held_back ~line public
+          in
+          let%map reports =
+            Deferred.List.map ~how:`Sequential positions ~f:(fun (name, position) ->
+                match (position, in_flight t) with
+                | Error why, _ ->
+                    return
+                      (nothing name ~held_back:[] ("its position is not known: " ^ why))
+                | Ok _, Error why -> return (nothing name ~held_back:[] why)
+                | Ok own, Ok busy -> (
+                    let legs, held_back =
+                      Owner_flatten.legs ~own
+                        ~held_back:
+                          (Owner_flatten.held_back ~in_universe:(Set.mem universe) ~busy
+                             ~claims ~strategy:name)
+                    in
+                    match legs with
+                    | [] ->
+                        return
+                          (nothing name ~held_back
+                             (if List.is_empty held_back then
+                                "the journal holds no position of this strategy's"
+                              else "every name it holds is held back"))
+                    | _ :: _ -> send name ~held_back legs))
+          in
+          t.on_change ();
+          Ok reports)
 
 (* A FILL THE BOOK ALREADY HOLDS (Task 1.12, round 1). [Desk.fill_applied]
    refuses an account read that started before a fill; it cannot refuse one

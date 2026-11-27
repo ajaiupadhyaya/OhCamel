@@ -1206,7 +1206,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->1041<!-- /count --> tests, plus <!-- count:scheduler-tests -->113<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->1048<!-- /count --> tests, plus <!-- count:scheduler-tests -->114<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall
@@ -1538,6 +1538,7 @@ Then the order is written to the journal as `pending_submit` **before** the requ
 | `POST /api/desk/cancel` | live | cancel one open order |
 | `POST /api/desk/kill` | live | halt the desk, answer, then cancel every open order |
 | `POST /api/desk/kill/reset` | live | lift the halt; the body must say `{"confirm":"reset"}` |
+| `POST /api/desk/flatten` | live | the owner's flatten: `{"strategies": [...]}` or `"all"`, each strategy's own position to zero through a halt or a trip, which stays; guarded as the reset is |
 | `GET /api/research` | both | the registered signal strategies with their sizing and capital fraction, each one's latest judgement, the files the intake is holding, and that R8 (data hash) is not enforced; the demo registers none |
 | `GET /api/research/evidence` | both | EXP-A01's two manifests, embedded at build time and served byte for byte as committed |
 
