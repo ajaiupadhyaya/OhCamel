@@ -77,3 +77,37 @@ Collected from the plan's ledger on 2026-11-25, in the order they were made. Eac
 - Parked -- final item 1 Critical (residual): /api/desk/sessions serves only the newest 250 closes (desk/desk_routes.ml:245-252), so pooled_test's sessions_done stops at 250 and the window slides after -- Ruling: real and load-bearing but nothing reaches it for ~a year after INC-02's first fill (the desk is halted; INC-02 unapproved); parked as a named follow-up (serve every close since a date on the gated host, or count sessions from the journal) that must land before INC-02 session 250 -- cost if wrong: the pooled test stalls at 250 until fixed; no wrong verdict is ever shown (it reads IN PROGRESS).
 - Parked -- final item 1 Important (residual): the verdict is recomputed nightly and never stored, so a rate-feed failure after session 500 can flip REJECTED NULL to NOT REJECTED, and a verdict can be decided on far fewer than 500 scored sessions -- Ruling: same follow-up (store the decided verdict once; require a minimum scored count) -- cost if wrong: moot until the 250 cap is fixed.
 - Parked -- final new Important: Roster-6(a)'s recommended INC-01 flatten, if dated on/after the Approved-by date, becomes the pooled test's "first fill" -- Ruling: owner instruction in the hand-over (flatten BEFORE dating the approval line) plus the same follow-up (exclude stop/flatten documents from the first-fill rule) -- cost if wrong: the 500-session clock starts one session early on a flatten.
+
+## The finish (2026-11-27, under the owner's "FULL PERMISSIONS, FULL AUTHORITY")
+
+The owner approved INC-02 as drafted on 2026-11-27 and then gave the agent full authority to finish the project
+(`docs/superpowers/plans/2026-11-27-the-finish.md`). These are the agent's rulings under that authority; none is
+presented as the owner's own answer to a spec ruling.
+
+- Ruling: the live INC-02 book leaves out `farm_low_beta_sectors` and `farm_pairs_distance_sectors` -- they have
+  never had parameters, so under F1 they are never emitted and never trade, and `tools/book_ex_ante_vol.py` refuses
+  a book with a farm row it cannot measure -- cost if wrong: two strategies the desk would refuse documents for if a
+  freeze ever carried them, until the book is regenerated with them (the header says so).
+- Ruling: USO keeps its provisional tier 3 (8 bp). IEX's own book measured 151.4 bp; the consolidated (SIP) quotes
+  that would settle it are refused by the account's data plan (HTTP 403 for quotes of any age, 2026-11-27). 151 bp
+  cannot be the market's spread for an ETF that trades as USO does (its consolidated spread is typically a cent),
+  so a fourth tier at 151 bp would charge the three commodity strategies a cost no fill would pay -- cost if wrong:
+  USO's trades are under-costed by the difference; `tools/measure_spreads.py --feed sip --tickers USO` settles it the
+  day the plan allows SIP quotes.
+- Ruling: R3's two riding questions take the spec's default -- R3's gates apply to EXP-I01–I03 and Q01's unspent
+  holdout as to every cell, and a cell whose out-of-sample record cannot reach three regimes reads INSUFFICIENT DATA
+  (F1) -- cost if wrong: those cells stay unvalidated on the pages; nothing they would trade is lost, since F1 already
+  pins them.
+- Ruling: EODHD is not bought (about $20 a month); the delisted-name build stays switched off and the page says so --
+  the agent makes no payment -- cost if wrong: survivorship in the equity universes stays disclosed, not removed.
+- Ruling: Roster-6(a)'s flatten gets a desk command (`POST /api/desk/flatten`, the owner's action, allowed while
+  halted), not a venue sale or a hand-written signal document -- a venue sale breaks the sub-ledger and a hand
+  document collides with the producers' sequences -- cost if wrong: one guarded route and its tests.
+- Ruling: the pooled test's floor is the day after the recorded `Roster-6(a) flatten completed:` date, read from
+  the pre-registration -- cost if wrong: the 500-session clock starts a session later than the first fill could.
+- Ruling: a decided pooled verdict needs at least 475 of its 500 sessions scorable; fewer is stored as INSUFFICIENT
+  DATA, once -- cost if wrong: a test with 25 unscorable sessions is still judged.
+- Ruling: the hand's halt is lifted by the agent after the flatten is recorded and deployed (the owner's authority,
+  2026-11-27), not before -- cost if wrong: INC-02 starts trading a day later than it could.
+- Not done, by construction: `OHCAMEL_ALERT_URL` (root's directory and the owner's own channel) and Cboe's 403
+  (an outside block; not worked around).
