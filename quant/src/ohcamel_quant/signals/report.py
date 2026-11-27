@@ -73,7 +73,13 @@ import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
 from .pooled import SESSIONS, analytic_power, psr_and_se, verdict_at
-from .roster import ROSTER_PATH, load_roster, preregistration_text, recorded_approval, recorded_flatten
+from .roster import (
+    ROSTER_PATH,
+    load_roster,
+    preregistration_text,
+    recorded_approval,
+    recorded_flatten,
+)
 
 __all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "PAPER_SENTENCE", "ROUTES", "TCA_COLUMNS", "TIMEOUT_S",
            "VAR_SCORE_COLUMNS", "POOLED_COLUMNS", "run"]
