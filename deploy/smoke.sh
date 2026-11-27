@@ -55,9 +55,9 @@ LIVE_CONTAINER=0
 # The routes, as this suite knows them. The 404 body lists lib/server.ml's
 # `routes` table, the one the dispatcher is generated from, and then the
 # extensions the process was created with, in the order given -- the desk's
-# ten routes, on both hosts: /api/desk, then tca, sessions, preview, orders,
-# cancel, kill and kill/reset under it (the last four answer 405 on the demo
-# host, and are listed there all the same), then /api/research, the signal
+# eleven routes, on both hosts: /api/desk, then tca, sessions, preview, orders,
+# cancel, kill, kill/reset and flatten under it (the last five answer 405 on
+# the demo host, and are listed there all the same), then /api/research, the signal
 # intake's strategies and judgements, and /api/research/evidence, EXP-A01's
 # committed manifests. The table itself carries the six pages, /research
 # after /execution. This string is that list's shadow:
@@ -65,7 +65,7 @@ LIVE_CONTAINER=0
 # body equals it, in order. Adding a route or an extension means adding it here
 # in the same commit -- the assertion fails until you do, which is the point of
 # having it.
-EXPECTED_ROUTES="/ /ops /argument /risk /execution /research /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset /api/research /api/research/evidence"
+EXPECTED_ROUTES="/ /ops /argument /risk /execution /research /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset /api/desk/flatten /api/research /api/research/evidence"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own
@@ -848,8 +848,8 @@ fi
 # ---------------------------------------------------------------------------
 # 4a''. The desk's routes, as each host allows them
 #
-# The preview answers on the demo and creates nothing; the four routes that
-# change a desk -- orders, cancel, kill and kill/reset -- are each refused
+# The preview answers on the demo and creates nothing; the five routes that
+# change a desk -- orders, cancel, kill, kill/reset and flatten -- are each refused
 # there with a 405 and a JSON `error` sentence. Desk_routes.Protection
 # refuses every one on the demo host before its handler runs, so POSTing
 # kill here halts nothing; on the live host this suite never POSTs kill at
@@ -861,12 +861,13 @@ fi
 # ---------------------------------------------------------------------------
 if command -v python3 >/dev/null 2>&1 && [ "${ops_mode:-}" = "demo" ]; then
 	ticket='{"symbol":"AAPL","side":"buy","qty":1}'
-	for route in orders cancel kill kill/reset; do
+	for route in orders cancel kill kill/reset flatten; do
 		case "$route" in
 		orders) body="$ticket" ;;
 		cancel) body='{"client_order_id":"smoke-no-such-order"}' ;;
 		kill) body='{"why":"smoke: the demo must refuse this"}' ;;
 		kill/reset) body='{"confirm":"reset"}' ;;
+		flatten) body='{"strategies":"all"}' ;;
 		esac
 		refused=$(curl -sS --max-time 15 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' -d "$body" "$ENGINE/api/desk/$route" 2>/dev/null | python3 -c '
 import json, sys
@@ -1219,7 +1220,8 @@ say(a.get("trading_blocked") is False, "/api/desk account.trading_blocked", "%s%
 # without X-OhCamel-Desk, then with it but with neither Origin nor
 # Sec-Fetch-Site (curl sends neither). Each body is one that would do
 # nothing even if it got through: an empty ticket, a cancel of an id that
-# does not exist, a reset with no confirm field.
+# does not exist, a reset with no confirm field, a flatten with no
+# strategies field (answered 400 before anything is read).
 #
 # /api/desk/kill is NEVER POSTed here, on purpose (ruling 13): a regression
 # in its guard would halt the live desk, and the smoke suite must not be the
@@ -1228,11 +1230,12 @@ say(a.get("trading_blocked") is False, "/api/desk account.trading_blocked", "%s%
 # for all four mutating routes, so this gap is recorded as a §8 departure of
 # docs/superpowers/specs/2026-09-12-the-desk-design.md -- "the live smoke
 # suite never POSTs /api/desk/kill" -- which Task 71 keeps.
-for route in orders cancel kill/reset; do
+for route in orders cancel kill/reset flatten; do
 	case "$route" in
 	orders) body='{}' ;;
 	cancel) body='{"client_order_id":"smoke-no-such-order-0000"}' ;;
 	kill/reset) body='{}' ;;
+	flatten) body='{}' ;;
 	esac
 	for variant in noheader noorigin; do
 		if [ "$variant" = noheader ]; then
