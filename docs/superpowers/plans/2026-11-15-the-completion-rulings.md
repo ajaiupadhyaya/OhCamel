@@ -107,6 +107,17 @@ presented as the owner's own answer to a spec ruling.
   the pre-registration -- cost if wrong: the 500-session clock starts a session later than the first fill could.
 - Ruling: a decided pooled verdict needs at least 475 of its 500 sessions scorable; fewer is stored as INSUFFICIENT
   DATA, once -- cost if wrong: a test with 25 unscorable sessions is still judged.
+- Ruling: the owner's flatten is let past VaR, expected shortfall, component VaR and the Greek limits (`Gate`'s
+  `waive_risk`), not only the exposure caps; the drawdown is still judged, at the mark. Every leg only shrinks its
+  strategy, so a worse statistic afterwards is the account's netting -- cost if wrong: the account's VaR can read
+  past its line after a flatten until the other strategies rebalance.
+- Ruling: INC-02's pre-registration names a venue sale or a zero-target document for Roster-6(a); its text is left
+  as approved, and the owner's flatten route is the means used, since its fills sit under each strategy's prefix
+  dated by the flatten, which is what the "first fill after the flatten" floor needs -- cost if wrong: the means
+  differs in wording from the approved line, not in what it does.
+- Ruling: `/api/desk/sessions?since=` is bounded at 5040 closes (twenty years of sessions) -- the demo host
+  records one every five minutes and the route is public -- cost if wrong: a `since` more than 5040 closes back
+  is served from its oldest end, which INC-02 (500) never reaches.
 - Ruling: the hand's halt is lifted by the agent after the flatten is recorded and deployed (the owner's authority,
   2026-11-27), not before -- cost if wrong: INC-02 starts trading a day later than it could.
 - Not done, by construction: `OHCAMEL_ALERT_URL` (root's directory and the owner's own channel) and Cboe's 403
