@@ -202,7 +202,7 @@ expect "research running" "$out" PASS 'live: +ohcamel-research running'
 expect "research label" "$out" PASS 'live: +ohcamel-research image revision'
 expect "research env" "$out" PASS 'live: +ohcamel-research OHCAMEL_GIT_SHA'
 expect "/api/research intake running" "$out" PASS 'live: +/api/research +intake running, 0 strategies'
-for route in orders cancel kill/reset; do
+for route in orders cancel kill/reset flatten; do
 	expect "POST $route without the header is 403" "$out" PASS "live: +POST /api/desk/$route +403 without X-OhCamel-Desk"
 	expect "POST $route with the header, no origin, is 403" "$out" PASS "live: +POST /api/desk/$route +403 with the header but no Origin"
 done
@@ -249,6 +249,9 @@ expect "orders answering 200 without the header fails" "$out" FAIL 'live: +POST 
 
 out=$(run_live SHIM_OPEN_ROUTE=/api/desk/kill/reset)
 expect "kill/reset answering 200 fails" "$out" FAIL 'live: +POST /api/desk/kill/reset +200, expected 403 without X-OhCamel-Desk'
+
+out=$(run_live SHIM_OPEN_ROUTE=/api/desk/flatten)
+expect "flatten answering 200 fails" "$out" FAIL 'live: +POST /api/desk/flatten +200, expected 403 without X-OhCamel-Desk'
 
 out=$(run_live SHIM_OPS_SHA="$other")
 expect "an /api/ops sha mismatch fails, naming both" "$out" FAIL "live: +/api/ops build.git_sha +$other, expected 0123456"

@@ -219,6 +219,38 @@ let parse_kill_reason (r : Server.Request.t) : (string, string) Result.t =
         String.prefix (String.strip s) 200
     | _ -> "no reason given")
 
+(* The owner's flatten's body: {"strategies": ["slug", ...]} or
+   {"strategies": "all"}. A slug is what the book's strategies are named by
+   (^[a-z][a-z0-9_]{1,63}$, Rebalance.Source's header); whether it names a
+   strategy is the order manager's to say. *)
+let parse_flatten (r : Server.Request.t) :
+    ([ `All | `Named of string list ], string) Result.t =
+  let usage =
+    {|the body must be {"strategies": ["slug", ...]} or {"strategies": "all"}|}
+  in
+  let slug s =
+    let n = String.length s in
+    n >= 2 && n <= 64
+    && Char.is_lowercase s.[0]
+    && String.for_all s ~f:(fun c ->
+        Char.is_lowercase c || Char.is_digit c || Char.equal c '_')
+  in
+  match body_json r with
+  | None -> Error ("the body is not JSON; " ^ usage)
+  | Some (`Assoc fields) -> (
+      match List.Assoc.find fields "strategies" ~equal:String.equal with
+      | Some (`String "all") -> Ok `All
+      | Some (`List (_ :: _ as items)) -> (
+          let names = List.map items ~f:(function `String s -> Some s | _ -> None) in
+          match Option.all names with
+          | Some names when List.for_all names ~f:slug -> Ok (`Named names)
+          | _ ->
+              Error ("every strategy must be a slug, a string like \"inc_spy\"; " ^ usage)
+          )
+      | Some (`List []) -> Error ("the list of strategies is empty; " ^ usage)
+      | _ -> Error usage)
+  | Some _ -> Error usage
+
 (* M5: [host] is a second source of truth, given once at construction and
    never checked against the [Server.t] a request actually arrives on. A
    mismatch is refused before [Protection.check] runs at all -- failing
@@ -286,7 +318,7 @@ let parse_since (r : Server.Request.t) : (Date.t option, string) Result.t =
   let shaped s =
     String.length s = 10
     && String.for_alli s ~f:(fun i c ->
-           if i = 4 || i = 7 then Char.equal c '-' else Char.is_digit c)
+        if i = 4 || i = 7 then Char.equal c '-' else Char.is_digit c)
   in
   match List.filter r.Server.Request.query ~f:(fun (k, _) -> String.equal k "since") with
   | [] -> Ok None
@@ -296,7 +328,8 @@ let parse_since (r : Server.Request.t) : (Date.t option, string) Result.t =
       | _ -> Error since_sentence)
   | _ -> Error since_sentence
 
-let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
+let extensions ?(strategies = []) ~(host : host) ~(oms : Oms.t) () : Server.extension list
+    =
   let switch () = Halt.to_json (Oms.halt oms) ~now:(Time_ns.now ()) in
   [
     {
@@ -466,5 +499,38 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
                 | _ ->
                     respond_error server `Bad_request
                       {|a reset must say so: {"confirm":"reset"}|}));
+    };
+    {
+      Server.path = "/api/desk/flatten";
+      purpose =
+        {|POST {"strategies": [...] | "all"}: the owner's flatten -- each named strategy's own position to zero, through a halt or a trip, which stay (live host only)|};
+      handle =
+        protected ~host ~oms ~f:(fun server r ->
+            guard_parse oms ~route:"flatten" server
+              (fun () -> parse_flatten r)
+              ~k:(fun asked ->
+                guard_async oms ~route:"flatten" server (fun () ->
+                    (* [strategies] is the book's; "all" is those of them the
+                       journal holds a position for (Oms.owner_flatten). The
+                       answer lists, per strategy, what was sent or why
+                       nothing was -- never a limit's threshold
+                       (Oms.Owner_flatten.public_why) -- and the switch as it
+                       reads after, which a halt the flatten went through
+                       still reads. *)
+                    match%bind Oms.owner_flatten oms ~book:strategies ~asked with
+                    | Error (Oms.Owner_flatten.Unknown why) ->
+                        respond_error server `Bad_request why
+                    | Error (Oms.Owner_flatten.Refused why) ->
+                        respond_error server `Conflict why
+                    | Ok reports ->
+                        respond server
+                          (`Assoc
+                             [
+                               ( "strategies",
+                                 `List
+                                   (List.map reports ~f:Oms.Owner_flatten.Report.to_json)
+                               );
+                               ("switch", switch ());
+                             ]))));
     };
   ]

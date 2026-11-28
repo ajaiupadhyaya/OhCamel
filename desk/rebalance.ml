@@ -55,11 +55,28 @@ open Ohcamel.Types
    says: signal:<slug>:<sequence>. A slug matches ^[a-z][a-z0-9_]{1,63}$, so
    it holds no colon, and [prefix] -- which ends in one -- begins every source
    a strategy's rebalances carry and nobody else's. *)
+(* THE OWNER'S FLATTEN HAS A SOURCE OF ITS OWN (Oms.owner_flatten): sequence
+   [owner_flatten_sequence], 0, written signal:<slug>:owner-flatten. Its
+   orders are the strategy's -- [prefix] begins it, so the strategy's own
+   position and the sub-ledger (Subledger.owner) count their fills -- and no
+   producer's document ever has that source: the contract's R5 takes a
+   sequence only above the last accepted, which is 0 before the first
+   (Contract.r5), so no document is ever sequence 0, and the intake, which
+   reads a document's orders by signal:<slug>:<sequence>, never mistakes the
+   owner's flatten for a document's rebalance that went unfilled. *)
 module Source = struct
   type t = { strategy : string; sequence : int; as_of : Date.t }
   [@@deriving sexp_of, compare, equal]
 
-  let name ~strategy ~sequence = sprintf "signal:%s:%d" strategy sequence
+  let owner_flatten_sequence = 0
+  let owner_flatten_note = "owner-flatten"
+
+  let name ~strategy ~sequence =
+    if sequence = owner_flatten_sequence then
+      sprintf "signal:%s:%s" strategy owner_flatten_note
+    else sprintf "signal:%s:%d" strategy sequence
+
+  let is_owner_flatten t = t.sequence = owner_flatten_sequence
   let to_string t = name ~strategy:t.strategy ~sequence:t.sequence
   let prefix ~strategy = sprintf "signal:%s:" strategy
 end

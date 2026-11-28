@@ -217,6 +217,10 @@ module Context = struct
        with the book's (reduce_through_trip) word on; false otherwise, and
        false whenever it cannot be read. *)
     netted : bool;
+    (* Whether the order is the owner's flatten by hand (Oms.owner_flatten,
+       POST /api/desk/flatten): [switch_refusal] lets it through a hand's halt
+       or a limit's trip when it [reduces]. False for everything else. *)
+    owner_flatten : bool;
     (* None: no clock has answered, or the last read failed -- closed. *)
     session : Session.t option;
     mark : Price.t option;
@@ -362,8 +366,21 @@ let reduces ~(own : float) ~(account : float) ~(netted : bool) ~(side : Order.Si
    both halves of [reduces] bind here -- the strategy's own, and either the
    account's, netted of the desk's resting reductions
    (Oms.reducible_account), or a sub-ledger known to sum ([netted]). *)
-let switch_refusal ~(spec : Desk_spec.t) ~(halt_state : Halt.State.t)
-    ~(halt_why : string option) ~own ~account ~netted ~side ~qty : string option =
+(* THE OWNER'S FLATTEN GOES THROUGH A HALT AND A TRIP ([owner_flatten]),
+   AND ONLY A REDUCTION OF IT DOES. A hand's halt refuses everything else
+   because the person who pressed it knew something the limits did not; the
+   owner's flatten is that same person, asking by name (POST
+   /api/desk/flatten, guarded as the reset is) for a strategy's own position
+   to be taken to zero. It is not the halt liquidating, and the halt stays:
+   only an order that [reduces] -- shrinks the strategy's own position
+   without crossing zero, and the account's by no more than it holds or in a
+   name whose sub-ledger is known to sum -- passes; anything else is refused
+   in the switch's own words, as before. The book's reduce_through_trip word
+   does not enter into it: R2 is the desk acting on a trip, this is a person.
+   The engine's stop refuses it too -- no fill would be heard. *)
+let switch_refusal ?(owner_flatten = false) ~(spec : Desk_spec.t)
+    ~(halt_state : Halt.State.t) ~(halt_why : string option) ~own ~account ~netted ~side
+    ~qty () : string option =
   let words =
     match halt_why with
     | Some why -> why
@@ -371,6 +388,18 @@ let switch_refusal ~(spec : Desk_spec.t) ~(halt_state : Halt.State.t)
   in
   match (halt_state, halt_why) with
   | Halt.State.Clear, None -> None
+  | (Halt.State.Halted _ | Halt.State.Tripped _), Some _ when owner_flatten ->
+      if reduces ~own ~account ~netted ~side ~qty then None
+      else
+        Some
+          (sprintf
+             "%s; the owner's flatten passes the switch only with an order that shrinks \
+              the strategy's own position (%.17g) without crossing zero, and the \
+              account's (%.17g) by no more than it holds unless the name's sub-ledger is \
+              known to sum (%s); a %s of %d does not"
+             words own account
+             (if netted then "it is" else "it is not")
+             (Order.Side.to_string side) qty)
   | Halt.State.Tripped _, _ when spec.Desk_spec.reduce_through_trip ->
       if reduces ~own ~account ~netted ~side ~qty then None
       else
@@ -455,9 +484,10 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
       | Desk_spec.Enabled, Error why -> fail "trading" why
       | Desk_spec.Enabled, Ok () -> None);
       Option.map
-        (switch_refusal ~spec:c.spec ~halt_state:c.halt_state ~halt_why:c.halt_why
-           ~own:c.own ~account:c.account ~netted:c.netted ~side:r.Order.Request.side
-           ~qty:r.Order.Request.qty) ~f:(fun why -> { Failure.rule = "kill_switch"; why });
+        (switch_refusal ~owner_flatten:c.owner_flatten ~spec:c.spec
+           ~halt_state:c.halt_state ~halt_why:c.halt_why ~own:c.own ~account:c.account
+           ~netted:c.netted ~side:r.Order.Request.side ~qty:r.Order.Request.qty ())
+        ~f:(fun why -> { Failure.rule = "kill_switch"; why });
       Option.map
         (session_refusal ~desk:(Origin.desk c.origin) ~tif:r.Order.Request.tif
            ~zone:c.new_york ~session:c.session ~now:c.now ())

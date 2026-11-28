@@ -39,6 +39,7 @@ let context =
     own = 0.0;
     account = 0.0;
     netted = false;
+    owner_flatten = false;
     session = during_monday;
     mark = Some (Price.of_float 150.0);
     stale = false;
@@ -829,6 +830,38 @@ let test_no_borrow_buying_power_or_beta_rule () =
     ]
     Rules.names
 
+(* THE OWNER'S FLATTEN (POST /api/desk/flatten) passes a hand's halt and a
+   limit's trip -- the word off -- with an order that reduces, and nothing
+   else does. Own +100, the account +80: the owner's sell of 50 passes the
+   halt and the trip; the same sell, not the owner's, is refused by the halt.
+   A sell of 120 takes the strategy through zero and a buy grows it: refused,
+   owner's or not. Netted (own +100, the account +50, the name's sub-ledger
+   known to sum), the owner's sale of all 100 passes; with the sum not known
+   it is more than the account holds and is refused. The engine's stop
+   refuses even the owner's flatten. *)
+let test_the_owner's_flatten_passes_a_halt_with_a_reduction_and_nothing_else () =
+  let owner ctx = { ctx with Rules.Context.owner_flatten = true } in
+  let halted = switched ~on:false ~state:`Halted ~own:100.0 ~account:80.0 () in
+  let tripped = switched ~on:false ~state:`Tripped ~own:100.0 ~account:80.0 () in
+  check_rules "halted: the owner's sell of 50" [] (owner halted) (sell 50);
+  check_rules "halted: the same sell, not the owner's" [ "kill_switch" ] halted (sell 50);
+  check_rules "tripped, the word off: the owner's sell of 50" [] (owner tripped) (sell 50);
+  check_rules "tripped, the word off: not the owner's" [ "kill_switch" ] tripped (sell 50);
+  check_rules "halted: the owner's sell of 120, through zero" [ "kill_switch" ]
+    (owner halted) (sell 120);
+  check_rules "halted: the owner's buy grows the position" [ "kill_switch" ]
+    (owner halted) (buy 10);
+  let netted =
+    switched ~on:false ~netted:true ~state:`Halted ~own:100.0 ~account:50.0 ()
+  in
+  let unknown = switched ~on:false ~state:`Halted ~own:100.0 ~account:50.0 () in
+  check_rules "halted, netted: the owner's sale of all 100" [] (owner netted) (sell 100);
+  check_rules "halted, the sum not known: refused" [ "kill_switch" ] (owner unknown)
+    (sell 100);
+  let stopped = switched ~state:`Stopped ~own:100.0 ~account:80.0 () in
+  check_rules "the engine's stop: even the owner's" [ "kill_switch" ] (owner stopped)
+    (sell 50)
+
 let suite =
   ( "rules",
     [
@@ -889,4 +922,7 @@ let suite =
         test_the_order_cap_reads_the_larger_of_the_limit_and_the_mark;
       Alcotest.test_case "a market-on-open order is refused" `Quick
         test_a_market_on_open_order_is_refused;
+      Alcotest.test_case
+        "the owner's flatten passes a halt with a reduction, and nothing else" `Quick
+        test_the_owner's_flatten_passes_a_halt_with_a_reduction_and_nothing_else;
     ] )

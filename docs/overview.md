@@ -209,6 +209,7 @@ much the graph has recomputed.
 | `POST /api/desk/cancel` | Cancel one open order (live host only) |
 | `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
+| `POST /api/desk/flatten` | The owner's flatten: `{"strategies": [...]}` or `"all"`, each strategy's own position to zero through a halt, which stays (live host only; `docs/runbooks/desk.md`) |
 | `GET /api/research` | The registered signal strategies with their sizing and capital fraction, each one's latest judgement, and that R8 (data hash) is not enforced; the demo registers none |
 | `GET /api/research/evidence` | EXP-A01's two manifests, embedded at build time and served byte for byte |
 
@@ -238,7 +239,7 @@ may send one); on the public demo each answers 405.
 
 ## How it's checked
 
-- **<!-- count:ocaml-tests -->1041<!-- /count --> tests**, plus <!-- count:scheduler-tests -->113<!-- /count --> scheduler cases in `test/desk_async`, all
+- **<!-- count:ocaml-tests -->1048<!-- /count --> tests**, plus <!-- count:scheduler-tests -->114<!-- /count --> scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against

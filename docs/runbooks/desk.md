@@ -76,15 +76,78 @@ session` or `its flatten was tried 3 times this session`.
 and fills tables show which orders ended unfilled and why (halted names, a closed market, a rejection).
 
 **Owner action:** usually nothing today: it retries tomorrow. If the cause is a name the venue will not trade or
-a halted desk, fix that. If a stopped strategy still holds shares that matter, flatten them by hand at the venue
-after reading the dashboard. Do not restart the live container during 09:25-17:10 ET to "retry".
+a halted desk, fix that. If a stopped strategy still holds shares that matter, use the owner's flatten (below)
+after reading the dashboard, not a sale at the venue. Do not restart the live container during 09:25-17:10 ET to "retry".
 
 A latched stop's flatten can also be refused by the pre-trade gate, not the venue. A stop's flatten is waived past
 the exposure limits only (book, class and name caps); a VaR or ES limit is still judged. In a netted pair -- two
 strategies holding opposite sides of one name, or a hedge leg -- closing one strategy's leg can create or worsen a
 `var-cap` or `es-cap` breach, and that flatten is refused each time until completions run out. The refusal is in
-the log beside the `was tried` line. That is the owner's call: flatten the pair together by hand at the venue (the
-desk never un-stops a strategy; only the book's `(reinstated DATE)` does).
+the log beside the `was tried` line. That is the owner's call: the owner's flatten (below) is not held by those
+limits and flattens the pair one name at a time (the desk never un-stops a strategy; only the book's
+`(reinstated DATE)` does).
+
+## Flattening a strategy by hand (the owner's flatten)
+
+**When:** a strategy holds shares you want gone and the desk will not send its orders for it. Two cases so far:
+
+- INC-02's Roster-6, option (a) (`research/experiments/INC-02/preregistration.md`): the positions INC-01 left in
+  the slugs INC-02 reuses are flattened before INC-02's first session, while the desk stays halted by hand.
+- A stopped strategy whose own flatten the gate or the switch refused (above), or whose completions ran out.
+
+Do not sell at the Alpaca dashboard for this: that bypasses the desk and breaks the strategy's sub-ledger (above).
+Do not write a zero-target signal document by hand: its sequence can collide with the producers'.
+
+**What it does:** `POST /api/desk/flatten` (live host only; the demo answers 405) takes each named strategy's own
+position, from the journal's fills, to zero, one name at a time, and sends those orders through the same path a
+strategy's rebalance takes: journaled first, under the source `signal:<slug>:owner-flatten`, so the fills are the
+strategy's and its sub-ledger still sums. Each order is a day limit off the venue's quote, the order a stop's
+flatten sends. It goes through a halt by hand and a limit's trip, and past the exposure caps and the VaR, ES and
+component VaR limits, but only with orders that shrink the strategy's own position without crossing zero. **The
+switch is not touched: a halted desk is still halted afterwards, and nothing else trades.** It is refused whole
+while the engine has stopped the desk, outside the regular session, and before 09:35 ET. The order rules still
+apply (the collar, the per-order cap, the ADV share, the open-order cap): a leg larger than the per-order cap is
+refused, not split.
+
+Two strategies can hold one name, on opposite sides or the same side. One request sends only one strategy's order
+in a name: the one whose flatten leaves the account nearest flat. The others' legs in that name are held back and
+the answer says why. Ask again once the first has filled, and repeat `"all"` until it lists no strategy.
+
+**The request,** from the droplet, inside the live container. The guard wants `X-OhCamel-Desk: 1` and an `Origin`
+whose host and port are the request's own `Host`, which is `localhost:8081` from inside the container:
+
+    ssh ohcamel
+    docker exec ohcamel-ohcamel-live-1 curl -s -X POST -H 'X-OhCamel-Desk: 1' \
+      -H 'Origin: http://localhost:8081' -H 'Content-Type: application/json' \
+      -d '{"strategies":"all"}' localhost:8081/api/desk/flatten | jq
+
+`"all"` is every strategy in the book that holds a position in the journal. To name some, send
+`{"strategies":["inc_spy","inc_tlt"]}`; a name may also be a strategy that is no longer in the book but still holds
+a position in the journal. A name that is neither is a 400 and nothing is sent.
+
+**The answer:** `strategies` lists, per strategy, `sent` (each order's `symbol`, `side`, `qty`, `state` and
+`client_order_id`), `held_back` (each name not sent, and why) and `outcome` (a sentence). `switch` is the switch as
+it reads after the request, so it still says `halted`. The answer never shows a limit's threshold; a refusal by the
+limits or by an order rule names the rule, and the full sentence is in the live log. A 409 means nothing was sent:
+the market is closed, it is before 09:35 ET, or the engine has stopped the desk.
+
+**Afterwards:**
+
+1. Wait a minute for the fills, then ask again with the same body. A strategy whose orders may still fill says so
+   and sends nothing new. A strategy that is flat no longer appears under `"all"`. An order cancelled at the wave
+   timeout (180 s) leaves the rest unsold: ask again (more than 10 s after the last request, or the duplicate rule
+   refuses the same order).
+2. `docker logs --since 1h ohcamel-ohcamel-live-1 | grep "owner's flatten"`: one line per request, one per
+   strategy, and one when each strategy's orders finished.
+3. The journal records each strategy's outcome as an alert of kind `owner_flatten`, the slug as its limit name.
+4. `docker exec ohcamel-ohcamel-live-1 curl -s localhost:8081/api/desk | jq '.kill_switch, .positions'`: the switch
+   still `halted`, the account's positions what the remaining strategies and the hand hold.
+5. At the close the log's `sub-ledger at the close of <date>: N names checked, no break` line confirms the
+   sub-ledger is whole.
+
+A strategy still live in the book can be sized back up from its latest document once the switch is reset: at its
+next document, or when the overlay moves past its band. Flatten what is stopped, or what a new document will
+replace.
 
 ## A stale overlay
 

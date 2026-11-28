@@ -1660,6 +1660,10 @@ let run_live ~book_path ~(serve_port : int option) =
                 ~extensions:
                   (Ohcamel_desk.Desk.extensions desk
                   @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms
+                      ~strategies:
+                        (List.map strategies ~f:(fun s ->
+                             s.Config.Book.Signals_spec.Strategy.name))
+                      ()
                   @ Ohcamel_desk.Desk.research_extensions ~serve_record:true
                       ~desk:(Some desk) ~journal ~strategies ~intake ~on_event:live_line)
                 ~kill_switch_wired_to:"desk.submit" ~desk:true ~signals
@@ -1878,7 +1882,7 @@ let run_demo ~port =
     Server.create ?alerts ~recompute_log:log ~reports ~garch ~mode:`Demo ~quiet:[ quiet ]
       ~extensions:
         (Ohcamel_desk.Desk.extensions desk
-        @ Ohcamel_desk.Desk_routes.extensions ~host:`Demo ~oms
+        @ Ohcamel_desk.Desk_routes.extensions ~host:`Demo ~oms ()
         (* The demo registers no strategy: its synthetic book holds neither
            SPY nor TLT, and adding them would move Figure 1. So its
            /api/research lists none, and says why; /api/research/evidence

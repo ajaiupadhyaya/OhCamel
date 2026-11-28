@@ -703,9 +703,9 @@ The site is six pages, one binary, one shared shell and client:
   it the site's navigation and its own title, and left its readings as they
   were.
 
-Unauthenticated at the engine, gated at the proxy for the live host. Four
+Unauthenticated at the engine, gated at the proxy for the live host. Five
 routes change the desk -- `/api/desk/orders`, `/api/desk/cancel`,
-`/api/desk/kill`, `/api/desk/kill/reset` -- on the live host only, and only
+`/api/desk/kill`, `/api/desk/kill/reset`, `/api/desk/flatten` -- on the live host only, and only
 for a request carrying `X-OhCamel-Desk: 1` and either `Sec-Fetch-Site:
 same-origin` or an `Origin` equal to its `Host`; on the public demo each
 answers 405.
@@ -736,6 +736,7 @@ answers 405.
 | `POST /api/desk/cancel` | Cancel one open order (live host only) |
 | `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
+| `POST /api/desk/flatten` | The owner's flatten: `{"strategies": [...]}` or `"all"`, each strategy's own position to zero through a halt, which stays (live host only; `docs/runbooks/desk.md`) |
 | `GET /api/research` | The registered signal strategies with their sizing and capital fraction, each one's latest judgement (verdict, rule, detail, `as_of`, weights, validation block), how many files the intake is holding, and the sentence "R8 (data hash) is not enforced; see the design §3.12". The demo registers no strategy and says so |
 | `GET /api/research/evidence` | EXP-A01's two manifests, embedded at build time and served byte for byte, on both hosts |
 
@@ -743,7 +744,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->1041<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->113<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->1048<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->114<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
