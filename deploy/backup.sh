@@ -636,6 +636,29 @@ month_ends() {
 # kb PATH: its size on disk in KiB, or nothing when it cannot be measured.
 kb() { du -sk "$1" 2>/dev/null | awk '{ print $1 }'; }
 
+# export_dir_ready DIR DRY: DIR/warehouse exists and this user (whose gid the export container runs with) can write
+# it. ohcamel-burst bind-mounts DIR/warehouse read-only, and Docker makes a missing bind source root:root 0755, which
+# uid 10002 cannot write: the exports of 2026-11-26, -27 and -28 all failed "Permission denied" so. The directory is
+# made here, by this user, 2770; an EMPTY one this user cannot write is replaced (DIR is group-writable, so this user
+# may remove an entry of it); a non-empty one is refused with the command that fixes it, nothing deleted.
+export_dir_ready() {
+	local d="$1/warehouse" dry="$2"
+	[ "$dry" = 0 ] || return 0
+	if [ -d "$d" ] && [ ! -w "$d" ] && [ -z "$(ls -A -- "$d" 2>/dev/null)" ] && rmdir -- "$d" 2>/dev/null; then
+		backup_say "replaced $d: it was empty and not writable by $(id -un) (Docker makes a missing bind-mount source as root)"
+	fi
+	if [ ! -d "$d" ] && ! mkdir -m 2770 -- "$d" 2>/dev/null; then
+		backup_err "could not create $d; the export is not attempted"
+		return 1
+	fi
+	if [ -O "$d" ]; then chmod 2770 -- "$d" 2>/dev/null || true; fi
+	if [ ! -w "$d" ]; then
+		backup_err "$d is not writable by $(id -un) and is not empty, so it is not replaced; the export (uid 10002, gid $(id -g)) cannot write it -- as root: chown $(id -u):$(id -g) $d && chmod 2770 $d"
+		return 1
+	fi
+	return 0
+}
+
 # export_room DIR DRY: make room for tonight's export, or refuse it (1). It
 # totals what pruning may free FIRST -- the oldest dailies, never the newest
 # export, never a month-end -- and deletes nothing unless that is enough. A
@@ -785,7 +808,7 @@ run_entry() {
 				;;
 			esac
 		fi
-		if ! export_room "$dir" "$dry"; then
+		if ! export_dir_ready "$dir" "$dry" || ! export_room "$dir" "$dry"; then
 			return 1
 		fi
 		;;

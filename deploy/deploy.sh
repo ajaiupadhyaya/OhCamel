@@ -636,6 +636,13 @@ main() {
 		dc ${PROFILE[@]+"${PROFILE[@]}"} pull
 	fi
 	say "Starting"
+	# ohcamel-burst bind-mounts the backup directory's warehouse/ read-only, and Docker makes a missing bind source
+	# root:root 0755, which the nightly export (uid 10002) cannot write (backup.sh's export_dir_ready). Made here
+	# first, by this user, 2770, when the backup directory is there to hold it.
+	local wdir="${OHCAMEL_BACKUP_DIR:-/var/backups/ohcamel}/warehouse"
+	if [ "$DRY" != 1 ] && [ -d "${wdir%/warehouse}" ] && [ -w "${wdir%/warehouse}" ] && [ ! -e "$wdir" ]; then
+		mkdir -m 2770 -- "$wdir" || echo "deploy: could not create $wdir; Docker will make it as root and the nightly export will fail" >&2
+	fi
 	dc ${PROFILE[@]+"${PROFILE[@]}"} up -d --remove-orphans
 
 	# The synthetic engine is behind the "demo" profile, which `up` never

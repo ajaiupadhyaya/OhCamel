@@ -737,6 +737,37 @@ else
 	no "X1 the run leaves a dated export directory, warehouse/$today" "listing: $(listing)"
 fi
 
+# The export's directory as Docker leaves it when ohcamel-burst's bind mount made it first: root:root 0755, which
+# the export's uid cannot write (2026-11-26..28 on the droplet). Not writable here stands in for root's. Empty, it is
+# replaced and the export runs; not empty, nothing is deleted and the step fails saying how to fix it.
+if [ "$(id -u)" = 0 ]; then
+	ok "X1b/X1c an unwritable export directory (skipped as root, which writes anyway)"
+else
+	fresh
+	mkdir -m 0555 "$backups/warehouse"
+	run_backup --
+	expect_rc "X1b an empty export directory this user cannot write" 0
+	expect_has "X1b is replaced, and the run says so" "$scratch/out" "replaced $backups/warehouse"
+	expect_eq "X1b by one this user made, group-writable and setgid" "$(mode_of "$backups/warehouse")" "drwxrws---"
+	if [ -f "$backups/warehouse/$today/export.json" ]; then
+		ok "X1b and the export ran into it"
+	else
+		no "X1b and the export ran into it" "listing: $(listing)"
+	fi
+
+	fresh
+	mkdir "$backups/warehouse"
+	: >"$backups/warehouse/keep.txt"
+	chmod 0555 "$backups/warehouse"
+	run_backup --
+	expect_rc "X1c a non-empty export directory this user owns but cannot write" 0
+	expect_eq "X1c is made group-writable and setgid in place" "$(mode_of "$backups/warehouse")" "drwxrws---"
+	expect_eq "X1c nothing in it is deleted, and the export ran" "$(exports)" "$today keep.txt"
+	# A non-empty one owned by another uid (root's, with a file in it) is refused with the chown that fixes it;
+	# that branch needs a second uid, so it is read here, not run.
+	expect_has "X1c the refusal for another uid's directory names the fix" "$repo/deploy/backup.sh" "is not empty, so it is not replaced"
+fi
+
 # 15 planted: 07-31 and 08-31 are month-ends, 08-30 is not, 09-01..09-12 are
 # dailies. With today's export that is 16; the 14 newest are today, 09-12 ..
 # 09-01 and 08-31; the newest of July (07-31) is kept as July's month-end;
