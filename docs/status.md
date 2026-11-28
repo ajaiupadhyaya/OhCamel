@@ -118,8 +118,20 @@ The same steps are in [`runbooks/desk.md`](runbooks/desk.md).
 
 ### OWNER-PENDING
 
-None of these is the agent's to do. The order is the order of dependence.
+Since 2026-11-27 the agent works this list under the owner's "FULL PERMISSIONS, FULL AUTHORITY" (the finish,
+`docs/superpowers/plans/2026-11-27-the-finish.md`; its decisions in the rulings file, section *The finish*). Only
+item 5 is left to the owner by construction. The order is the order of dependence.
 
+00. **The final deploy, 2026-11-27 20:35 ET (market shut), by the agent:** `deploy/deploy.sh --sha bc696e7 --live`,
+   smoke 54 passed 0 failed 1 skipped. bc696e7 carries the owner's flatten (`POST /api/desk/flatten`, Roster-6(a)'s
+   means, `runbooks/desk.md`), `/api/desk/sessions?since=` with the pooled test's stored decision and its 475-of-500
+   INSUFFICIENT DATA rule, the shut-market ex-date exceptions, the droplet kernel rows and the execution page's
+   per-fill costs. The hand's halt held through the restart. The nightly products (farm, atlas, surface league,
+   desk.report) were enqueued at once so the definition of done reads artifacts this sha made.
+   **Left:** Monday 2026-11-30 in session, check the roster's names for splits (item 14), flatten every roster
+   strategy with the owner's flatten, write `Roster-6(a) flatten completed: 2026-11-30`, deploy it `--public-only`,
+   and after the close lift the halt; INC-02's first session is Tuesday 2026-12-01, and `check-done.sh --strict`
+   runs after that evening's chain.
 0. **Deployed past the hold, 2026-11-27 13:26 ET (after the 13:00 early close), by the agent on the owner's
    instruction:** `deploy/deploy.sh --sha a10eeb4 --live --during-market`, both hosts, smoke 52 of 52, `deploys.log`
    `ok`, with the INC-02 book of item 4 installed as `~/OhCamel/book.sexp` (the INC-01 book archived as
@@ -132,13 +144,14 @@ None of these is the agent's to do. The order is the order of dependence.
    (`research/experiments/INC-02/preregistration.md`, *Approval*). The pooled test now also reads the file's
    `Roster-6(a) flatten completed:` line: until it names a date the test reads NOT STARTED, and then the series starts
    at the first fill AFTER that date, so the flatten's own fills are never INC-02's first fill (the final review's
-   parked item 3). **Owner's, still:** flatten INC-01's carried positions in the roster's strategies, write that
-   line's date (the last session of the flatten), then lift the halt.
-2. **R3, the farm's gates** (spec ruling R3): the default stands until the owner answers; two questions ride with it
-   (whether it applies to EXP-I01–I03 and Q01's unspent holdout, and the cells whose out-of-sample record cannot reach
-   three regimes). R2 (reduce through a trip) and R4 and R6 are defaults too. No file may call a ruling the owner's
+   parked item 3). **The agent's, by the owner's authority (item 00):** flatten INC-01's carried positions in the
+   roster's strategies, write that line's date (the last session of the flatten), then lift the halt.
+2. **R3, the farm's gates** (spec ruling R3): DECIDED 2026-11-27 by the agent under the owner's authority -- the
+   spec's default stands, and for both riding questions (EXP-I01–I03 and Q01's unspent holdout; cells whose
+   out-of-sample record cannot reach three regimes) too (rulings file, *The finish*). R2 (reduce through a trip) and R4 and R6 are defaults too. No file may call a ruling the owner's
    before the spec records it (`research/tests/test_rulings_attributed.py` fails if one does).
-3. **The deploy hold.** Deploy no sha at or after `594df16`, with `--live` or `--public-only`, until INC-02 is approved
+3. **The deploy hold: LIFTED** (INC-02 approved, its book installed, a10eeb4 and then bc696e7 deployed). History:
+   Deploy no sha at or after `594df16`, with `--live` or `--public-only`, until INC-02 is approved
    and `book.sexp` is regenerated (*Deploy, by sha*; *Deploying the desk (completion Task 1.12)*). `main` is at `c1ae5ea`, the completion merged and pushed on 2026-11-26; the hosts are not.
    **Deployed 2026-11-26 (Thanksgiving, market shut):** the owner ran `deploy/deploy.sh --sha d788e86 --live
    --during-market`, so both hosts stand at `d788e86` (Day 3 and Day 4 together). Its smoke failed 8 page checks with no
@@ -165,13 +178,12 @@ None of these is the agent's to do. The order is the order of dependence.
    on a strategy fails to load, which is why the hold covers it. Then deploy `--live` and
    lift the hand's halt only when ready. Do not edit the droplet's book by hand.
 5. **`OHCAMEL_ALERT_URL`** in `/etc/ohcamel/ops.env` on the droplet; until then pages are logged only.
-6. **The VaR window**: the book's `(risk ((var_window ...)))` defaults to 250; to keep the old 60, write
-   `(risk ((var_window 60)))`. Decide, and record the decision here.
+6. **The VaR window: DECIDED** -- the INC-02 book carries `(risk ((var_window 250)))`, the default.
 7. **After the Day 4 deploy: DONE 2026-11-26 by the agent.** `warehouse migrate` printed version 6 with nothing to
    move (the first ingest after the deploy had applied it on opening the writer); `jobs wall-times` flagged
    `vol.forecast_league` and `regime.hmm` (item 3's hotfix); both raw-bar backfills ran from 15:08 ET and finished
-   `done` (corp actions 372 cpu-s, bars 127 cpu-s). Expect the integrity lamp red until the shut-market ex-dates are
-   added to `DRIFT_EXCEPTIONS`. `exchange_calendar` fills on the next weekday 18:30 bars run (the worker's entrypoint
+   `done` (corp actions 372 cpu-s, bars 127 cpu-s). The shut-market ex-dates are now excepted by computation
+   (`shut_exdates`, `8922c57`): 0 gating drift on the droplet's data (11 excepted). `exchange_calendar` fills on the next weekday 18:30 bars run (the worker's entrypoint
    maps `ALPACA_*` to `APCA_*`; a `docker exec` does not, so pass the keys by hand there).
    **Seen that day:** `ingest.option_snapshots` fails on every name with Cboe HTTP 403 from the droplet too, as in CI:
    the option history has no new day until Cboe answers again.
@@ -180,15 +192,17 @@ None of these is the agent's to do. The order is the order of dependence.
 9. **Spread measurement: DONE 2026-11-26 by the agent**, on the droplet over the 20 sessions 2026-10-29 .. 2026-11-25
    (IEX quotes; `research/config/costs_measured.csv` and its sidecar, code `b006624`). 41 of 42 rows are measured, most a
    tier below their provisional guess (MDY and SIZE went up to tier 3). The EXP-A01 manifests were re-derived in the
-   same commit: only the cost file's hash changed, no number or verdict. **Owner's:** USO measured 151.4 bp, above the
-   widest tier (8 bp), so it keeps its provisional tier 3; decide between a fourth tier, a consolidated-quote
-   measurement (IEX's own book overstates a name it quotes thinly), or leaving it. USO is on INC-02's roster.
-10. **The droplet kernel bench** (`runbooks/compute.md`): commit the droplet row, rebuild and redeploy. Until then the
+   same commit: only the cost file's hash changed, no number or verdict. USO measured 151.4 bp on IEX, above the widest tier
+   (8 bp); the consolidated (SIP) re-measure was refused (HTTP 403 on this data plan), so USO keeps its provisional
+   tier 3, a ruling (*The finish*). USO is on INC-02's roster.
+10. **The droplet kernel bench: DONE 2026-11-27** (`bcdbbf9`, 13 DO-Regular rows on a10eeb4's image; live with
+    bc696e7). History: commit the droplet row, rebuild and redeploy. Until then the
     laptop row stands and says so. Run it on the image of the post-hold deploy, not `d788e86`'s: that image's bench
     has no `--sha` and its wheel has no `heston_price`, so its row would not fit the table `main` dispatches from.
 11. **The surface league's first droplet runtime** (`vol.surface_league`, class M's 45 minutes; the worst case is
     40–60 minutes if every name were SPY-sized, and a wall-clock kill loses the night). Record it.
-12. **The EODHD decision** (about $20 a month): the delisted-name build is switched off; if bought, run
+12. **The EODHD decision: NOT BOUGHT** (a ruling, *The finish*; the agent makes no payment): the delisted-name build
+    stays switched off and says so; if the owner ever buys it, run
     `tools/accept_delisted.py`. The delisted-fixture test skips until then.
 13. **The Day 6 reset** (after 1 and 4): regenerate by the recipe in *Changing the book* (all six changes, not two),
     deploy `--live`, lift the halt. The agent then verifies read-only.
@@ -198,7 +212,7 @@ None of these is the agent's to do. The order is the order of dependence.
     last close, and if one happened, flatten or hold that name by hand before lifting the halt.
 
 Known and deferred, from the reviews (the whole-branch review reads this list): the INC-02 approval parser reads an
-ISO date only; `web/execution.js` does not render the new per-fill cost fields. (Fixed in the final review: a
+ISO date only. (`web/execution.js` renders the per-fill cost fields since `dc5ef78`.) (Fixed in the final review: a
 `cov_league` entrant that raises is now skipped alone, and `report.py`'s Stage 3 note is gone.)
 
 ## Earlier state, as of 2026-10-27 to 2026-10-31 (superseded by the section above)
